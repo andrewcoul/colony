@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Colony runtime data and secrets
+data/
+.env
+server/dist

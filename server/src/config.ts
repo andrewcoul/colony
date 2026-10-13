@@ -1,0 +1,43 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** The repository root (server/src or server/dist sit two levels below it). */
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+function list(value: string | undefined) {
+  return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+const models = list(process.env.COLONY_MODELS);
+
+/** Everything configurable lives in environment variables (see .env.example). */
+export const config = {
+  host: process.env.COLONY_HOST ?? "127.0.0.1",
+  port: Number(process.env.COLONY_PORT ?? 8787),
+  dataDir: path.resolve(root, process.env.COLONY_DATA_DIR ?? "data"),
+  /** Any OpenAI-compatible endpoint: OpenCode Go, OpenRouter, xAI, a local server… */
+  model: {
+    baseURL: process.env.COLONY_API_BASE_URL ?? "",
+    apiKey: process.env.COLONY_API_KEY ?? "",
+    providerName: process.env.COLONY_PROVIDER_NAME ?? "colony",
+    models,
+    defaultModel: models[0] ?? "",
+  },
+  firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
+  limits: {
+    historyMessages: 40,
+    maxSteps: 25,
+    memoryChars: 4000,
+    userChars: 2000,
+    maxOutputTokens: 8192,
+    turnTimeoutMs: 15 * 60_000,
+  },
+} as const;
+
+export function modelConfigured() {
+  return Boolean(config.model.baseURL && config.model.defaultModel);
+}
+
+export function resolveModel(requested: string | undefined) {
+  return requested && config.model.models.includes(requested) ? requested : config.model.defaultModel;
+}

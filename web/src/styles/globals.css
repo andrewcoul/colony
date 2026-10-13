@@ -1,0 +1,113 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "./tokens.css";
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-rule: var(--rule);
+  --color-muted: var(--muted);
+  --color-soft: var(--soft);
+  --color-body: var(--body);
+  --color-ink: var(--ink);
+  --color-on-ink: var(--on-ink);
+  --color-active: var(--active);
+  --color-danger: var(--danger);
+  --color-danger-wash: var(--danger-wash);
+  --color-code: var(--code);
+  --color-backdrop: var(--backdrop);
+  --shadow-pop: var(--shadow-pop);
+  --color-sky: var(--sky);
+  --color-mint: var(--mint);
+  --color-peach: var(--peach);
+  --color-lilac: var(--lilac);
+  --color-lemon: var(--lemon);
+  --color-coral: var(--coral);
+}
+
+@theme {
+  --font-sans: "Geist Variable", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", Consolas, ui-monospace, monospace;
+  --text-meta: 12px;
+  --text-label: 13px;
+  --text-body: 15px;
+  --text-body--line-height: 26px;
+  --radius-composer: 28px;
+  --container-chat: 768px;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-blink: blink 1.2s ease-in-out infinite;
+
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @keyframes blink { 50% { opacity: 0.3; } }
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-ground font-sans text-body text-ink antialiased;
+    font-synthesis: none;
+  }
+  button:not(:disabled) { cursor: pointer; }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-ink; }
+  ::selection { background: var(--active); }
+}
+
+@utility shimmer-text {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--ink) 50%, var(--muted) 100%);
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-shimmer);
+}
+
+/* Assistant Markdown. Kept as plain CSS: react-markdown emits bare elements. */
+.markdown { color: var(--body); font-size: 15px; line-height: 26px; overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 14px; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { color: var(--ink); font-weight: 600; letter-spacing: -0.01em; margin: 24px 0 10px; line-height: 1.35; }
+.markdown h1 { font-size: 22px; }
+.markdown h2 { font-size: 19px; }
+.markdown h3, .markdown h4 { font-size: 17px; }
+.markdown ul, .markdown ol { margin: 0 0 14px; padding-left: 22px; }
+.markdown ul { list-style: disc; }
+.markdown ol { list-style: decimal; }
+.markdown li { margin: 4px 0; }
+.markdown li::marker { color: var(--muted); }
+.markdown strong { color: var(--ink); font-weight: 600; }
+.markdown a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 3px; }
+.markdown a:hover { text-decoration-color: var(--ink); }
+.markdown blockquote { margin: 0 0 14px; padding-left: 14px; border-left: 2px solid var(--rule); color: var(--muted); }
+.markdown hr { border: 0; border-top: 1px solid var(--rule); margin: 20px 0; }
+.markdown :not(pre) > code { font-family: var(--font-mono); font-size: 13px; background: var(--raised); padding: 2px 5px; border-radius: 5px; }
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; margin: 0 0 14px; font-size: 14px; }
+.markdown th, .markdown td { border-bottom: 1px solid var(--rule); padding: 8px 14px 8px 0; text-align: left; }
+.markdown th { color: var(--ink); font-weight: 600; }
+.markdown pre code { font-family: var(--font-mono); font-size: 13px; line-height: 21px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+
+/* ---------- Bot faces: presence is carried by the face itself ---------- */
+.face :is(.face-eyes, .face-body, .face-ring, .face-dots circle, .face-badge) { transform-box: fill-box; transform-origin: center; }
+.face[data-state="idle"] .face-eyes { animation: face-blink 5.2s ease-in-out var(--blink-delay, 0ms) infinite; }
+.face[data-state="thinking"] .face-eyes { transform: translate(1px, -2px); transition: transform 300ms ease; }
+.face[data-state="thinking"] .face-dots circle { animation: face-drift 1.6s ease-in-out infinite; }
+.face[data-state="thinking"] .face-dots circle:last-child { animation-delay: 0.3s; }
+.face[data-state="working"] .face-ring { animation: face-spin 2.4s linear infinite; }
+.face[data-state="waiting"] .face-body { animation: face-bob 1.6s ease-in-out infinite; }
+.face[data-state="waiting"] .face-badge { animation: face-pulse 1.6s ease-in-out infinite; }
+.face[data-state="blocked"] .face-body { animation: face-wobble 2.8s ease-in-out infinite; }
+.face[data-state="done"] .face-body { animation: face-pop 500ms cubic-bezier(.3, 1.6, .5, 1) 1; }
+
+@keyframes face-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.08); } }
+@keyframes face-drift { 0%, 100% { transform: translateY(0); opacity: 1; } 50% { transform: translateY(-2px); opacity: 0.5; } }
+@keyframes face-spin { to { transform: rotate(360deg); } }
+@keyframes face-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.5px); } }
+@keyframes face-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
+@keyframes face-wobble { 0%, 90%, 100% { transform: rotate(0); } 93% { transform: rotate(-4deg); } 96% { transform: rotate(4deg); } }
+@keyframes face-pop { 0% { transform: scale(1); } 40% { transform: scale(1.08); } 100% { transform: scale(1); } }

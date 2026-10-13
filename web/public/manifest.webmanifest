@@ -1,0 +1,13 @@
+{
+  "name": "Colony",
+  "short_name": "Colony",
+  "description": "Your self-hosted team of AI Bots.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "icons": [
+    { "src": "/colony.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

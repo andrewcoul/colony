@@ -1,0 +1,89 @@
+import fs from "node:fs";
+import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
+
+const MIGRATIONS = [
+  `
+  CREATE TABLE bots (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    face_seed TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    computer INTEGER NOT NULL DEFAULT 0,
+    presence TEXT NOT NULL DEFAULT 'idle',
+    activity TEXT,
+    chat_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE chats (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    title TEXT NOT NULL,
+    coordinator_id TEXT,
+    last_preview TEXT,
+    last_author TEXT,
+    updated_at INTEGER NOT NULL,
+    unread INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE chat_members (
+    chat_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    PRIMARY KEY (chat_id, bot_id)
+  );
+  CREATE TABLE messages (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    author TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    reasoning TEXT NOT NULL DEFAULT '',
+    steps TEXT NOT NULL DEFAULT '[]',
+    cards TEXT NOT NULL DEFAULT '[]',
+    status TEXT NOT NULL,
+    error TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX messages_by_chat ON messages (chat_id, created_at);
+  CREATE TABLE approvals (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    detail TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    resolved_at INTEGER
+  );
+  CREATE TABLE events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    payload TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
+];
+
+export type Db = DatabaseSync;
+
+/** Opens (and migrates) the SQLite database. Pass ":memory:" in tests. */
+export function openDb(file: string): Db {
+  if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
+  const db = new DatabaseSync(file);
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
+  const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  for (let index = version; index < MIGRATIONS.length; index++) {
+    db.exec("BEGIN");
+    try {
+      db.exec(MIGRATIONS[index]);
+      db.exec(`PRAGMA user_version = ${index + 1}`);
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+  return db;
+}
