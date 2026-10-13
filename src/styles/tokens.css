@@ -1,0 +1,41 @@
+/* Raw design tokens, mirrored from the "Colony · Grok-style chat" Paper file.
+   Tailwind utilities read these through @theme in globals.css. */
+:root {
+  color-scheme: dark;
+  --ground: #141414;
+  --surface: #0f0f0f;
+  --raised: #212121;
+  --hover: #1c1c1c;
+  --rule: #2a2a2a;
+  --muted: #8a8a8a;
+  --soft: #c8c8c8;
+  --body: #e8e8e8;
+  --ink: #ffffff;
+  --on-ink: #0f0f0f;
+  --active: rgb(255 255 255 / 0.1);
+  --danger: #f2726b;
+  --danger-wash: rgb(242 114 107 / 0.1);
+  --code: #0b0b0b;
+  --backdrop: rgb(0 0 0 / 0.6);
+  --shadow-pop: 0 16px 48px rgb(0 0 0 / 0.45);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --ground: #ffffff;
+  --surface: #f7f7f8;
+  --raised: #f0f0f1;
+  --hover: #ececee;
+  --rule: #e4e4e7;
+  --muted: #6b6b70;
+  --soft: #3f3f44;
+  --body: #1a1a1a;
+  --ink: #0d0d0d;
+  --on-ink: #ffffff;
+  --active: rgb(0 0 0 / 0.07);
+  --danger: #c4352c;
+  --danger-wash: rgb(196 53 44 / 0.08);
+  --code: #f5f5f6;
+  --backdrop: rgb(0 0 0 / 0.3);
+  --shadow-pop: 0 16px 48px rgb(0 0 0 / 0.12);
+}

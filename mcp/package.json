@@ -1,0 +1,10 @@
+{
+  "name": "colony-firecrawl-mcp",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "zod": "4.3.6"
+  }
+}

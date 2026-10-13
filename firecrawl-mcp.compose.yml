@@ -1,0 +1,17 @@
+name: colony
+services:
+  firecrawl-mcp:
+    build: ./mcp
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3003:3000"
+    environment:
+      FIRECRAWL_API_URL: http://firecrawl-api-1:3002
+    networks:
+      - firecrawl
+    mem_limit: 512M
+    cpus: 1.0
+networks:
+  firecrawl:
+    external: true
+    name: firecrawl_backend

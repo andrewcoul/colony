@@ -1,0 +1,87 @@
+@import "tailwindcss";
+@import "@fontsource-variable/geist";
+@import "@fontsource-variable/geist-mono";
+@import "./tokens.css";
+
+@theme inline {
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-hover: var(--hover);
+  --color-rule: var(--rule);
+  --color-muted: var(--muted);
+  --color-soft: var(--soft);
+  --color-body: var(--body);
+  --color-ink: var(--ink);
+  --color-on-ink: var(--on-ink);
+  --color-active: var(--active);
+  --color-danger: var(--danger);
+  --color-danger-wash: var(--danger-wash);
+  --color-code: var(--code);
+  --color-backdrop: var(--backdrop);
+  --shadow-pop: var(--shadow-pop);
+}
+
+@theme {
+  --font-sans: "Geist Variable", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", Consolas, ui-monospace, monospace;
+  --text-meta: 12px;
+  --text-label: 13px;
+  --text-body: 15px;
+  --text-body--line-height: 26px;
+  --radius-composer: 28px;
+  --container-chat: 768px;
+  --animate-shimmer: shimmer 1.6s linear infinite;
+  --animate-blink: blink 1.2s ease-in-out infinite;
+
+  @keyframes shimmer { to { background-position: -200% 0; } }
+  @keyframes blink { 50% { opacity: 0.3; } }
+}
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-ground font-sans text-body text-ink antialiased;
+    font-synthesis: none;
+  }
+  button:not(:disabled) { cursor: pointer; }
+  :focus-visible { @apply outline-2 outline-offset-2 outline-ink; }
+  ::selection { background: var(--active); }
+}
+
+@utility shimmer-text {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--ink) 50%, var(--muted) 100%);
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-shimmer);
+}
+
+/* Assistant Markdown. Kept as plain CSS: react-markdown emits bare elements. */
+.markdown { color: var(--body); font-size: 15px; line-height: 26px; overflow-wrap: anywhere; }
+.markdown > :first-child { margin-top: 0; }
+.markdown > :last-child { margin-bottom: 0; }
+.markdown p { margin: 0 0 14px; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { color: var(--ink); font-weight: 600; letter-spacing: -0.01em; margin: 24px 0 10px; line-height: 1.35; }
+.markdown h1 { font-size: 22px; }
+.markdown h2 { font-size: 19px; }
+.markdown h3, .markdown h4 { font-size: 17px; }
+.markdown ul, .markdown ol { margin: 0 0 14px; padding-left: 22px; }
+.markdown ul { list-style: disc; }
+.markdown ol { list-style: decimal; }
+.markdown li { margin: 4px 0; }
+.markdown li::marker { color: var(--muted); }
+.markdown strong { color: var(--ink); font-weight: 600; }
+.markdown a { color: var(--ink); text-decoration: underline; text-decoration-color: var(--muted); text-underline-offset: 3px; }
+.markdown a:hover { text-decoration-color: var(--ink); }
+.markdown blockquote { margin: 0 0 14px; padding-left: 14px; border-left: 2px solid var(--rule); color: var(--muted); }
+.markdown hr { border: 0; border-top: 1px solid var(--rule); margin: 20px 0; }
+.markdown :not(pre) > code { font-family: var(--font-mono); font-size: 13px; background: var(--raised); padding: 2px 5px; border-radius: 5px; }
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; margin: 0 0 14px; font-size: 14px; }
+.markdown th, .markdown td { border-bottom: 1px solid var(--rule); padding: 8px 14px 8px 0; text-align: left; }
+.markdown th { color: var(--ink); font-weight: 600; }
+.markdown pre code { font-family: var(--font-mono); font-size: 13px; line-height: 21px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
