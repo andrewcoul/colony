@@ -74,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Remove  # uninst
 
 `scripts\run.ps1` keeps Colony running: it restarts it within 10 seconds if it exits,
 starts Docker Desktop if needed, and logs to `data\colony.log`. After pulling changes:
-`npm run build; Stop-ScheduledTask Colony; Start-ScheduledTask Colony`.
+`npm run build`, then `powershell -ExecutionPolicy Bypass -File scriptsestart.ps1` (it waits until Colony answers).
 
 ## Use it from your phone (Tailscale)
 
