@@ -60,7 +60,7 @@ Start-ScheduledTask -TaskName Colony                                    # start 
 powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Remove  # uninstall
 ```
 
-`scriptsun.ps1` keeps Colony running: it restarts it within 10 seconds if it exits,
+`scripts\run.ps1` keeps Colony running: it restarts it within 10 seconds if it exits,
 starts Docker Desktop if needed, and logs to `data\colony.log`. After pulling changes:
 `npm run build; Stop-ScheduledTask Colony; Start-ScheduledTask Colony`.
 
