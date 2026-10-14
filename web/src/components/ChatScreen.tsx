@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, CalendarClock, ChevronLeft, Lock, Monitor, MoreHorizontal, Square, Trash2 } from "lucide-react";
+import { ArrowDown, CalendarClock, ChevronLeft, IdCard, Lock, Monitor, MoreHorizontal, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { Composer } from "./Composer";
+import { BotProfile } from "./BotProfile";
 import { ComputerPanel, type ComputerTab } from "./ComputerPanel";
 import { Face } from "./Face";
 import { GroupFaces } from "./Roster";
@@ -28,7 +29,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   const loaded = useLive((s) => chat.id in s.messages);
   const [hasOlder, setHasOlder] = useState(true);
   // "#/chat/<id>/browser" (from a takeover card or notification) opens straight to the browser.
-  const [panel, setPanel] = useState<"computer" | "routines" | null>(() => (location.hash.endsWith("/browser") ? "computer" : null));
+  const [panel, setPanel] = useState<"computer" | "routines" | "profile" | null>(() => (location.hash.endsWith("/browser") ? "computer" : null));
   const [computerTab, setComputerTab] = useState<ComputerTab>(() => (location.hash.endsWith("/browser") ? "browser" : "terminal"));
   const togglePanel = (name: "computer" | "routines") => setPanel((current) => (current === name ? null : name));
   const members = useMemo(() => chat.memberIds.map((id) => botMap[id]).filter(Boolean) as Bot[], [chat.memberIds, botMap]);
@@ -65,11 +66,25 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-rule px-4 pt-[max(env(safe-area-inset-top),12px)] pb-3 sm:px-5">
         {phone && <Button size="icon" aria-label="Back" className="-ml-2 text-ink" onClick={onBack}><ChevronLeft size={22} /></Button>}
-        {bot ? <Face seed={bot.faceSeed} state={bot.presence} size={36} title={bot.name} /> : <GroupFaces bots={members} size={22} />}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <strong className="truncate text-[15px]">{title}</strong>
-          <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
-        </div>
+        {bot ? (
+          // Tapping the Bot opens its profile: persona, memory, skills.
+          <button type="button" onClick={() => setPanel(panel === "profile" ? null : "profile")} aria-label={`${bot.name}'s profile`}
+            className="flex min-w-0 flex-1 items-center gap-3 rounded-xl text-left">
+            <Face seed={bot.faceSeed} state={bot.presence} size={36} title={bot.name} />
+            <span className="flex min-w-0 flex-1 flex-col">
+              <strong className="truncate text-[15px]">{title}</strong>
+              <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
+            </span>
+          </button>
+        ) : (
+          <>
+            <GroupFaces bots={members} size={22} />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <strong className="truncate text-[15px]">{title}</strong>
+              <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
+            </div>
+          </>
+        )}
         {bot && (
           <Button
             variant="ghost" size="pill" aria-pressed={panel === "routines"} aria-label={`${bot.name}'s routines`}
@@ -91,6 +106,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
         <MenuRoot>
           <MenuTrigger><Button size="icon" aria-label="Chat options"><MoreHorizontal size={18} /></Button></MenuTrigger>
           <MenuContent>
+            {bot && <MenuItem onClick={() => setPanel("profile")}><IdCard size={15} />Profile, memory & skills</MenuItem>}
             {bot ? (
               <MenuItem className="text-danger" onClick={() => { if (confirm(`Delete ${bot.name}? Its memory, skills and workspace are removed.`)) void api.deleteBot(bot.id).then(onBack); }}>
                 <Trash2 size={15} />Delete {bot.name}
@@ -146,6 +162,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
     </section>
     {bot && panel === "computer" && <ComputerPanel bot={bot} phone={phone} tab={computerTab} onTab={setComputerTab} onClose={() => setPanel(null)} />}
     {bot && panel === "routines" && <RoutinesPanel bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
+    {bot && panel === "profile" && <BotProfile bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
     </div>
   );
 }

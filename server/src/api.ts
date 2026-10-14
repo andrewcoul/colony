@@ -72,6 +72,12 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     seq: events.latestSeq(),
   }));
 
+  // Bot ids become folder names, so every per-Bot route must name a Bot that exists.
+  api.use("/bots/:id/*", async (c, next) => {
+    if (!store.getBot(c.req.param("id"))) return c.json({ error: "Bot not found." }, 404);
+    await next();
+  });
+
   // ---------- Bots ----------
   api.post("/bots", async (c) => {
     const input = botInput.parse(await c.req.json());
@@ -165,15 +171,38 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     stop();
   }));
 
+  // ---------- Profile: persona, memory, skills ----------
   api.get("/bots/:id/soul", (c) => c.json({ content: files.readSoul(c.req.param("id")) }));
   api.put("/bots/:id/soul", async (c) => {
     const { content } = z.object({ content: z.string().max(20_000) }).parse(await c.req.json());
     files.writeSoul(c.req.param("id"), content);
     return c.body(null, 204);
   });
-  api.get("/bots/:id/memory", (c) => {
-    const id = c.req.param("id");
-    return c.json({ memory: files.readEntries(id, "memory"), user: files.readEntries(id, "user"), skills: files.listSkills(id) });
+  const memoryView = (id: string) => ({
+    memory: files.readEntries(id, "memory"),
+    user: files.readEntries(id, "user"),
+    usage: { memory: files.memoryUsage(id, "memory"), user: files.memoryUsage(id, "user") },
+    skills: files.listSkills(id),
+  });
+  api.get("/bots/:id/memory", (c) => c.json(memoryView(c.req.param("id"))));
+  const memoryEdit = z.object({ target: z.enum(["memory", "user"]), entry: z.string().trim().min(1).max(500) });
+  api.post("/bots/:id/memory", async (c) => {
+    const { target, entry } = memoryEdit.parse(await c.req.json());
+    files.addEntry(c.req.param("id"), target, entry);
+    return c.json(memoryView(c.req.param("id")));
+  });
+  api.post("/bots/:id/memory/remove", async (c) => {
+    const { target, entry } = memoryEdit.parse(await c.req.json());
+    files.removeExactEntry(c.req.param("id"), target, entry);
+    return c.json(memoryView(c.req.param("id")));
+  });
+  api.get("/bots/:id/skills/:slug", (c) => {
+    const content = files.readSkill(c.req.param("id"), c.req.param("slug"));
+    return content === null ? c.json({ error: "Skill not found." }, 404) : c.json({ content });
+  });
+  api.delete("/bots/:id/skills/:slug", (c) => {
+    files.deleteSkill(c.req.param("id"), c.req.param("slug"));
+    return c.body(null, 204);
   });
 
   // ---------- Chats ----------

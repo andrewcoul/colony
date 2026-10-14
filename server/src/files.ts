@@ -133,6 +133,21 @@ export function readSkill(botId: string, nameOrSlug: string) {
   return skill ? read(path.join(skillsDir(botId), skill.slug, "SKILL.md")) : null;
 }
 
+/** Deletes a skill by slug; only slugs that exist are accepted, so paths can't escape. */
+export function deleteSkill(botId: string, slug: string) {
+  if (!listSkills(botId).some((skill) => skill.slug === slug)) return false;
+  fs.rmSync(path.join(skillsDir(botId), slug), { recursive: true, force: true });
+  return true;
+}
+
+/** Removes an entry by its exact text (for the app; Bots use removeEntry's substring match). */
+export function removeExactEntry(botId: string, target: MemoryTarget, entry: string) {
+  const entries = readEntries(botId, target);
+  if (!entries.includes(entry)) return false;
+  writeEntries(botId, target, entries.filter((item) => item !== entry));
+  return true;
+}
+
 export function saveSkill(botId: string, name: string, description: string, body: string) {
   const slug = slugify(name);
   const oneLine = (value: string) => value.replace(/\s+/g, " ").trim();

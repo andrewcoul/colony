@@ -81,7 +81,8 @@ function setup() {
   const api = createApi({ store, events, gate, runner, routines, push });
   const call = async (method: string, url: string, body?: unknown) => {
     const response = await api.request(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-    return { status: response.status, json: (response.status === 204 ? null : await response.json()) as any };
+    const json = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
+    return { status: response.status, json: json as any };
   };
   return { store, events, runner, routines, push, pushed, call };
 }
@@ -140,6 +141,34 @@ describe("Bots", () => {
     await finished(store, bot.chatId, 1);
     await call("POST", `/chats/${bot.chatId}/messages`, { text: "Go." });
     expect((await finished(store, bot.chatId, 2)).at(-1)!.text).toBe("Checking.\n\nDone.");
+  });
+
+  test("per-Bot routes refuse unknown ids, so ids can't reach outside the data folder", async () => {
+    const { call } = setup();
+    for (const id of ["nope", "..", encodeURIComponent("../../evil")]) {
+      expect((await call("PUT", `/bots/${id}/soul`, { content: "x" })).status).toBe(404);
+    }
+    expect(fs.existsSync(path.join(dataDir, "..", "evil"))).toBe(false);
+  });
+
+  test("the profile edits memory and skills", async () => {
+    script = scriptedModel([textTurn("Hi.")]);
+    const { store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Mia" });
+    await finished(store, bot.chatId, 1);
+    const added = await call("POST", `/bots/${bot.id}/memory`, { target: "memory", entry: "Ships on Fridays" });
+    expect(added.json.memory).toEqual(["Ships on Fridays"]);
+    expect(added.json.usage.memory.used).toBeGreaterThan(0);
+    expect((await call("POST", `/bots/${bot.id}/memory/remove`, { target: "memory", entry: "Ships on Fridays" })).json.memory).toEqual([]);
+    files.saveSkill(bot.id, "Weekly report", "How to write it", "1. Gather\n2. Write");
+    expect((await call("GET", `/bots/${bot.id}/skills/weekly-report`)).json.content).toContain("1. Gather");
+    await call("DELETE", `/bots/${bot.id}/skills/weekly-report`);
+    expect(files.listSkills(bot.id)).toEqual([]);
+    // An unknown or traversing slug deletes nothing.
+    expect([204, 404]).toContain((await call("DELETE", `/bots/${bot.id}/skills/..`)).status);
+    expect([204, 404]).toContain((await call("DELETE", `/bots/${bot.id}/skills/${encodeURIComponent("../workspace")}`)).status);
+    expect(fs.existsSync(path.join(dataDir, "bots", bot.id, "workspace"))).toBe(true);
+    expect(fs.existsSync(path.join(dataDir, "bots", bot.id))).toBe(true);
   });
 
   test("unknown models fall back to the default", async () => {

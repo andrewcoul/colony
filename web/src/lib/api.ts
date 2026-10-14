@@ -24,6 +24,14 @@ export type BrowserInput =
 
 export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
 
+export type MemoryUsage = { used: number; budget: number };
+export type BotMemory = {
+  memory: string[];
+  user: string[];
+  usage: { memory: MemoryUsage; user: MemoryUsage };
+  skills: { slug: string; name: string; description: string }[];
+};
+
 export type RoutineInput = { title: string; prompt: string; schedule: Schedule; enabled?: boolean };
 
 export type NewBot = { name: string; title: string; description: string; model?: string; computer: boolean; faceSeed?: string };
@@ -44,6 +52,13 @@ export const api = {
   files: (botId: string, path = "") => request<FileEntry[]>("GET", `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
+  soul: (botId: string) => request<{ content: string }>("GET", `/bots/${botId}/soul`),
+  saveSoul: (botId: string, content: string) => request<void>("PUT", `/bots/${botId}/soul`, { content }),
+  memory: (botId: string) => request<BotMemory>("GET", `/bots/${botId}/memory`),
+  addMemory: (botId: string, target: "memory" | "user", entry: string) => request<BotMemory>("POST", `/bots/${botId}/memory`, { target, entry }),
+  removeMemory: (botId: string, target: "memory" | "user", entry: string) => request<BotMemory>("POST", `/bots/${botId}/memory/remove`, { target, entry }),
+  skill: (botId: string, slug: string) => request<{ content: string }>("GET", `/bots/${botId}/skills/${encodeURIComponent(slug)}`),
+  deleteSkill: (botId: string, slug: string) => request<void>("DELETE", `/bots/${botId}/skills/${encodeURIComponent(slug)}`),
   openBrowser: (botId: string) => request<{ open: boolean; url: string | null }>("POST", `/bots/${botId}/browser/open`),
   browserInput: (botId: string, input: BrowserInput) => request<void>("POST", `/bots/${botId}/browser/input`, input),
   createRoutine: (botId: string, input: RoutineInput) => request<Routine>("POST", `/bots/${botId}/routines`, input),
