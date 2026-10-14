@@ -9,6 +9,7 @@ import { AgentRunner } from "./agent/run.js";
 import { computerTools } from "./agent/computerTools.js";
 import { coreTools } from "./agent/tools.js";
 import { ComputerService } from "./computer/docker.js";
+import { tailnetOnly } from "./access.js";
 import { createApi } from "./api.js";
 import { config, modelConfigured } from "./config.js";
 import { openDb } from "./db.js";
@@ -16,6 +17,22 @@ import { EventLog } from "./events.js";
 import { PushService } from "./push.js";
 import { RoutineScheduler } from "./routines.js";
 import { Store } from "./store.js";
+
+// One Colony per data folder: a second one would run every routine twice.
+const lockFile = path.join(config.dataDir, "colony.pid");
+try {
+  const other = Number(fs.readFileSync(lockFile, "utf8"));
+  if (other && other !== process.pid) {
+    process.kill(other, 0); // Throws if that process is gone.
+    console.error(`Colony is already running (pid ${other}) with data in ${config.dataDir}. Stop it first.`);
+    process.exit(1);
+  }
+} catch { /* No lock, or a stale one. */ }
+fs.mkdirSync(config.dataDir, { recursive: true });
+fs.writeFileSync(lockFile, String(process.pid));
+const releaseLock = () => { try { if (fs.readFileSync(lockFile, "utf8") === String(process.pid)) fs.rmSync(lockFile); } catch { /* already gone */ } };
+process.on("exit", releaseLock);
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(0));
 
 const db = openDb(path.join(config.dataDir, "colony.db"));
 const events = new EventLog(db);
@@ -31,6 +48,7 @@ routines.start();
 const push = new PushService(db, store, events);
 
 const app = new Hono();
+app.use(tailnetOnly(config.allowedUsers));
 app.route("/api", createApi({ store, events, gate, runner, computer, routines, push }));
 
 // In production the server also serves the built web app (web/dist).

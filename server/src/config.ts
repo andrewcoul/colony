@@ -24,6 +24,8 @@ export const config = {
     defaultModel: models[0] ?? "",
   },
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
+  /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */
+  allowedUsers: list(process.env.COLONY_ALLOWED_USERS),
   limits: {
     historyMessages: 40,
     maxSteps: 25,

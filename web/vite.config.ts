@@ -13,6 +13,8 @@ export default defineConfig({
   server: {
     port: Number(process.env.COLONY_WEB_PORT ?? 5180),
     strictPort: true,
+    // Lets `tailscale serve` point at the dev server too (https://<machine>.<tailnet>.ts.net).
+    allowedHosts: [".ts.net"],
     // Dev only: the Colony server handles /api; in production it serves this app itself.
     proxy: { "/api": { target: `http://127.0.0.1:${serverPort}`, changeOrigin: true } },
     fs: { allow: [path.resolve(import.meta.dirname, "..")], deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/*.local", "**/data/**"] },
