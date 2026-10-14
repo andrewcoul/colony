@@ -1,0 +1,32 @@
+#!/bin/sh
+# Starts the Bot's browser if it isn't running. Colony drives it over the DevTools
+# protocol on port 9223 (published only to the PC's loopback). Logins persist in /browser.
+set -e
+
+if ! pgrep -x chromium >/dev/null 2>&1; then
+  mkdir -p /browser/profile
+  rm -f /browser/profile/SingletonLock /browser/profile/SingletonSocket /browser/profile/SingletonCookie
+  # Sites often turn away "HeadlessChrome"; present as the regular browser it is.
+  version=$(chromium --version 2>/dev/null | grep -o '[0-9][0-9]*' | head -n 1)
+  agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${version:-150}.0.0.0 Safari/537.36"
+  # The container is the sandbox (Chromium's own sandbox needs privileges we drop).
+  nohup chromium --headless=new --no-sandbox --disable-dev-shm-usage --disable-gpu \
+    --user-agent="$agent" \
+    --remote-debugging-port=9222 --user-data-dir=/browser/profile \
+    --window-size=1280,800 --no-first-run --no-default-browser-check \
+    --lang=en-US about:blank >/tmp/chromium.log 2>&1 &
+fi
+
+if ! pgrep -x socat >/dev/null 2>&1; then
+  nohup socat TCP-LISTEN:9223,fork,reuseaddr TCP:127.0.0.1:9222 >/dev/null 2>&1 &
+fi
+
+i=0
+while [ $i -lt 75 ]; do
+  if curl -sf http://127.0.0.1:9222/json/version >/dev/null; then exit 0; fi
+  i=$((i + 1))
+  sleep 0.2
+done
+echo "The browser didn't start:" >&2
+tail -n 20 /tmp/chromium.log >&2
+exit 1

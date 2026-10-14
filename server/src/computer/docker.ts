@@ -7,7 +7,9 @@ import type { EventLog } from "../events.js";
 import { botDir, workspaceDir } from "../files.js";
 import type { Store } from "../store.js";
 
-const IMAGE = "colony-computer:latest";
+/** Bump with computer/Dockerfile; containers on an older image are recreated (/workspace persists). */
+const IMAGE = "colony-computer:2";
+const CDP_PORT = "9223";
 const CONTEXT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../computer");
 const LOG_MAX = 256_000;
 const LOG_KEEP = 200_000;
@@ -57,20 +59,28 @@ export class ComputerService {
     if (existing) return existing;
     const start = (async () => {
       const name = this.containerName(botId);
-      const inspect = await run(["inspect", "-f", "{{.State.Running}}", name]);
-      if (inspect.code === 0 && inspect.stdout.trim() === "true") { this.store.setComputerState(botId, "on"); return; }
+      const inspect = await run(["inspect", "-f", "{{.Config.Image}}|{{.State.Running}}", name]);
+      const [image, running] = inspect.stdout.trim().split("|");
+      const current = inspect.code === 0 && image === IMAGE;
+      if (current && running === "true") { this.store.setComputerState(botId, "on"); return; }
       this.store.setComputerState(botId, "starting");
       try {
         await this.ensureImage();
-        if (inspect.code === 0) {
+        if (inspect.code === 0 && !current) await run(["rm", "-f", name]); // Outdated image: rebuild around the same files.
+        if (current) {
           const started = await run(["start", name]);
           if (started.code !== 0) throw new Error(started.stderr.trim());
         } else {
           fs.mkdirSync(workspaceDir(botId), { recursive: true });
+          fs.mkdirSync(path.join(botDir(botId), "browser"), { recursive: true });
           const created = await run([
             "run", "-d", "--name", name, "--hostname", name, "--label", `colony.bot=${botId}`,
             "-v", `${workspaceDir(botId)}:/workspace`,
-            "--memory", "2g", "--cpus", "2", "--pids-limit", "512",
+            // The browser profile (logins) lives outside the workspace the Bot shares with you.
+            "-v", `${path.join(botDir(botId), "browser")}:/browser`,
+            // DevTools for the Bot's browser, reachable only from this PC.
+            "-p", `127.0.0.1::${CDP_PORT}`,
+            "--memory", "2g", "--cpus", "2", "--pids-limit", "512", "--shm-size", "512m",
             "--cap-drop", "ALL", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE", "--cap-add", "FOWNER",
             "--cap-add", "SETUID", "--cap-add", "SETGID", "--cap-add", "KILL",
             "--security-opt", "no-new-privileges",
@@ -141,6 +151,18 @@ export class ComputerService {
       timedOut,
       durationMs: Date.now() - started,
     };
+  }
+
+  /** Starts the Bot's browser if needed and returns its DevTools address on this PC. */
+  async browserEndpoint(botId: string) {
+    await this.ensure(botId);
+    const name = this.containerName(botId);
+    const started = await run(["exec", name, "colony-browser"]);
+    if (started.code !== 0) throw new Error(`The browser couldn't start: ${(started.stderr || started.stdout).trim().slice(-300)}`);
+    const port = await run(["port", name, CDP_PORT]);
+    const address = port.stdout.split(/\r?\n/).find((line) => line.startsWith("127.0.0.1:"));
+    if (!address) throw new Error("The browser's DevTools port isn't published; turn the computer off and on again.");
+    return `http://${address.trim()}`;
   }
 
   async remove(botId: string) {

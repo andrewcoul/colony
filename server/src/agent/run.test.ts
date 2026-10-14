@@ -131,6 +131,17 @@ describe("Bots", () => {
     expect(JSON.stringify(script.prompts.at(-1))).toContain("Prefers replies under 3 lines");
   });
 
+  test("text before and after a tool call reads as separate paragraphs", async () => {
+    const [start, ...rest] = toolTurn("memory", { action: "add", target: "memory", entry: "x" });
+    const narrated = [start, { type: "text-start", id: "a" }, { type: "text-delta", id: "a", delta: "Checking." }, { type: "text-end", id: "a" }, ...rest];
+    script = scriptedModel([textTurn("Hi."), narrated, textTurn("Done.")]);
+    const { store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Kenny" });
+    await finished(store, bot.chatId, 1);
+    await call("POST", `/chats/${bot.chatId}/messages`, { text: "Go." });
+    expect((await finished(store, bot.chatId, 2)).at(-1)!.text).toBe("Checking.\n\nDone.");
+  });
+
   test("unknown models fall back to the default", async () => {
     script = scriptedModel([textTurn("Hi.")]);
     const { call } = setup();

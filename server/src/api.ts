@@ -6,6 +6,7 @@ import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
 import type { AgentRunner } from "./agent/run.js";
+import type { BrowserService } from "./computer/browser.js";
 import type { ComputerService } from "./computer/docker.js";
 import type { PushService } from "./push.js";
 import type { RoutineScheduler } from "./routines.js";
@@ -16,7 +17,7 @@ import type { AppState } from "./shared/types.js";
 
 export type Services = {
   store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner;
-  computer?: ComputerService; routines?: RoutineScheduler; push?: PushService;
+  computer?: ComputerService; browser?: BrowserService; routines?: RoutineScheduler; push?: PushService;
 };
 
 const schedule = z.discriminatedUnion("type", [
@@ -51,7 +52,7 @@ function addressedBots(text: string, memberIds: string[], store: Store, coordina
   return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
 }
 
-export function createApi({ store, events, gate, runner, computer, routines, push }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, routines, push }: Services) {
   const api = new Hono();
 
   api.onError((error, c) => {
@@ -90,6 +91,7 @@ export function createApi({ store, events, gate, runner, computer, routines, pus
     const id = c.req.param("id");
     runner.stopBot(id);
     store.deleteBot(id);
+    await browser?.close(id);
     await computer?.remove(id);
     files.removeBotFolder(id);
     return c.body(null, 204);
@@ -103,9 +105,65 @@ export function createApi({ store, events, gate, runner, computer, routines, pus
     return c.json(file);
   });
   api.post("/bots/:id/computer/stop", async (c) => {
+    await browser?.close(c.req.param("id"));
     await computer?.stop(c.req.param("id"));
     return c.body(null, 204);
   });
+
+  // ---------- Browser: live view and takeover ----------
+  const botWithComputer = (id: string) => {
+    const bot = store.getBot(id);
+    return bot?.computer && browser ? bot : null;
+  };
+  api.get("/bots/:id/browser", (c) => c.json({ open: browser?.isOpen(c.req.param("id")) ?? false, url: browser?.currentUrl(c.req.param("id")) ?? null }));
+  api.post("/bots/:id/browser/open", async (c) => {
+    const bot = botWithComputer(c.req.param("id"));
+    if (!bot) return c.json({ error: "This Bot has no computer." }, 400);
+    await browser!.open(bot.id);
+    return c.json({ open: true, url: browser!.currentUrl(bot.id) });
+  });
+  api.post("/bots/:id/browser/input", async (c) => {
+    const bot = botWithComputer(c.req.param("id"));
+    if (!bot) return c.json({ error: "This Bot has no computer." }, 400);
+    const input = z.discriminatedUnion("type", [
+      z.object({ type: z.literal("click"), x: z.number().min(0).max(1), y: z.number().min(0).max(1) }),
+      z.object({ type: z.literal("type"), text: z.string().min(1).max(2000) }),
+      z.object({ type: z.literal("key"), key: z.string().max(20) }),
+      z.object({ type: z.literal("scroll"), dy: z.number().min(-3000).max(3000) }),
+      z.object({ type: z.literal("navigate"), url: z.string().min(1).max(2000) }),
+      z.object({ type: z.literal("back") }),
+      z.object({ type: z.literal("viewport"), mobile: z.boolean() }),
+    ]).parse(await c.req.json());
+    try { await browser!.input(bot.id, input); }
+    catch (failure) { return c.json({ error: failure instanceof Error ? failure.message.split("\n")[0] : "That didn't work." }, 400); }
+    return c.body(null, 204);
+  });
+  /** Screencast frames for one viewer, on their own stream so chat events stay light. */
+  api.get("/bots/:id/browser/live", (c) => streamSSE(c, async (stream) => {
+    const id = c.req.param("id");
+    if (!botWithComputer(id)) { await stream.writeSSE({ event: "closed", data: "{}" }); return; }
+    let pending: Promise<unknown> = Promise.resolve();
+    let latest: string | null = null;
+    // Drop frames the connection can't keep up with; always deliver the newest.
+    const send = (event: string, data: string) => {
+      latest = data;
+      pending = pending.then(async () => {
+        if (latest === null || stream.aborted) return;
+        const next = latest;
+        latest = null;
+        await stream.writeSSE({ event, data: next });
+      });
+    };
+    const stop = browser!.watch(id, (event) => {
+      if (event.type === "frame") send("frame", JSON.stringify(event));
+      else void stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
+    });
+    await stream.writeSSE({ event: browser!.isOpen(id) ? "open" : "closed", data: JSON.stringify({ url: browser!.currentUrl(id) }) });
+    const heartbeat = setInterval(() => { void stream.writeSSE({ event: "ping", data: "" }); }, 15_000);
+    await new Promise<void>((resolve) => stream.onAbort(resolve));
+    clearInterval(heartbeat);
+    stop();
+  }));
 
   api.get("/bots/:id/soul", (c) => c.json({ content: files.readSoul(c.req.param("id")) }));
   api.put("/bots/:id/soul", async (c) => {

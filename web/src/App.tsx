@@ -16,7 +16,7 @@ const usePhone = () => useSyncExternalStore(
 
 /** The open chat lives in the URL hash so the phone's back gesture works. */
 function useOpenChat() {
-  const read = () => /^#\/chat\/([\w-]+)$/.exec(location.hash)?.[1] ?? null;
+  const read = () => /^#\/chat\/([\w-]+)(\/browser)?$/.exec(location.hash)?.[1] ?? null;
   const [chatId, setChatId] = useState(read);
   useEffect(() => {
     const onHash = () => setChatId(read());

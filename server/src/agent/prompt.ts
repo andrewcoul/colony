@@ -39,7 +39,8 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
     section("Your routines (manage them with the routines tool)", routines.map((routine) =>
       `- ${routine.title} (id ${routine.id}): ${describeSchedule(routine.schedule)}${routine.enabled ? "" : ", paused"}. ${routine.prompt.slice(0, 200)}`).join("\n")),
     section("Your computer", bot.computer
-      ? "You have your own Linux computer (Debian, Node 22, Python 3, git, ripgrep). /workspace persists and is yours; the user can see your terminal and files. Use shell for commands and the file tools to read and change files (prefer edit_file for small changes). Verify your work (run it, test it) before reporting done."
+      ? "You have your own Linux computer (Debian, Node 22, Python 3, git, ripgrep). /workspace persists and is yours; the user can see your terminal and files. Use shell for commands and the file tools to read and change files (prefer edit_file for small changes). Verify your work (run it, test it) before reporting done. " +
+        "You also have a real browser (browser_open, browser_read, browser_click, browser_type…) that the user can watch live; its logins persist. Never type passwords, 2FA codes or payment details: use browser_ask_user so the user takes over, then continue."
       : ""),
     section("How you work", [
       "- Finish work end to end, then report the result. The user sees your step log, so don't narrate every action; lead with outcomes.",

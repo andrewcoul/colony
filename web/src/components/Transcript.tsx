@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, Globe, Hand, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
@@ -11,9 +11,16 @@ import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
 import { Button } from "./ui/button";
 
-type ItemProps = { message: Message; bot: Bot | undefined; showAuthor: boolean; onOpenRoutines?: () => void; onOpenChat?: (chatId: string) => void };
+type ItemProps = {
+  message: Message;
+  bot: Bot | undefined;
+  showAuthor: boolean;
+  onOpenRoutines?: () => void;
+  onOpenChat?: (chatId: string) => void;
+  onOpenBrowser?: (botId: string) => void;
+};
 
-export function MessageItem({ message, bot, showAuthor, onOpenRoutines, onOpenChat }: ItemProps) {
+export function MessageItem({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser }: ItemProps) {
   if (message.author === "user") {
     return (
       <div className="flex justify-end">
@@ -26,10 +33,10 @@ export function MessageItem({ message, bot, showAuthor, onOpenRoutines, onOpenCh
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
-  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} />;
+  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />;
 }
 
-function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat }: ItemProps) {
+function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser }: ItemProps) {
   const streaming = message.status === "streaming";
   const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();
@@ -45,7 +52,7 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat }: It
       {message.steps.length > 0 && <StepLog steps={message.steps} live={streaming} />}
       {message.text && <MarkdownView text={message.text} />}
       {!message.text && streaming && message.steps.length === 0 && <Typing />}
-      {message.cards.map((card, index) => <CardView key={index} card={card} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} />)}
+      {message.cards.map((card, index) => <CardView key={index} card={card} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />)}
       {message.status === "failed" && message.error && (
         <p className="m-0 flex items-center gap-2 rounded-xl bg-danger-wash px-3.5 py-2.5 text-label text-danger"><CircleAlert size={15} />{message.error}</p>
       )}
@@ -125,8 +132,14 @@ function StepIcon({ status }: { status: Step["status"] }) {
   return <Check size={size} className="shrink-0 text-mint" strokeWidth={2.4} />;
 }
 
-function CardView({ card, author, onOpenRoutines, onOpenChat }: { card: Card; author: Bot | undefined; onOpenRoutines?: () => void; onOpenChat?: (chatId: string) => void }) {
-  if (card.type === "approval") return <ApprovalCard approvalId={card.approvalId} />;
+function CardView({ card, author, onOpenRoutines, onOpenChat, onOpenBrowser }: {
+  card: Card;
+  author: Bot | undefined;
+  onOpenRoutines?: () => void;
+  onOpenChat?: (chatId: string) => void;
+  onOpenBrowser?: (botId: string) => void;
+}) {
+  if (card.type === "approval") return <ApprovalCard approvalId={card.approvalId} onOpenBrowser={onOpenBrowser} />;
   if (card.type === "routine" && card.action !== "ran") return <RoutineCard card={card} onOpen={onOpenRoutines} />;
   if (card.type === "handoff") return <HandoffCard card={card} author={author} onOpenChat={onOpenChat} />;
   return null;
@@ -198,12 +211,13 @@ function RoutineCard({ card, onOpen }: { card: Extract<Card, { type: "routine" }
   );
 }
 
-function ApprovalCard({ approvalId }: { approvalId: string }) {
+function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpenBrowser?: (botId: string) => void }) {
   const approval: Approval | undefined = useLive((s) => s.approvals[approvalId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   if (!approval) return <p className="m-0 text-meta text-muted">Approval resolved.</p>;
   const pending = approval.status === "pending";
+  const takeover = approval.tool === "browser_takeover";
 
   async function decide(approve: boolean) {
     setBusy(true); setError("");
@@ -214,17 +228,22 @@ function ApprovalCard({ approvalId }: { approvalId: string }) {
   return (
     <div className={cn("flex flex-col gap-3 rounded-xl border p-4", pending ? "border-lemon/35 bg-lemon/7" : "border-rule bg-surface")}>
       <span className={cn("flex items-center gap-2 text-label font-semibold", pending ? "text-lemon" : "text-soft")}>
-        <ShieldCheck size={16} />{approval.summary}
+        {takeover ? <Hand size={16} /> : <ShieldCheck size={16} />}{approval.summary}
       </span>
-      <pre className="m-0 overflow-x-auto rounded-lg bg-surface px-3 py-2.5 font-mono text-[13px] leading-5 whitespace-pre-wrap text-ink">{approval.detail}</pre>
+      {takeover
+        ? <p className="m-0 text-label leading-relaxed whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{approval.detail}</p>
+        : <pre className="m-0 overflow-x-auto rounded-lg bg-surface px-3 py-2.5 font-mono text-[13px] leading-5 whitespace-pre-wrap text-ink">{approval.detail}</pre>}
       {pending ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="primary" size="pill" className="px-4" disabled={busy} onClick={() => void decide(true)}>Approve</Button>
-          <Button variant="outline" size="pill" className="px-4" disabled={busy} onClick={() => void decide(false)}>Deny</Button>
+          {takeover && onOpenBrowser && (
+            <Button variant="primary" size="pill" className="px-4" onClick={() => onOpenBrowser(approval.botId)}><Globe size={14} />Open browser</Button>
+          )}
+          <Button variant={takeover ? "outline" : "primary"} size="pill" className="px-4" disabled={busy} onClick={() => void decide(true)}>{takeover ? "I'm done" : "Approve"}</Button>
+          <Button variant="outline" size="pill" className="px-4" disabled={busy} onClick={() => void decide(false)}>{takeover ? "Cancel" : "Deny"}</Button>
           {approval.reason && <span className="ml-auto text-meta text-muted">{approval.reason}</span>}
         </div>
       ) : (
-        <span className="text-meta text-muted">{{ approved: "Approved", denied: "Denied", expired: "Expired" }[approval.status as "approved"]}</span>
+        <span className="text-meta text-muted">{(takeover ? { approved: "Handed back", denied: "Cancelled", expired: "Expired" } : { approved: "Approved", denied: "Denied", expired: "Expired" })[approval.status as "approved"]}</span>
       )}
       {error && <span className="text-meta text-danger">{error}</span>}
     </div>

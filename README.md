@@ -116,6 +116,26 @@ time out, and Stop kills their whole process group. Commands that push, publish,
 send data out, or wipe the workspace need your approval. Turn a computer off from
 its panel; it starts again on demand.
 
+### The browser
+
+Each computer also runs a real Chromium that Colony drives with Playwright.
+- Bots read a page as numbered elements, then click, type, scroll and go back.
+- It can only reach the public web. Your PC and local network are blocked.
+- Its logins persist in `data/bots/<id>/browser`, outside the workspace.
+- Clicks that would send something ask for approval first. That means submitting
+  a POST form, or buttons like Send, Buy or Delete.
+- Bots never type passwords, 2FA codes or payment details. They hand the browser
+  to you (`browser_ask_user`) and wait.
+
+Watch the browser live in the computer panel's **Browser** tab. Tap **Take over**
+to click, type and scroll yourself. On a phone, the page switches to its mobile
+layout while you're in control. You can also open a Bot's browser yourself to
+sign in to a site ahead of time.
+
+The image is about 1.8 GB with the browser and fonts. After an image update,
+each computer is rebuilt on its next use; `/workspace` and browser logins are
+kept.
+
 ## Web search (self-hosted Firecrawl)
 
 Bots call your Firecrawl API directly (`COLONY_FIRECRAWL_URL`, default

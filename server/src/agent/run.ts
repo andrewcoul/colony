@@ -111,6 +111,7 @@ export class AgentRunner {
     const steps: Step[] = [];
     let error: string | null = null;
     let lastSave = 0;
+    let afterTool = false;
 
     const save = (force = false) => {
       const now = Date.now();
@@ -151,18 +152,23 @@ export class AgentRunner {
 
       for await (const part of result.fullStream) {
         switch (part.type) {
-          case "text-delta":
-            text += part.text;
+          case "text-delta": {
+            // Text written after a tool call starts a new paragraph, not the same sentence.
+            const delta = afterTool && text && !text.endsWith("\n") && part.text.trim() ? `\n\n${part.text.trimStart()}` : part.text;
+            if (part.text.trim()) afterTool = false;
+            text += delta;
             this.store.setPresence(botId, "working", "Writing a reply");
-            this.events.broadcast({ type: "message.delta", messageId, chatId, text: part.text });
+            this.events.broadcast({ type: "message.delta", messageId, chatId, text: delta });
             save();
             break;
+          }
           case "reasoning-delta":
             reasoning += part.text;
             this.events.broadcast({ type: "message.delta", messageId, chatId, text: "", reasoning: part.text });
             save();
             break;
           case "tool-call": {
+            afterTool = true;
             const spec = registry[part.toolName];
             const title = spec ? safe(() => spec.describe(part.input), part.toolName) : part.toolName;
             steps.push({ id: part.toolCallId, tool: part.toolName, title, status: "running", startedAt: Date.now() });

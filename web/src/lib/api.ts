@@ -13,6 +13,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
+export type BrowserInput =
+  | { type: "click"; x: number; y: number }
+  | { type: "type"; text: string }
+  | { type: "key"; key: string }
+  | { type: "scroll"; dy: number }
+  | { type: "navigate"; url: string }
+  | { type: "back" }
+  | { type: "viewport"; mobile: boolean };
+
 export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
 
 export type RoutineInput = { title: string; prompt: string; schedule: Schedule; enabled?: boolean };
@@ -35,6 +44,8 @@ export const api = {
   files: (botId: string, path = "") => request<FileEntry[]>("GET", `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
+  openBrowser: (botId: string) => request<{ open: boolean; url: string | null }>("POST", `/bots/${botId}/browser/open`),
+  browserInput: (botId: string, input: BrowserInput) => request<void>("POST", `/bots/${botId}/browser/input`, input),
   createRoutine: (botId: string, input: RoutineInput) => request<Routine>("POST", `/bots/${botId}/routines`, input),
   updateRoutine: (id: string, patch: Partial<RoutineInput>) => request<Routine>("PATCH", `/routines/${id}`, patch),
   deleteRoutine: (id: string) => request<void>("DELETE", `/routines/${id}`),

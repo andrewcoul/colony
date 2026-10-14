@@ -8,7 +8,8 @@ import { plainText, type Store } from "./store.js";
 import type { Message } from "./shared/types.js";
 
 export type PushSubscriptionInput = { endpoint: string; keys: { p256dh: string; auth: string } };
-type Notification = { title: string; body: string; chatId: string | null; tag: string };
+/** `path` overrides where a tap opens (default: the chat). */
+type Notification = { title: string; body: string; chatId: string | null; tag: string; path?: string };
 
 /** Only notify about replies that finished recently (not old messages touched later). */
 const FRESH_MS = 30 * 60_000;
@@ -40,7 +41,9 @@ export class PushService {
       if (event.type === "message.upserted") this.onMessage(event.message);
       else if (event.type === "approval.upserted" && event.approval.status === "pending") {
         const bot = this.store.getBot(event.approval.botId);
-        if (bot) void this.notify({ title: `${bot.name} needs you`, body: event.approval.summary, chatId: event.approval.chatId, tag: `approval-${event.approval.id}` });
+        // A browser takeover opens straight into that Bot's browser.
+        const path = event.approval.tool === "browser_takeover" ? `${bot?.chatId}/browser` : undefined;
+        if (bot) void this.notify({ title: `${bot.name} needs you`, body: event.approval.summary, chatId: event.approval.chatId, tag: `approval-${event.approval.id}`, path });
       }
     });
   }
@@ -96,7 +99,7 @@ export class PushService {
   async notify(notification: Notification, { force = false } = {}) {
     if (!force && notification.chatId && this.watching(notification.chatId)) return 0;
     const rows = this.db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions").all() as { endpoint: string; p256dh: string; auth: string }[];
-    const payload = JSON.stringify({ title: notification.title, body: notification.body, tag: notification.tag, url: notification.chatId ? `/#/chat/${notification.chatId}` : "/" });
+    const payload = JSON.stringify({ title: notification.title, body: notification.body, tag: notification.tag, url: notification.path || notification.chatId ? `/#/chat/${notification.path ?? notification.chatId}` : "/" });
     let delivered = 0;
     await Promise.all(rows.map(async (row) => {
       try {

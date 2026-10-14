@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { Composer } from "./Composer";
-import { ComputerPanel } from "./ComputerPanel";
+import { ComputerPanel, type ComputerTab } from "./ComputerPanel";
 import { Face } from "./Face";
 import { GroupFaces } from "./Roster";
 import { RoutinesPanel } from "./RoutinesPanel";
@@ -27,12 +27,18 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
   const [hasOlder, setHasOlder] = useState(true);
-  const [panel, setPanel] = useState<"computer" | "routines" | null>(null);
+  // "#/chat/<id>/browser" (from a takeover card or notification) opens straight to the browser.
+  const [panel, setPanel] = useState<"computer" | "routines" | null>(() => (location.hash.endsWith("/browser") ? "computer" : null));
+  const [computerTab, setComputerTab] = useState<ComputerTab>(() => (location.hash.endsWith("/browser") ? "browser" : "terminal"));
   const togglePanel = (name: "computer" | "routines") => setPanel((current) => (current === name ? null : name));
   const members = useMemo(() => chat.memberIds.map((id) => botMap[id]).filter(Boolean) as Bot[], [chat.memberIds, botMap]);
   const bot = chat.kind === "bot" ? members[0] : undefined;
   const routineCount = useLive((s) => (bot ? Object.values(s.routines).filter((routine) => routine.botId === bot.id && routine.enabled).length : 0));
   const busy = messages.some((message) => message.status === "streaming");
+  const openBrowser = (botId: string) => {
+    if (bot?.id === botId) { setComputerTab("browser"); setPanel("computer"); }
+    else if (botMap[botId]) onOpenChat(`${botMap[botId].chatId}/browser`);
+  };
   const last = messages.at(-1);
   const { ref, onScroll, atBottom, scrollToBottom, unpin } = useStickToBottom(`${messages.length}:${last?.text.length}:${last?.steps.length}:${last?.cards.length}`);
 
@@ -110,7 +116,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
             )}
             {messages.map((message) => (
               <MessageItem key={message.id} message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"}
-                onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} />
+                onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser} />
             ))}
           </div>
         </div>
@@ -138,7 +144,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       </div>
       )}
     </section>
-    {bot && panel === "computer" && <ComputerPanel bot={bot} phone={phone} onClose={() => setPanel(null)} />}
+    {bot && panel === "computer" && <ComputerPanel bot={bot} phone={phone} tab={computerTab} onTab={setComputerTab} onClose={() => setPanel(null)} />}
     {bot && panel === "routines" && <RoutinesPanel bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
     </div>
   );

@@ -6,8 +6,10 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { ApprovalGate } from "./agent/approvals.js";
 import { AgentRunner } from "./agent/run.js";
+import { browserTools } from "./agent/browserTools.js";
 import { computerTools } from "./agent/computerTools.js";
 import { coreTools } from "./agent/tools.js";
+import { BrowserService } from "./computer/browser.js";
 import { ComputerService } from "./computer/docker.js";
 import { tailnetOnly } from "./access.js";
 import { createApi } from "./api.js";
@@ -41,7 +43,8 @@ store.recoverAfterRestart();
 const gate = new ApprovalGate(store);
 const computer = new ComputerService(store, events);
 void computer.syncStates();
-const computerToolset = computerTools(computer);
+const browser = new BrowserService(computer);
+const computerToolset = { ...computerTools(computer), ...browserTools(browser) };
 const runner = new AgentRunner(store, events, gate, (botId) => (store.getBot(botId)?.computer ? { ...coreTools, ...computerToolset } : coreTools));
 const routines = new RoutineScheduler(store, runner);
 routines.start();
@@ -49,7 +52,7 @@ const push = new PushService(db, store, events);
 
 const app = new Hono();
 app.use(tailnetOnly(config.allowedUsers));
-app.route("/api", createApi({ store, events, gate, runner, computer, routines, push }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, routines, push }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
