@@ -60,8 +60,9 @@ Start-ScheduledTask -TaskName Colony                                    # start 
 powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Remove  # uninstall
 ```
 
-Output goes to `data\colony.log`. Rebuild (`npm run build`) after pulling changes,
-then restart the task.
+`scriptsun.ps1` keeps Colony running: it restarts it within 10 seconds if it exits,
+starts Docker Desktop if needed, and logs to `data\colony.log`. After pulling changes:
+`npm run build; Stop-ScheduledTask Colony; Start-ScheduledTask Colony`.
 
 ## Use it from your phone (Tailscale)
 
@@ -157,6 +158,9 @@ npm run dev      # server on 8787 (restarts on change) + Vite on http://localhos
 npm run check    # TypeScript, server and web
 npm test         # Vitest: agent runs against a scripted model, approvals, routines, push, policies
 ```
+
+To develop while your real Colony keeps running, give the dev copy its own data and ports:
+`$env:COLONY_DATA_DIR="data-dev"; $env:COLONY_PORT="8790"; $env:COLONY_WEB_PORT="5181"; npm run dev`.
 
 To try the dev build on your phone, run `tailscale serve --bg --https=8443 http://127.0.0.1:5180`.
 Vite accepts `*.ts.net` hosts.
