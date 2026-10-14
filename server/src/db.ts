@@ -87,6 +87,7 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL
   );
   `,
+  `ALTER TABLE bots ADD COLUMN desktop INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export type Db = DatabaseSync;

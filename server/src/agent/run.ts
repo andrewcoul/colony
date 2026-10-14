@@ -1,8 +1,11 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
+import { restoreToolsetNames } from "./anthropicCompat.js";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { APICallError, stepCountIs, streamText, type LanguageModel, type ModelMessage } from "ai";
 import { config } from "../config.js";
-import { resolveModel, type ModelTarget } from "../settings.js";
+import type { DesktopService, DesktopShot } from "../computer/desktop.js";
+import { canDriveDesktop, resolveModel, type ModelTarget } from "../settings.js";
+import { claudeComputer, genericDesktopTools, prepareDesktopMessages, type DesktopMode } from "./desktopTools.js";
 import type { EventLog } from "../events.js";
 import type { Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
@@ -20,7 +23,8 @@ export const defaultModelFactory: ModelFactory = ({ provider, model }, sessionId
   };
   // Claude speaks Anthropic's Messages API; everything else here is OpenAI-compatible.
   if (provider.protocol === "anthropic") {
-    return createAnthropic({ baseURL: provider.baseURL, apiKey: provider.apiKey, headers }).languageModel(model);
+    // restoreToolsetNames: some gateways drop the field that routes computer actions to the computer tool.
+    return createAnthropic({ baseURL: provider.baseURL, apiKey: provider.apiKey, headers, fetch: restoreToolsetNames }).languageModel(model);
   }
   return createOpenAICompatible({
     name: provider.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "provider",
@@ -54,7 +58,14 @@ export class AgentRunner {
     private gate: ApprovalGate,
     private tools: (botId: string) => ToolRegistry = () => coreTools,
     private modelFactory: ModelFactory = defaultModelFactory,
+    private desktop?: DesktopService,
   ) {}
+
+  /** How this Bot drives its desktop on this model, or null when it doesn't. */
+  private desktopMode(bot: { desktop: boolean; computer: boolean }, target: ModelTarget | null): DesktopMode | null {
+    if (!this.desktop || !bot.computer || !bot.desktop || !target || !canDriveDesktop(target)) return null;
+    return target.provider.protocol === "anthropic" && /claude/i.test(target.model) ? "claude" : "generic";
+  }
 
   isRunning(chatId: string, botId?: string) {
     return [...this.active.values()].some((run) => run.chatId === chatId && (!botId || run.botId === botId));
@@ -145,17 +156,29 @@ export class AgentRunner {
       const { message_bot: _, ...withoutMessaging } = this.tools(botId);
       const registry = options.depth ? withoutMessaging : this.tools(botId);
       const depth = options.depth ?? 0;
+      let latestShot: DesktopShot | null = null;
       const ctx: ToolContext = {
         botId, botName: bot.name, chatId, messageId, signal: controller.signal, gate: this.gate, store: this.store, depth,
         consult: (toId, message) => this.consult(botId, toId, message, controller.signal, depth),
+        attachScreenshot: (shot) => { latestShot = shot; },
       };
+      const desktopMode = this.desktopMode(bot, target);
+      if (desktopMode === "claude") registry.computer = claudeComputer(this.desktop!, ctx);
+      if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
       const result = streamText({
         model: this.modelFactory(target, `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId)),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode),
         messages: history,
         tools: toToolSet(registry, ctx),
-        stopWhen: stepCountIs(config.limits.maxSteps),
+        // Desktop work takes many small steps; screenshots are pruned so they stay affordable.
+        ...(desktopMode ? { prepareStep: ({ messages }: { messages: ModelMessage[] }) => ({ messages: prepareDesktopMessages(messages, latestShot) }) } : {}),
+        stopWhen: stepCountIs(desktopMode ? config.limits.maxDesktopSteps : config.limits.maxSteps),
         maxOutputTokens: config.limits.maxOutputTokens,
+        // Gateways can route steps of one run to different upstream accounts, which invalidates
+        // Claude's signed thinking blocks; drop a mismatched block instead of failing the reply.
+        ...(target?.provider.protocol === "anthropic"
+          ? { providerOptions: { anthropic: { thinking: { type: "adaptive", blockBinding: { prefixMismatchBehavior: "drop_block" } } } } }
+          : {}),
         maxRetries: 2,
         abortSignal: controller.signal,
       });

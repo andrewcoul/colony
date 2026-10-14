@@ -5,6 +5,7 @@ import { api, type FileEntry } from "../lib/api";
 import { onComputerOutput } from "../lib/live";
 import { cn } from "../lib/utils";
 import { BrowserView } from "./BrowserView";
+import { ScreenView } from "./ScreenView";
 import { SidePanel } from "./SidePanel";
 import { Button } from "./ui/button";
 
@@ -14,7 +15,7 @@ const clean = (text: string) => text.replace(ANSI, "").replace(/\r(?!\n)/g, "");
 
 const STATE_LABEL = { off: "Off", starting: "Starting…", on: "On", error: "Couldn't start" } as const;
 
-export type ComputerTab = "terminal" | "browser" | "files";
+export type ComputerTab = "screen" | "terminal" | "browser" | "files";
 
 /** The Bot's own computer: a live terminal, its browser, and its /workspace files. */
 export function ComputerPanel({ bot, phone, tab, onTab, onClose }: {
@@ -37,14 +38,14 @@ export function ComputerPanel({ bot, phone, tab, onTab, onClose }: {
         <Button size="icon-sm" aria-label="Close" onClick={onClose}><X size={16} /></Button>
       </div>
       <div className="flex rounded-full bg-raised p-[3px]" role="tablist">
-        {(["terminal", "browser", "files"] as const).map((name) => (
+        {(["screen", "terminal", "browser", "files"] as const).map((name) => (
           <button key={name} type="button" role="tab" aria-selected={tab === name} onClick={() => setTab(name)}
             className={cn("h-7 flex-1 rounded-full text-meta capitalize", tab === name ? "bg-ground text-ink" : "text-muted hover:text-ink")}>
             {name}
           </button>
         ))}
       </div>
-      {tab === "terminal" ? <Terminal bot={bot} /> : tab === "browser" ? <BrowserView bot={bot} phone={phone} /> : <Files botId={bot.id} />}
+      {tab === "screen" ? <ScreenView bot={bot} /> : tab === "terminal" ? <Terminal bot={bot} /> : tab === "browser" ? <BrowserView bot={bot} phone={phone} /> : <Files botId={bot.id} />}
       <span className="truncate text-meta text-muted">Docker · colony-{bot.id.slice(0, 8)} · /workspace persists</span>
     </SidePanel>
   );

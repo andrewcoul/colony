@@ -36,6 +36,8 @@ export const config = {
   limits: {
     historyMessages: 40,
     maxSteps: 25,
+    /** Desktop work is many small actions (look, click, type). */
+    maxDesktopSteps: 80,
     memoryChars: 4000,
     userChars: 2000,
     maxOutputTokens: 8192,

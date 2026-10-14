@@ -6,8 +6,10 @@ import * as settings from "./settings.js";
 import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
-import type { AgentRunner } from "./agent/run.js";
+import { checkDesktop, type DesktopVerdict } from "./agent/desktopCheck.js";
+import { defaultModelFactory, type AgentRunner, type ModelFactory } from "./agent/run.js";
 import type { BrowserService } from "./computer/browser.js";
+import type { DesktopService } from "./computer/desktop.js";
 import type { ComputerService } from "./computer/docker.js";
 import type { PushService } from "./push.js";
 import type { RoutineScheduler } from "./routines.js";
@@ -18,7 +20,9 @@ import type { AppState } from "./shared/types.js";
 
 export type Services = {
   store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner;
-  computer?: ComputerService; browser?: BrowserService; routines?: RoutineScheduler; push?: PushService;
+  computer?: ComputerService; browser?: BrowserService; desktop?: DesktopService; routines?: RoutineScheduler; push?: PushService;
+  /** The model client used by the desktop check (tests pass a scripted one). */
+  modelFactory?: ModelFactory;
 };
 
 const schedule = z.discriminatedUnion("type", [
@@ -41,6 +45,7 @@ const botFields = {
   faceSeed: z.string().trim().max(60),
   model: z.string().max(200),
   computer: z.boolean(),
+  desktop: z.boolean(),
 };
 const botInput = z.object({
   ...botFields,
@@ -49,7 +54,18 @@ const botInput = z.object({
   faceSeed: botFields.faceSeed.optional(),
   model: botFields.model.optional(),
   computer: botFields.computer.default(false),
+  desktop: botFields.desktop.default(false),
 });
+
+/** Why this combination can't drive a desktop, if it can't. */
+function desktopProblem(computer: boolean, desktop: boolean, model: string | undefined) {
+  if (!desktop) return null;
+  if (!computer) return "The desktop needs the Bot's own computer.";
+  if (!settings.canDriveDesktop(settings.resolveModel(model))) {
+    return "That model can't drive a desktop. Pick one marked for desktop use, or run the desktop check in Settings.";
+  }
+  return null;
+}
 // No defaults here: a patch must only change the fields it names.
 const botPatch = z.object(botFields).partial();
 
@@ -63,7 +79,7 @@ function addressedBots(text: string, memberIds: string[], store: Store, coordina
   return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
 }
 
-export function createApi({ store, events, gate, runner, computer, browser, routines, push }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, modelFactory = defaultModelFactory }: Services) {
   const api = new Hono();
 
   api.onError((error, c) => {
@@ -93,6 +109,8 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
   // ---------- Bots ----------
   api.post("/bots", async (c) => {
     const input = botInput.parse(await c.req.json());
+    const problem = desktopProblem(input.computer, input.desktop, input.model);
+    if (problem) return c.json({ error: problem }, 400);
     const bot = store.createBot({ ...input, model: settings.resolveModel(input.model)?.ref ?? "" });
     files.initBotFolder(bot);
     try { runner.start(bot.chatId, bot.id, { hiddenPrompt: INTRO_PROMPT }); } catch { /* no model yet: the Bot still exists */ }
@@ -102,6 +120,10 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
   api.patch("/bots/:id", async (c) => {
     const patch = botPatch.parse(await c.req.json());
     if (patch.model && !settings.resolveModel(patch.model, { fallback: false })) return c.json({ error: "That model isn't in Settings." }, 400);
+    const current = store.getBot(c.req.param("id"))!;
+    const computerOn = patch.computer ?? current.computer;
+    const problem = desktopProblem(computerOn, computerOn && (patch.desktop ?? current.desktop), patch.model ?? current.model);
+    if (problem) return c.json({ error: problem }, 400);
     const bot = store.updateBot(c.req.param("id"), { ...patch, ...(patch.model ? { model: settings.resolveModel(patch.model)!.ref } : {}) });
     return bot ? c.json(bot) : c.json({ error: "Bot not found." }, 404);
   });
@@ -127,6 +149,40 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     await browser?.close(c.req.param("id"));
     await computer?.stop(c.req.param("id"));
     return c.body(null, 204);
+  });
+
+  // ---------- Screen: the Bot's desktop, live in Cua's viewer ----------
+  /** A fresh viewer link (starts the computer if needed). The ticket is in the URL fragment. */
+  api.get("/bots/:id/screen-link", async (c) => {
+    const bot = store.getBot(c.req.param("id"))!;
+    if (!bot.computer || !desktop) return c.json({ error: "This Bot has no computer." }, 400);
+    return c.json(await desktop.viewerLink(bot.id));
+  });
+  /** The viewer page and its gRPC-Web calls, proxied to the desktop. (Its video WebSocket is proxied in index.ts.) */
+  api.all("/bots/:id/screen/*", async (c) => {
+    const bot = store.getBot(c.req.param("id"))!;
+    const port = bot.computer ? await computer?.runningDesktopPort(bot.id) : null;
+    if (!port) return c.json({ error: "The computer is off. Open the Screen tab to start it." }, 503);
+    const url = new URL(c.req.url);
+    const rest = /\/screen(\/.*)$/.exec(url.pathname)?.[1] ?? "/";
+    const headers = new Headers(c.req.raw.headers);
+    for (const name of ["host", "connection", "cookie", "origin", "referer"]) headers.delete(name);
+    const upstream = await fetch(`http://127.0.0.1:${port}${rest}${url.search}`, {
+      method: c.req.method,
+      headers,
+      body: c.req.method === "GET" || c.req.method === "HEAD" ? undefined : c.req.raw.body,
+      redirect: "manual",
+      ...({ duplex: "half" } as object),
+    });
+    const answer = new Headers(upstream.headers);
+    // fetch already decoded the body.
+    answer.delete("content-encoding");
+    answer.delete("content-length");
+    // The viewer forbids all framing; it's served from Colony's own origin, so let Colony's Screen tab
+    // (and only Colony) embed it. The rest of its security policy is kept as is.
+    const policy = answer.get("content-security-policy");
+    if (policy) answer.set("content-security-policy", policy.replace("frame-ancestors 'none'", "frame-ancestors 'self'"));
+    return new Response(upstream.body, { status: upstream.status, headers: answer });
   });
 
   // ---------- Browser: live view and takeover ----------
@@ -278,6 +334,8 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     protocol: z.enum(["openai", "anthropic"]).optional(),
     apiKey: z.string().max(500).optional(),
     models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(60),
+    /** Models that can drive a desktop (set by the desktop check or by hand). */
+    desktop: z.array(z.string().trim().min(1).max(200)).max(60).optional(),
   });
   const settingsChanged = () => {
     const view = settings.settingsView();
@@ -303,6 +361,22 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     try { settings.setDefaultModel(model); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }
     return c.json(settingsChanged());
   });
+  /** Tests which of a provider's models can drive a desktop, and records the verdicts. */
+  api.post("/settings/providers/:id/desktop-check", async (c) => {
+    const id = c.req.param("id");
+    const provider = settings.providerById(id);
+    if (!provider) return c.json({ error: "That provider no longer exists." }, 404);
+    const { models } = z.object({ models: z.array(z.string().max(200)).max(60).optional() }).parse(await c.req.json().catch(() => ({})));
+    const queue = (models ?? provider.models).filter((model) => provider.models.includes(model));
+    const results: DesktopVerdict[] = [];
+    for (let start = 0; start < queue.length; start += 4) {
+      results.push(...await Promise.all(queue.slice(start, start + 4).map((model) =>
+        checkDesktop(settings.resolveModel(settings.modelRef(id, model), { fallback: false })!, modelFactory))));
+    }
+    settings.setDesktopModels(id, Object.fromEntries(results.filter((result) => !result.error).map((result) => [result.model, result.canDrive])));
+    return c.json({ results, settings: settingsChanged() });
+  });
+
   api.post("/settings/providers/check", async (c) => {
     const { providerId, baseURL, protocol, apiKey } = z.object({
       providerId: z.string().max(40).optional(),

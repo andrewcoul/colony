@@ -8,8 +8,19 @@ export function modelLabel(ref: string, models: ModelOption[]) {
   return option ? `${option.providerName} · ${option.model}` : ref.split("::").pop() || ref;
 }
 
-/** A Bot's model: any model from any provider in Settings, grouped by provider. */
-export function ModelPicker({ value, onChange }: { value: string; onChange: (model: string) => void }) {
+/** A model to switch to when turning on the desktop: the default if it can drive one, else the first that can. */
+export function desktopModel(models: ModelOption[], current: string, defaultModel: string) {
+  const can = (ref: string) => models.some((item) => item.ref === ref && item.desktop);
+  if (can(current)) return current;
+  if (can(defaultModel)) return defaultModel;
+  return models.find((item) => item.desktop)?.ref ?? null;
+}
+
+/**
+ * A Bot's model: any model from any provider in Settings, grouped by provider. While the desktop
+ * is on, models that can't drive one are disabled.
+ */
+export function ModelPicker({ value, onChange, desktopOnly = false }: { value: string; onChange: (model: string) => void; desktopOnly?: boolean }) {
   const models = useLive((s) => s.models);
   const defaultModel = useLive((s) => s.defaultModel);
   // A Bot can point at a model that was since removed from Settings; it then runs on the default.
@@ -25,7 +36,11 @@ export function ModelPicker({ value, onChange }: { value: string; onChange: (mod
           {!models.length && <option value="">No models yet</option>}
           {groups.map((group) => (
             <optgroup key={group[0].providerId} label={group[0].providerName}>
-              {group.map((item) => <option key={item.ref} value={item.ref}>{item.model}{item.ref === defaultModel ? " · default" : ""}</option>)}
+              {group.map((item) => (
+                <option key={item.ref} value={item.ref} disabled={desktopOnly && !item.desktop}>
+                  {item.model}{item.ref === defaultModel ? " · default" : ""}{desktopOnly && !item.desktop ? " · can't drive the desktop" : ""}
+                </option>
+              ))}
             </optgroup>
           ))}
         </select>

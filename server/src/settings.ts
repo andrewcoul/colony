@@ -10,9 +10,15 @@ import type { ModelOption } from "./shared/types.js";
  */
 export type Protocol = "openai" | "anthropic";
 
-/** One provider: its address, API format, key, and the models you've picked from it. */
-export type Provider = { id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[] };
-export type ProviderInput = { name: string; baseURL: string; protocol?: Protocol; apiKey?: string; models: string[] };
+/**
+ * One provider: its address, API format, key, the models you've picked from it, and which of
+ * those can drive a desktop (read a screenshot and point accurately).
+ */
+export type Provider = { id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[]; desktop: string[] };
+export type ProviderInput = { name: string; baseURL: string; protocol?: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
+
+/** Claude models on Anthropic's API can drive a desktop; others are marked by the desktop check (or by hand). */
+const defaultDesktop = (protocol: Protocol, models: string[]) => (protocol === "anthropic" ? models.filter((model) => /claude/i.test(model)) : []);
 export type ModelTarget = { provider: Provider; model: string; ref: string };
 
 /** What devices see. Keys never leave the server. */
@@ -38,7 +44,7 @@ const hostName = (url: string) => { try { return new URL(url).hostname; } catch 
 export function loadSettings() {
   const env = config.model;
   providers = env.baseURL && env.models.length
-    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), protocol: "openai", apiKey: env.apiKey, models: [...env.models] }]
+    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), protocol: "openai", apiKey: env.apiKey, models: [...env.models], desktop: [] }]
     : [];
   defaultRef = "";
   source = "env";
@@ -50,10 +56,13 @@ export function loadSettings() {
       model?: { providerName: string; baseURL: string; apiKey: string; models: string[] };
     };
     if (saved.providers) {
-      providers = saved.providers.map((provider) => ({ ...provider, protocol: provider.protocol ?? "openai" }));
+      providers = saved.providers.map((provider) => {
+        const protocol = provider.protocol ?? "openai";
+        return { ...provider, protocol, desktop: provider.desktop ?? defaultDesktop(protocol, provider.models) };
+      });
       defaultRef = saved.defaultModel ?? "";
     } else if (saved.model) {
-      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), protocol: "openai", apiKey: saved.model.apiKey, models: saved.model.models }];
+      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), protocol: "openai", apiKey: saved.model.apiKey, models: saved.model.models, desktop: [] }];
     }
     source = "app";
   } catch { /* Nothing saved yet: .env values stand. */ }
@@ -103,7 +112,27 @@ export function resolveModel(requested: string | undefined, { fallback = true } 
 export const modelConfigured = () => Boolean(find(defaultRef));
 
 export function modelOptions(): ModelOption[] {
-  return providers.flatMap((provider) => provider.models.map((model) => ({ ref: modelRef(provider.id, model), providerId: provider.id, providerName: provider.name, model })));
+  return providers.flatMap((provider) => provider.models.map((model) => ({
+    ref: modelRef(provider.id, model), providerId: provider.id, providerName: provider.name, model, desktop: provider.desktop.includes(model),
+  })));
+}
+
+export const providerById = (id: string) => providers.find((item) => item.id === id) ?? null;
+
+/** Whether this model can drive a desktop. */
+export const canDriveDesktop = (target: ModelTarget | null) => Boolean(target?.provider.desktop.includes(target.model));
+
+/** Records the desktop check's verdicts for some of a provider's models. */
+export function setDesktopModels(providerId: string, verdicts: Record<string, boolean>) {
+  const provider = providers.find((item) => item.id === providerId);
+  if (!provider) throw new Error("That provider no longer exists.");
+  const desktop = new Set(provider.desktop);
+  for (const [model, can] of Object.entries(verdicts)) {
+    if (!provider.models.includes(model)) continue;
+    if (can) desktop.add(model); else desktop.delete(model);
+  }
+  provider.desktop = provider.models.filter((model) => desktop.has(model));
+  persist();
 }
 
 export function defaultModel() {
@@ -128,13 +157,22 @@ export function saveProvider(id: string | null, input: ProviderInput) {
   if (id && !existing) throw new Error("That provider no longer exists.");
   const baseURL = normalizeURL(input.baseURL);
   const keepKey = existing && normalizeURL(existing.baseURL) === baseURL;
+  const protocol = input.protocol ?? existing?.protocol ?? "openai";
+  const models = [...new Set(input.models.map((item) => item.trim()).filter(Boolean))];
+  // New Claude models on Anthropic's API start out able to drive a desktop; kept verdicts stay.
+  const known = new Set(existing?.models ?? []);
+  const desktop = input.desktop ?? [
+    ...(existing?.desktop ?? []),
+    ...defaultDesktop(protocol, models.filter((model) => !known.has(model))),
+  ];
   const next: Provider = {
     id: existing?.id ?? `p${randomBytes(4).toString("hex")}`,
     name: input.name.trim() || hostName(baseURL),
     baseURL,
-    protocol: input.protocol ?? existing?.protocol ?? "openai",
+    protocol,
     apiKey: input.apiKey?.trim() || (keepKey ? existing.apiKey : ""),
-    models: [...new Set(input.models.map((item) => item.trim()).filter(Boolean))],
+    models,
+    desktop: models.filter((model) => desktop.includes(model)),
   };
   providers = existing ? providers.map((item) => (item.id === next.id ? next : item)) : [...providers, next];
   ensureDefault();

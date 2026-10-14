@@ -127,19 +127,52 @@ Bots and their computers.
 ## Bot computers
 
 Each Bot with **Own computer** turned on gets the container `colony-<id>` from the
-`colony-computer` image (Debian, Node 22, Python 3, git, ripgrep). Its limits:
+`colony-computer` image. The image is built on [Cua](https://cua.ai)'s Ubuntu 24.04
+desktop (XFCE, plus `cua-spacesd` for screenshots, input and a live viewer), with
+Node 22, Python 3, git and ripgrep added. Its limits:
 - 2 GB of memory, 2 CPUs and 512 processes
 - all Linux capabilities dropped except a few that file ownership needs
 - `no-new-privileges`
 
-`data/bots/<id>/workspace` is mounted at `/workspace` and persists. Commands
-time out, and Stop kills their whole process group. Commands that push, publish,
-send data out, or wipe the workspace need your approval. Turn a computer off from
-its panel; it starts again on demand.
+`data/bots/<id>/workspace` is mounted at `/workspace` and persists. Commands run
+as the desktop user, time out, and Stop kills their whole process group. Commands
+that push, publish, send data out, or wipe the workspace need your approval. Turn
+a computer off from its panel; it starts again on demand.
+
+The computer panel has four tabs: **Screen** (the live desktop), **Terminal**,
+**Browser** and **Files**.
+
+The image is about 2.3 GB. After an image update, each computer is rebuilt on its
+next use; `/workspace` and browser logins are kept. Cua's usage data is switched
+off (`DO_NOT_TRACK=1`).
+
+### The desktop
+
+Turn on **Desktop control** in a Bot's profile to let it see the screen and use the
+mouse and keyboard, like a person at the computer.
+- Only models that can drive a desktop can be picked while it's on. The others are
+  disabled.
+- Claude models (Anthropic format) are marked automatically and use Claude's own
+  computer-use actions.
+- Any other model can be marked by **Test desktop skills** in Settings. It shows
+  each model a screenshot and checks that it reads the screen and clicks within a
+  few pixels; you can also mark models by hand. Those models get Colony's
+  screenshot, click, type, key and scroll tools.
+- A desktop run can take up to 80 steps. Only the newest screenshots are sent to
+  the model, to keep it affordable.
+
+Watch it in the **Screen** tab: Cua's viewer, served through Colony, with video,
+mouse, keyboard and touch. Tap in to take over; you and the Bot share one screen.
+Each viewer link carries a short-lived ticket in the URL fragment, and the desktop
+is only reachable through Colony.
+
+The viewer is source-available (FSL-1.1-MIT, free to use) as part of Cua Spaces;
+the rest of Cua that Colony uses is MIT.
 
 ### The browser
 
-Each computer also runs a real Chromium that Colony drives with Playwright.
+Each computer also runs a real Chromium, in a window on the desktop, that Colony
+drives with Playwright.
 - Bots read a page as numbered elements, then click, type, scroll and go back.
 - It can only reach the public web. Your PC and local network are blocked.
 - Its logins persist in `data/bots/<id>/browser`, outside the workspace.
@@ -148,14 +181,10 @@ Each computer also runs a real Chromium that Colony drives with Playwright.
 - Bots never type passwords, 2FA codes or payment details. They hand the browser
   to you (`browser_ask_user`) and wait.
 
-Watch the browser live in the computer panel's **Browser** tab. Tap **Take over**
-to click, type and scroll yourself. On a phone, the page switches to its mobile
-layout while you're in control. You can also open a Bot's browser yourself to
-sign in to a site ahead of time.
-
-The image is about 1.8 GB with the browser and fonts. After an image update,
-each computer is rebuilt on its next use; `/workspace` and browser logins are
-kept.
+Watch the browser live in the **Browser** tab. Tap **Take over** to click, type and
+scroll yourself. On a phone, the page switches to its mobile layout while you're
+in control. You can also open a Bot's browser yourself to sign in to a site ahead
+of time.
 
 ## Web search (self-hosted Firecrawl)
 

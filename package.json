@@ -15,7 +15,7 @@
     "check": "npm run check -w server && npm run check -w web",
     "test": "vitest run",
     "search:start": "docker compose -f firecrawl-mcp.compose.yml up -d --build",
-    "computer:build": "docker build -t colony-computer:2 computer"
+    "computer:build": "docker build -t colony-computer:3 computer"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",

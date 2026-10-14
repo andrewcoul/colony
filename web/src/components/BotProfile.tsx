@@ -5,6 +5,7 @@ import { api, type BotMemory } from "../lib/api";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
+import { DesktopToggle } from "./DesktopToggle";
 import { ModelPicker } from "./ModelPicker";
 import { SidePanel } from "./SidePanel";
 import { Button } from "./ui/button";
@@ -73,7 +74,7 @@ export function BotProfile({ bot, phone, onClose, onError }: { bot: Bot; phone: 
         </div>
 
         <div className="flex flex-col border-y border-rule">
-          <ModelPicker value={bot.model} onChange={(model) => update({ model })} />
+          <ModelPicker value={bot.model} onChange={(model) => update({ model })} desktopOnly={bot.desktop} />
           <label className="flex cursor-pointer items-center justify-between gap-4 py-3">
             <span className="flex flex-col gap-0.5"><span className="text-sm">Own computer</span><span className="text-meta text-muted">Terminal, files and a browser in Docker</span></span>
             <input type="checkbox" checked={bot.computer} onChange={(e) => update({ computer: e.target.checked })} className="sr-only" />
@@ -81,6 +82,7 @@ export function BotProfile({ bot, phone, onClose, onError }: { bot: Bot; phone: 
               <span className={cn("size-[18px] rounded-full", bot.computer ? "bg-on-ink" : "bg-muted")} />
             </span>
           </label>
+          <DesktopToggle computer={bot.computer} desktop={bot.desktop} model={bot.model} onChange={(patch) => update(patch)} />
         </div>
 
         <section className="flex flex-col gap-2">

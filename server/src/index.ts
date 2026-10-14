@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
@@ -10,8 +11,9 @@ import { browserTools } from "./agent/browserTools.js";
 import { computerTools } from "./agent/computerTools.js";
 import { coreTools } from "./agent/tools.js";
 import { BrowserService } from "./computer/browser.js";
+import { DesktopService } from "./computer/desktop.js";
 import { ComputerService } from "./computer/docker.js";
-import { tailnetOnly } from "./access.js";
+import { accessCheck, tailnetOnly } from "./access.js";
 import { createApi } from "./api.js";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
@@ -51,15 +53,16 @@ const gate = new ApprovalGate(store);
 const computer = new ComputerService(store, events);
 void computer.syncStates();
 const browser = new BrowserService(computer);
+const desktop = new DesktopService(computer);
 const computerToolset = { ...computerTools(computer), ...browserTools(browser) };
-const runner = new AgentRunner(store, events, gate, (botId) => (store.getBot(botId)?.computer ? { ...coreTools, ...computerToolset } : coreTools));
+const runner = new AgentRunner(store, events, gate, (botId) => (store.getBot(botId)?.computer ? { ...coreTools, ...computerToolset } : coreTools), undefined, desktop);
 const routines = new RoutineScheduler(store, runner);
 routines.start();
 const push = new PushService(db, store, events);
 
 const app = new Hono();
 app.use(tailnetOnly(config.allowedUsers));
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, routines, push }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -69,8 +72,31 @@ if (fs.existsSync(webDist)) {
   app.get("*", serveStatic({ path: path.join(root, "index.html") }));
 }
 
-serve({ fetch: app.fetch, hostname: config.host, port: config.port }, ({ address, port }) => {
+const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, ({ address, port }) => {
   console.log(`Colony is running at http://${address}:${port}`);
   console.log(`Data: ${config.dataDir}`);
   if (!modelConfigured()) console.log("No model configured yet: open Colony and add your API key in Settings.");
+});
+
+// The desktop viewer streams video over a WebSocket at /api/bots/<id>/screen/media. Hono doesn't
+// proxy upgrades, so pass them straight to the Bot's desktop, under the same access rules.
+const allowed = accessCheck(config.allowedUsers);
+server.on("upgrade", (request, socket, head) => {
+  const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
+  const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
+  const bot = match ? store.getBot(match[1]) : null;
+  if (!match || !bot?.computer || allowed(header)) { socket.destroy(); return; }
+  void computer.runningDesktopPort(bot.id).then((port) => {
+    if (!port) { socket.destroy(); return; }
+    const upstream = net.connect(port, "127.0.0.1", () => {
+      const headers = Object.entries(request.headers)
+        .filter(([name]) => !["host", "cookie", "origin", "referer"].includes(name))
+        .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(", ") : value}`);
+      upstream.write([`${request.method} ${match[2]}${match[3] ?? ""} HTTP/1.1`, `host: 127.0.0.1:${port}`, ...headers, "", ""].join("\r\n"));
+      if (head?.length) upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on("error", () => socket.destroy());
+    socket.on("error", () => upstream.destroy());
+  }, () => socket.destroy());
 });

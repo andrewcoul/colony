@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Plus, Server, Trash2, X } from "lucide-react";
-import { api, type Protocol, type ProviderView, type Settings } from "../lib/api";
+import { ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Monitor, Plus, Server, Trash2, X } from "lucide-react";
+import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settings } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
@@ -18,6 +18,13 @@ const PRESETS: { name: string; baseURL: string; protocol: Protocol }[] = [
   { name: "DeepSeek", baseURL: "https://api.deepseek.com/v1", protocol: "openai" },
   { name: "Ollama (this PC)", baseURL: "http://localhost:11434/v1", protocol: "openai" },
 ];
+
+/** One line on a desktop-check result. */
+const verdictText = (verdict: DesktopVerdict) => verdict.error ? `couldn't check (${verdict.error})`
+  : verdict.canDrive ? "reads the screen and clicks accurately"
+  : verdict.reads ? "reads the screen but misses its clicks"
+  : verdict.points ? "clicks well but misread the screen"
+  : "can't read screenshots";
 
 const sameURL = (a: string, b: string) => a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
 const hostOf = (url: string) => { try { return new URL(url).host; } catch { return url; } };
@@ -103,6 +110,10 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [models, setModels] = useState<string[]>(provider?.models ?? []);
+  // Which models can drive a desktop (set by the desktop check or by hand).
+  const [desktop, setDesktop] = useState<string[]>(provider?.desktop ?? []);
+  const [verdicts, setVerdicts] = useState<Record<string, DesktopVerdict>>({});
+  const [checking, setChecking] = useState(false);
   const [available, setAvailable] = useState<string[] | null>(null);
   const [draft, setDraft] = useState("");
   const [check, setCheck] = useState<{ state: "idle" | "checking" | "ok" | "error"; message?: string }>({ state: "idle" });
@@ -145,10 +156,22 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const input = { name: name.trim(), baseURL: baseURL.trim(), protocol, apiKey: apiKey.trim() || undefined, models };
+      const input = { name: name.trim(), baseURL: baseURL.trim(), protocol, apiKey: apiKey.trim() || undefined, models, desktop: desktop.filter((id) => models.includes(id)) };
       onSaved(provider ? await api.updateProvider(provider.id, input) : await api.addProvider(input));
     } catch (failure) { setError(message(failure, "Couldn't save.")); }
     finally { setBusy(false); }
+  }
+
+  async function runDesktopCheck() {
+    if (!provider) return;
+    setChecking(true); setError("");
+    try {
+      const { results, settings } = await api.desktopCheck(provider.id, models.filter((id) => provider.models.includes(id)));
+      setVerdicts(Object.fromEntries(results.map((result) => [result.model, result])));
+      const saved = settings.providers.find((item) => item.id === provider.id);
+      if (saved) setDesktop(saved.desktop);
+    } catch (failure) { setError(message(failure, "Couldn't run the desktop check.")); }
+    finally { setChecking(false); }
   }
 
   async function remove() {
@@ -203,16 +226,40 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
         {check.message && <span className={cn("min-w-0 text-meta", check.state === "error" ? "text-danger" : "text-mint")}>{check.message}</span>}
       </div>
 
-      <span className="mb-1.5 text-label text-muted">Models from this provider</span>
+      <span className="mb-1.5 text-label text-muted">Models from this provider <span className="text-meta">· <Monitor size={11} className="inline align-[-1px]" /> = can drive a desktop</span></span>
       <div className="mb-2 flex flex-wrap gap-1.5">
         {models.length === 0 && <span className="text-meta text-muted">None yet. Check the connection to pick from its list, or type a model id.</span>}
-        {models.map((id) => (
-          <span key={id} className="inline-flex max-w-full items-center gap-1 rounded-full border border-rule py-1 pr-1 pl-2.5 text-meta text-soft">
-            <span className="truncate font-mono">{id}</span>
-            <button type="button" aria-label={`Remove ${id}`} onClick={() => setModels(models.filter((item) => item !== id))} className="shrink-0 rounded-full p-0.5 text-muted hover:text-ink"><X size={12} /></button>
-          </span>
-        ))}
+        {models.map((id) => {
+          const drives = desktop.includes(id);
+          const verdict = verdicts[id];
+          return (
+            <span key={id} title={verdict ? verdictText(verdict) : undefined}
+              className={cn("inline-flex max-w-full items-center gap-1 rounded-full border py-1 pr-1 pl-1.5 text-meta", drives ? "border-sky/40 text-ink" : "border-rule text-soft")}>
+              <button type="button" aria-pressed={drives} aria-label={drives ? `${id} can drive a desktop (tap to unmark)` : `Mark ${id} as able to drive a desktop`}
+                onClick={() => setDesktop(drives ? desktop.filter((item) => item !== id) : [...desktop, id])}
+                className={cn("shrink-0 rounded-full p-0.5", drives ? "text-sky" : "text-muted/50 hover:text-ink")}><Monitor size={12} /></button>
+              <span className="truncate font-mono">{id}</span>
+              {verdict && <span className={cn("shrink-0", verdict.canDrive ? "text-mint" : "text-muted")}>{verdict.canDrive ? "✓" : verdict.error ? "!" : "✗"}</span>}
+              <button type="button" aria-label={`Remove ${id}`} onClick={() => setModels(models.filter((item) => item !== id))} className="shrink-0 rounded-full p-0.5 text-muted hover:text-ink"><X size={12} /></button>
+            </span>
+          );
+        })}
       </div>
+      {provider && models.length > 0 && (
+        <div className="mb-3 flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="pill" disabled={checking} onClick={() => void runDesktopCheck()}>
+              {checking ? <Loader2 size={14} className="animate-spin" /> : <Monitor size={14} />}Test desktop skills
+            </Button>
+            <span className="text-meta text-muted">{checking ? `Showing each model a screenshot… (about ${Math.ceil(models.length / 4) * 20}s)` : "Can each model read the screen and click accurately?"}</span>
+          </div>
+          {Object.values(verdicts).some((verdict) => !verdict.canDrive) && (
+            <ul className="m-0 list-none p-0 text-meta text-muted">
+              {Object.values(verdicts).filter((verdict) => !verdict.canDrive).map((verdict) => <li key={verdict.model}><span className="font-mono">{verdict.model}</span>: {verdictText(verdict)}</li>)}
+            </ul>
+          )}
+        </div>
+      )}
       <div className="mb-1 flex gap-1.5">
         <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={available?.length ? "Search this provider's models…" : protocol === "anthropic" ? "Model id, e.g. claude-haiku-5-5" : "Model id, e.g. deepseek/deepseek-v4.1-flash"}
           aria-label="Add a model" autoCapitalize="off" spellCheck={false} className="h-9 font-mono text-[13px]"

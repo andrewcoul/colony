@@ -30,7 +30,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   const [hasOlder, setHasOlder] = useState(true);
   // "#/chat/<id>/browser" (from a takeover card or notification) opens straight to the browser.
   const [panel, setPanel] = useState<"computer" | "routines" | "profile" | null>(() => (location.hash.endsWith("/browser") ? "computer" : null));
-  const [computerTab, setComputerTab] = useState<ComputerTab>(() => (location.hash.endsWith("/browser") ? "browser" : "terminal"));
+  const [computerTab, setComputerTab] = useState<ComputerTab>(() => (location.hash.endsWith("/browser") ? "browser" : "screen"));
   const togglePanel = (name: "computer" | "routines") => setPanel((current) => (current === name ? null : name));
   const members = useMemo(() => chat.memberIds.map((id) => botMap[id]).filter(Boolean) as Bot[], [chat.memberIds, botMap]);
   const bot = chat.kind === "bot" ? members[0] : undefined;

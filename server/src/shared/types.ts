@@ -15,6 +15,8 @@ export type Bot = {
   model: string;
   /** Whether the Bot has its own Docker computer. */
   computer: boolean;
+  /** Whether the Bot drives its computer's desktop (screen, mouse, keyboard). Needs a model that can. */
+  desktop: boolean;
   computerState: ComputerState;
   presence: Presence;
   /** Short description of what the Bot is doing right now, shown on hover. */
@@ -97,7 +99,14 @@ export type Routine = {
 };
 
 /** A model a Bot can use: which provider, and which of its models. */
-export type ModelOption = { ref: string; providerId: string; providerName: string; model: string };
+export type ModelOption = {
+  ref: string;
+  providerId: string;
+  providerName: string;
+  model: string;
+  /** Can read screenshots and point accurately enough to drive a desktop. */
+  desktop: boolean;
+};
 
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 

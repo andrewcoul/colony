@@ -1,4 +1,5 @@
-import { tool, type ToolSet } from "ai";
+import { tool, type Tool, type ToolSet } from "ai";
+import type { DesktopShot } from "../computer/desktop.js";
 import { z } from "zod";
 import { config } from "../config.js";
 import * as files from "../files.js";
@@ -21,6 +22,8 @@ export type ToolContext = {
   depth: number;
   /** Messages another Bot in your private thread and waits for its reply. */
   consult: (botId: string, text: string) => Promise<{ chatId: string; reply: Message }>;
+  /** Shows the model this screenshot as an image on its next step (desktop tools). */
+  attachScreenshot?: (shot: DesktopShot) => void;
 };
 
 /**
@@ -33,6 +36,8 @@ export type ColonyTool<I = any, O = any> = {
   execute: (input: I, ctx: ToolContext) => Promise<O>;
   describe: (input: I) => string;
   summarize?: (output: O) => string | undefined;
+  /** A ready-made AI SDK tool (e.g. a provider's computer toolset) used instead of `execute`. */
+  sdkTool?: Tool;
 };
 
 const define = <I, O>(spec: ColonyTool<I, O>) => spec;
@@ -212,7 +217,7 @@ export type ToolRegistry = Record<string, ColonyTool>;
 
 /** Binds Colony tools to one run, producing an AI SDK ToolSet. */
 export function toToolSet(registry: ToolRegistry, ctx: ToolContext): ToolSet {
-  return Object.fromEntries(Object.entries(registry).map(([name, spec]) => [name, tool({
+  return Object.fromEntries(Object.entries(registry).map(([name, spec]) => [name, spec.sdkTool ?? tool({
     description: spec.description,
     inputSchema: spec.inputSchema,
     execute: (input: unknown) => spec.execute(input, ctx),

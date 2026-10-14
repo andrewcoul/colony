@@ -26,8 +26,9 @@ export type FileEntry = { name: string; path: string; type: "file" | "dir"; size
 
 /** "openai": OpenAI-compatible chat completions; "anthropic": Anthropic's Messages API (Claude). */
 export type Protocol = "openai" | "anthropic";
-export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; keySet: boolean; keyHint: string | null };
-export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[] };
+export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null };
+export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
+export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
 export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
 
 export type MemoryUsage = { used: number; budget: number };
@@ -40,7 +41,7 @@ export type BotMemory = {
 
 export type RoutineInput = { title: string; prompt: string; schedule: Schedule; enabled?: boolean };
 
-export type NewBot = { name: string; title: string; description: string; model?: string; computer: boolean; faceSeed?: string };
+export type NewBot = { name: string; title: string; description: string; model?: string; computer: boolean; desktop?: boolean; faceSeed?: string };
 
 export const api = {
   state: () => request<AppState>("GET", "/state"),
@@ -71,6 +72,8 @@ export const api = {
   removeMemory: (botId: string, target: "memory" | "user", entry: string) => request<BotMemory>("POST", `/bots/${botId}/memory/remove`, { target, entry }),
   skill: (botId: string, slug: string) => request<{ content: string }>("GET", `/bots/${botId}/skills/${encodeURIComponent(slug)}`),
   deleteSkill: (botId: string, slug: string) => request<void>("DELETE", `/bots/${botId}/skills/${encodeURIComponent(slug)}`),
+  screenLink: (botId: string) => request<{ url: string; expiresAt: number }>("GET", `/bots/${botId}/screen-link`),
+  desktopCheck: (providerId: string, models?: string[]) => request<{ results: DesktopVerdict[]; settings: Settings }>("POST", `/settings/providers/${encodeURIComponent(providerId)}/desktop-check`, { models }),
   openBrowser: (botId: string) => request<{ open: boolean; url: string | null }>("POST", `/bots/${botId}/browser/open`),
   browserInput: (botId: string, input: BrowserInput) => request<void>("POST", `/bots/${botId}/browser/input`, input),
   createRoutine: (botId: string, input: RoutineInput) => request<Routine>("POST", `/bots/${botId}/routines`, input),

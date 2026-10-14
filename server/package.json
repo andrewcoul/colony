@@ -12,6 +12,7 @@
     "@ai-sdk/anthropic": "^4.0.79",
     "@ai-sdk/openai-compatible": "^3.0.68",
     "@hono/node-server": "^1.19.0",
+    "@trycua/cua": "^0.4.1",
     "ai": "^7.0.139",
     "hono": "^4.10.0",
     "playwright-core": "^1.64.0",

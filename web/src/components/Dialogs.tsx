@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
+import { DesktopToggle } from "./DesktopToggle";
 import { ModelPicker } from "./ModelPicker";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -45,13 +46,14 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
   const [description, setDescription] = useState("");
   const [model, setModel] = useState("");
   const [computer, setComputer] = useState(true);
+  const [desktop, setDesktop] = useState(false);
   const [faceSeed, setFaceSeed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setName(""); setTitle(""); setDescription(""); setModel(defaultModel); setComputer(true); setFaceSeed(null); setError("");
+    setName(""); setTitle(""); setDescription(""); setModel(defaultModel); setComputer(true); setDesktop(false); setFaceSeed(null); setError("");
   }, [open, defaultModel]);
 
   const seed = faceSeed ?? (name || "new bot");
@@ -60,7 +62,7 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const bot = await api.createBot({ name: name.trim(), title: title.trim(), description: description.trim(), model, computer, faceSeed: faceSeed ?? undefined });
+      const bot = await api.createBot({ name: name.trim(), title: title.trim(), description: description.trim(), model, computer, desktop: computer && desktop, faceSeed: faceSeed ?? undefined });
       onOpenChange(false);
       onCreated(bot);
     } catch (failure) {
@@ -99,14 +101,15 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
             className="w-full resize-y rounded-lg border border-rule bg-ground px-3.5 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-muted focus:border-muted" />
         </Field>
         <div className="mb-4 flex flex-col border-t border-rule">
-          <ModelPicker value={model} onChange={setModel} />
+          <ModelPicker value={model} onChange={setModel} desktopOnly={computer && desktop} />
           <label className="flex cursor-pointer items-center justify-between gap-4 py-3">
             <span className="flex flex-col gap-0.5"><span className="text-sm">Own computer</span><span className="text-meta text-muted">Terminal, files and a browser in Docker</span></span>
-            <input type="checkbox" checked={computer} onChange={(e) => setComputer(e.target.checked)} className="peer sr-only" />
+            <input type="checkbox" checked={computer} onChange={(e) => { setComputer(e.target.checked); if (!e.target.checked) setDesktop(false); }} className="peer sr-only" />
             <span className={cn("flex h-6 w-10 items-center rounded-full p-[3px] transition-colors", computer ? "justify-end bg-ink" : "justify-start bg-raised")}>
               <span className={cn("size-[18px] rounded-full", computer ? "bg-on-ink" : "bg-muted")} />
             </span>
           </label>
+          <DesktopToggle computer={computer} desktop={computer && desktop} model={model} onChange={(patch) => { setDesktop(patch.desktop); if (patch.model) setModel(patch.model); }} />
         </div>
         {error && <p role="alert" className="m-0 mb-3 text-label text-danger">{error}</p>}
         <Button type="submit" variant="primary" disabled={busy || !name.trim()}>{busy ? "Creating…" : `Create ${name.trim() || "Bot"}`}</Button>

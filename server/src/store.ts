@@ -14,6 +14,7 @@ const toBot = (row: Row): Bot => ({
   faceSeed: row.face_seed as string,
   model: row.model as string,
   computer: Boolean(row.computer),
+  desktop: Boolean(row.desktop),
   computerState: (row.computer_state as ComputerState) ?? "off",
   presence: row.presence as Presence,
   activity: (row.activity as string | null) ?? null,
@@ -92,24 +93,27 @@ export class Store {
     return row ? toBot(row) : null;
   }
 
-  createBot(input: { name: string; title: string; description: string; model: string; computer: boolean; faceSeed?: string }): Bot {
+  createBot(input: { name: string; title: string; description: string; model: string; computer: boolean; desktop?: boolean; faceSeed?: string }): Bot {
     const id = newId();
     const chat = this.createChat({ kind: "bot", title: input.name, memberIds: [id], coordinatorId: id });
-    this.db.prepare(`INSERT INTO bots (id, name, title, description, face_seed, model, computer, chat_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      id, input.name, input.title, input.description, input.faceSeed || input.name, input.model, input.computer ? 1 : 0, chat.id, Date.now(),
+    this.db.prepare(`INSERT INTO bots (id, name, title, description, face_seed, model, computer, desktop, chat_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      id, input.name, input.title, input.description, input.faceSeed || input.name, input.model, input.computer ? 1 : 0,
+      input.computer && input.desktop ? 1 : 0, chat.id, Date.now(),
     );
     const bot = this.getBot(id)!;
     this.events.emit({ type: "bot.upserted", bot });
     return bot;
   }
 
-  updateBot(id: string, patch: Partial<Pick<Bot, "name" | "title" | "description" | "faceSeed" | "model" | "computer">>): Bot | null {
+  updateBot(id: string, patch: Partial<Pick<Bot, "name" | "title" | "description" | "faceSeed" | "model" | "computer" | "desktop">>): Bot | null {
     const bot = this.getBot(id);
     if (!bot) return null;
     const next = { ...bot, ...patch };
-    this.db.prepare("UPDATE bots SET name = ?, title = ?, description = ?, face_seed = ?, model = ?, computer = ? WHERE id = ?")
-      .run(next.name, next.title, next.description, next.faceSeed, next.model, next.computer ? 1 : 0, id);
+    // The desktop lives on the computer: no computer, no desktop.
+    if (!next.computer) next.desktop = false;
+    this.db.prepare("UPDATE bots SET name = ?, title = ?, description = ?, face_seed = ?, model = ?, computer = ?, desktop = ? WHERE id = ?")
+      .run(next.name, next.title, next.description, next.faceSeed, next.model, next.computer ? 1 : 0, next.desktop ? 1 : 0, id);
     if (patch.name && patch.name !== bot.name) this.renameChat(bot.chatId, patch.name);
     const updated = this.getBot(id)!;
     this.events.emit({ type: "bot.upserted", bot: updated });
