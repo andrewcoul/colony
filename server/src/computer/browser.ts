@@ -184,6 +184,18 @@ export class BrowserService {
     return intent;
   }
 
+  /** What kind of field an element is (e.g. input/password), so secrets only go into the right fields. */
+  async fieldType(botId: string, ref: string): Promise<{ tag: string; type: string }> {
+    await this.element(botId, ref);
+    const { page } = await this.open(botId);
+    const info = await page.evaluate<{ tag: string; type: string } | null>(String.raw`(() => {
+      const el = document.querySelector('[data-colony-ref="${ref}"]');
+      return el ? { tag: el.tagName.toLowerCase(), type: (el.getAttribute("type") || "text").toLowerCase() } : null;
+    })()`);
+    if (!info) throw new Error(`Element ${ref} is no longer on the page; call browser_read for fresh refs.`);
+    return info;
+  }
+
   async click(botId: string, ref: string) {
     const element = await this.element(botId, ref);
     await element.click({ timeout: 10_000 });

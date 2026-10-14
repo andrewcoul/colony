@@ -88,6 +88,38 @@ const MIGRATIONS = [
   );
   `,
   `ALTER TABLE bots ADD COLUMN desktop INTEGER NOT NULL DEFAULT 0;`,
+  `
+  CREATE TABLE accounts (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    label TEXT NOT NULL,
+    email TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'ok',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE account_sync (
+    account_id TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    cursor TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (account_id, resource)
+  );
+  CREATE TABLE bot_access (
+    bot_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    mail TEXT NOT NULL DEFAULT 'none',
+    calendar TEXT NOT NULL DEFAULT 'none',
+    vault TEXT NOT NULL DEFAULT 'none',
+    PRIMARY KEY (bot_id, account_id)
+  );
+  CREATE TABLE vault_item_grants (
+    bot_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (bot_id, account_id, item_id)
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

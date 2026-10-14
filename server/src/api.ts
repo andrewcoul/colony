@@ -18,6 +18,9 @@ import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
 import type { AppState } from "./shared/types.js";
+import type { Integrations } from "./integrations/index.js";
+import { revoke, type SignIns } from "./integrations/oauth.js";
+import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
 
 export type Services = {
   store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner;
@@ -25,12 +28,18 @@ export type Services = {
   updater?: Updater;
   /** The model client used by the desktop check (tests pass a scripted one). */
   modelFactory?: ModelFactory;
+  /** Connected accounts (mail, calendar, 1Password) and signing in to them. */
+  integrations?: Integrations;
+  signIns?: SignIns;
+  /** Signs in to 1Password (tests pass a fake). */
+  connectVault?: VaultConnector;
 };
 
 const schedule = z.discriminatedUnion("type", [
   z.object({ type: z.literal("daily"), time: z.string().refine((time) => parseTime(time) !== null, "Pick a time."), days: z.array(z.number().int().min(0).max(6)).max(7) }),
   z.object({ type: z.literal("interval"), minutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(7 * 1440) }),
   z.object({ type: z.literal("once"), at: z.number().int().refine((at) => at > Date.now(), "That time has already passed.") }),
+  z.object({ type: z.literal("mail"), accountId: z.string().min(1).max(80), from: z.string().trim().max(200).optional(), subject: z.string().trim().max(200).optional() }),
 ]);
 const routineInput = z.object({
   title: z.string().trim().min(1, "Give the routine a name.").max(80),
@@ -81,8 +90,17 @@ function addressedBots(text: string, memberIds: string[], store: Store, coordina
   return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
 }
 
-export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword }: Services) {
   const api = new Hono();
+
+  /** A mail-triggered routine must watch a mailbox its Bot can read. */
+  const mailProblem = (botId: string, when: z.infer<typeof schedule>) => {
+    if (when.type !== "mail") return null;
+    const account = integrations?.accounts.get(when.accountId);
+    if (!account || account.kind === "onepassword") return "That mailbox isn't connected.";
+    if (integrations!.accounts.access(botId, account.id).mail === "none") return "This Bot can't read that mailbox. Give it mail access in its profile first.";
+    return null;
+  };
 
   api.onError((error, c) => {
     if (error instanceof z.ZodError) return c.json({ error: error.issues.map((issue) => issue.message).join("; ") }, 400);
@@ -99,6 +117,8 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     models: settings.modelOptions(),
     defaultModel: settings.defaultModel(),
     configured: settings.modelConfigured(),
+    accounts: integrations?.accounts.list() ?? [],
+    access: integrations?.accounts.listAccess() ?? [],
     seq: events.latestSeq(),
   }));
 
@@ -412,17 +432,108 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     }
   });
 
+  // ---------- Accounts: mail, calendars, 1Password ----------
+  const unavailable = { error: "Accounts aren't available here." };
+  const failure = (error: unknown, fallback: string) => ({ error: error instanceof Error ? error.message : fallback });
+  api.get("/accounts", (c) => {
+    if (!integrations) return c.json(unavailable, 503);
+    const apps = integrations.accounts.apps();
+    return c.json({
+      accounts: integrations.accounts.list(),
+      access: integrations.accounts.listAccess(),
+      // Client ids aren't secret; the Google client secret stays here.
+      apps: { google: apps.google ? { clientId: apps.google.clientId } : null, microsoft: apps.microsoft ? { clientId: apps.microsoft.clientId } : null },
+    });
+  });
+  const clientId = z.string().trim().min(10, "Paste the client ID.").max(300);
+  api.post("/accounts/google/start", async (c) => {
+    if (!integrations || !signIns) return c.json(unavailable, 503);
+    const input = z.object({ clientId: clientId.optional(), clientSecret: z.string().trim().max(300).optional() }).parse(await c.req.json().catch(() => ({})));
+    const saved = integrations.accounts.apps().google;
+    const app = input.clientId
+      ? { clientId: input.clientId, clientSecret: input.clientSecret || (saved?.clientId === input.clientId ? saved.clientSecret : "") }
+      : saved;
+    if (!app?.clientId || !app.clientSecret) return c.json({ error: "Paste your Google client ID and client secret." }, 400);
+    integrations.accounts.saveApp("google", app);
+    try { return c.json(await signIns.startGoogle(app)); } catch (error) { return c.json(failure(error, "Couldn't start the sign-in."), 500); }
+  });
+  api.post("/accounts/google/finish", async (c) => {
+    if (!signIns) return c.json(unavailable, 503);
+    const { id, url } = z.object({ id: z.string().max(80), url: z.string().trim().min(1).max(4000) }).parse(await c.req.json());
+    try { return c.json(await signIns.finishGoogle(id, url)); } catch (error) { return c.json(failure(error, "Couldn't finish the sign-in."), 400); }
+  });
+  api.post("/accounts/microsoft/start", async (c) => {
+    if (!integrations || !signIns) return c.json(unavailable, 503);
+    const input = z.object({ clientId: clientId.optional() }).parse(await c.req.json().catch(() => ({})));
+    const app = input.clientId ? { clientId: input.clientId } : integrations.accounts.apps().microsoft;
+    if (!app?.clientId) return c.json({ error: "Paste your Microsoft application (client) ID." }, 400);
+    integrations.accounts.saveApp("microsoft", app);
+    try { return c.json(await signIns.startMicrosoft(app)); } catch (error) { return c.json(failure(error, "Couldn't start the sign-in."), 502); }
+  });
+  api.get("/accounts/signin/:id", (c) => {
+    const status = signIns?.status(c.req.param("id"));
+    return status ? c.json(status) : c.json({ error: "That sign-in has ended." }, 404);
+  });
+  api.post("/accounts/signin/:id/cancel", (c) => {
+    signIns?.cancel(c.req.param("id"));
+    return c.body(null, 204);
+  });
+  api.post("/accounts/onepassword", async (c) => {
+    if (!integrations) return c.json(unavailable, 503);
+    const input = z.union([
+      z.object({ token: z.string().trim().startsWith("ops_", "Service account tokens start with ops_.").max(4000) }),
+      z.object({ desktopAccount: z.string().trim().min(1, "Type your 1Password account name.").max(200) }),
+    ]).parse(await c.req.json());
+    // Sign in once now, so a wrong token or a locked app says so here rather than mid-task.
+    let vaults: { id: string; title: string }[];
+    try { vaults = await (await connectVault(input)).vaults(); }
+    catch (error) { return c.json({ error: `1Password didn't accept that: ${error instanceof Error ? error.message : error}` }, 400); }
+    if (!vaults.length) return c.json({ error: "1Password connected, but it reaches no vaults. Give the service account access to the vault your Bots should use." }, 400);
+    const email = "token" in input ? vaults.map((vault) => vault.title).join(", ") : input.desktopAccount;
+    const account = integrations.accounts.connect({ kind: "onepassword", label: "1Password", email },
+      { kind: "onepassword", ...input, saveVaultId: vaults[0].id });
+    integrations.vaults.forget(account.id);
+    return c.json(account, 201);
+  });
+  api.delete("/accounts/:id", async (c) => {
+    if (!integrations) return c.json(unavailable, 503);
+    const id = c.req.param("id");
+    await revoke(fetch, integrations.accounts.secret(id));
+    // Routines watching this mailbox have nothing left to watch.
+    for (const routine of store.listRoutines()) if (routine.schedule.type === "mail" && routine.schedule.accountId === id) store.deleteRoutine(routine.id);
+    integrations.accounts.remove(id);
+    integrations.tokens.forget(id);
+    integrations.vaults.forget(id);
+    return c.body(null, 204);
+  });
+  api.put("/bots/:id/access/:accountId", async (c) => {
+    if (!integrations) return c.json(unavailable, 503);
+    const patch = z.object({
+      mail: z.enum(["none", "read", "draft", "send"]).optional(),
+      calendar: z.enum(["none", "read", "write"]).optional(),
+      vault: z.enum(["none", "use", "save"]).optional(),
+    }).parse(await c.req.json());
+    try { return c.json(integrations.accounts.setAccess(c.req.param("id"), c.req.param("accountId"), patch)); }
+    catch (error) { return c.json(failure(error, "Couldn't change access."), 404); }
+  });
+
   // ---------- Routines ----------
   api.post("/bots/:id/routines", async (c) => {
     const bot = store.getBot(c.req.param("id"));
     if (!bot) return c.json({ error: "Bot not found." }, 404);
     const input = routineInput.parse(await c.req.json());
+    const problem = mailProblem(bot.id, input.schedule);
+    if (problem) return c.json({ error: problem }, 400);
     const routine = store.createRoutine({ botId: bot.id, chatId: bot.chatId, title: input.title, prompt: input.prompt, schedule: input.schedule });
     return c.json(input.enabled === false ? store.updateRoutine(routine.id, { enabled: false }) : routine, 201);
   });
 
   api.patch("/routines/:id", async (c) => {
-    const routine = store.updateRoutine(c.req.param("id"), routineInput.partial().parse(await c.req.json()));
+    const patch = routineInput.partial().parse(await c.req.json());
+    const current = store.getRoutine(c.req.param("id"));
+    const problem = current && patch.schedule ? mailProblem(current.botId, patch.schedule) : null;
+    if (problem) return c.json({ error: problem }, 400);
+    const routine = store.updateRoutine(c.req.param("id"), patch);
     return routine ? c.json(routine) : c.json({ error: "Routine not found." }, 404);
   });
 

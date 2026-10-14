@@ -9,7 +9,14 @@ import { ApprovalGate } from "./agent/approvals.js";
 import { AgentRunner } from "./agent/run.js";
 import { browserTools } from "./agent/browserTools.js";
 import { computerTools } from "./agent/computerTools.js";
-import { coreTools } from "./agent/tools.js";
+import { accountsGuidance, mailTools, mailToolsFor } from "./agent/mailTools.js";
+import { coreTools, type ToolRegistry } from "./agent/tools.js";
+import { vaultTools, vaultToolsFor } from "./agent/vaultTools.js";
+import { Accounts } from "./integrations/accounts.js";
+import { Integrations } from "./integrations/index.js";
+import { SignIns, Tokens } from "./integrations/oauth.js";
+import { Vaults } from "./integrations/onepassword.js";
+import { MailPoller } from "./integrations/poller.js";
 import { BrowserService } from "./computer/browser.js";
 import { DesktopService } from "./computer/desktop.js";
 import { ComputerService } from "./computer/docker.js";
@@ -58,10 +65,38 @@ void computer.syncStates().then(() => computer.pruneOldImages());
 const browser = new BrowserService(computer);
 const desktop = new DesktopService(computer);
 const computerToolset = { ...computerTools(computer), ...browserTools(browser) };
-const runner = new AgentRunner(store, events, gate, (botId) => (store.getBot(botId)?.computer ? { ...coreTools, ...computerToolset } : coreTools), undefined, desktop);
+// Mail, calendars and 1Password: connected in Settings, then given to Bots one by one.
+const accounts = new Accounts(db, events);
+const tokens = new Tokens(accounts);
+const integrations = new Integrations(accounts, tokens, new Vaults(accounts));
+const signIns = new SignIns(accounts, tokens);
+const accountTools = mailTools(integrations);
+const loginTools = vaultTools(browser, integrations);
+/** Each Bot's tools: the basics, its computer if it has one, and whatever accounts you've given it. */
+const toolsFor = (botId: string): ToolRegistry => {
+  const hasComputer = Boolean(store.getBot(botId)?.computer);
+  return {
+    ...coreTools,
+    ...(hasComputer ? computerToolset : {}),
+    ...mailToolsFor(accountTools, integrations, botId),
+    ...(hasComputer ? vaultToolsFor(loginTools, integrations, botId) : {}),
+  };
+};
+const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop, {
+  integrations,
+  guidance: (botId) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)),
+});
 const routines = new RoutineScheduler(store, runner);
 routines.start();
+const poller = new MailPoller(store, integrations, routines);
+poller.start();
 const push = new PushService(db, store, events);
+accounts.onNeedsReauth = (account) => void push.notify({
+  title: `Reconnect ${account.label}`,
+  body: `${account.email} stopped working for your Bots. Reconnect it in Settings → Accounts.`,
+  chatId: null,
+  tag: `reauth-${account.id}`,
+});
 
 const app = new Hono();
 app.use(tailnetOnly(config.allowedUsers));
@@ -73,7 +108,7 @@ const updater = new Updater({
   busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => bot.name),
 });
 updater.start();
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, integrations, signIns }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");

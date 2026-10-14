@@ -6,7 +6,7 @@ const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^w
 const quote = (text: string, max = 40) => `“${text.length > max ? text.slice(0, max - 1) + "…" : text}”`;
 
 /** What the model sees after each browser action. */
-function view(page: PageSnapshot) {
+export function view(page: PageSnapshot) {
   return [
     `URL: ${page.url}`,
     `Title: ${page.title}`,
@@ -16,13 +16,13 @@ function view(page: PageSnapshot) {
 }
 
 /** Step detail: the page title from a view(). */
-const pageTitle = (output: string) => {
+export const pageTitle = (output: string) => {
   const title = /^Title: (.*)$/m.exec(output)?.[1]?.trim();
   return title ? (title.length > 40 ? title.slice(0, 39) + "…" : title) : undefined;
 };
 
 const element = z.string().trim().min(1).max(80).describe("Short description of the element, e.g. \"Sign in button\".");
-const ref = z.string().trim().regex(/^e\d+$/).describe("The element's ref from the last page read, e.g. e12.");
+export const ref = z.string().trim().regex(/^e\d+$/).describe("The element's ref from the last page read, e.g. e12.");
 
 /** Asks before a click or Enter that would send, post, buy, or delete something. */
 async function guard(browser: BrowserService, ctx: ToolContext, target: string, label: string, submit: boolean) {
@@ -72,7 +72,7 @@ export function browserTools(browser: BrowserService): ToolRegistry {
   };
 
   const type: ColonyTool<{ ref: string; element: string; text: string; submit?: boolean }, string> = {
-    description: "Type into a field in your browser (replaces its contents). Set submit to press Enter afterwards. Never type passwords or payment details; ask the user to take over instead.",
+    description: "Type into a field in your browser (replaces its contents). Set submit to press Enter afterwards. Never type passwords or payment details yourself: sign in with browser_login if you have 1Password access, otherwise ask the user to take over.",
     inputSchema: z.object({ ref, element, text: z.string().max(5000), submit: z.boolean().optional() }),
     describe: ({ element }) => `Typed into ${quote(element)}`,
     summarize: pageTitle,

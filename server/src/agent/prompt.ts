@@ -13,7 +13,7 @@ function bullets(entries: string[]) {
 }
 
 /** The system prompt: identity, persona, memory, skills, then the working rules. */
-export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Routine[] = [], team: Bot[] = [], desktop: DesktopMode | null = null) {
+export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Routine[] = [], team: Bot[] = [], desktop: DesktopMode | null = null, accounts = "") {
   const memory = files.memoryUsage(bot.id, "memory");
   const user = files.memoryUsage(bot.id, "user");
   const skills = files.listSkills(bot.id);
@@ -41,8 +41,9 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
       `- ${routine.title} (id ${routine.id}): ${describeSchedule(routine.schedule)}${routine.enabled ? "" : ", paused"}. ${routine.prompt.slice(0, 200)}`).join("\n")),
     section("Your computer", bot.computer
       ? "You have your own Linux computer (Ubuntu with an XFCE desktop, Node 22, Python 3, git, ripgrep). /workspace persists and is yours; the user can see your screen, terminal and files. Use shell for commands and the file tools to read and change files (prefer edit_file for small changes). Verify your work (run it, test it) before reporting done. " +
-        "You also have a real browser (browser_open, browser_read, browser_click, browser_type…) whose window is on your desktop; its logins persist. Never type passwords, 2FA codes or payment details: use browser_ask_user so the user takes over, then continue."
+        "You also have a real browser (browser_open, browser_read, browser_click, browser_type…) whose window is on your desktop; its logins persist. Never type passwords, 2FA codes or payment details yourself: sign in with browser_login when the site is in 1Password, otherwise use browser_ask_user so the user takes over, then continue."
       : ""),
+    section("Your accounts", accounts),
     section("Your desktop", desktop
       ? [
         `You can see and use your computer's desktop (1280×800 pixels, origin top-left) with ${desktop === "claude" ? "the computer tool" : "the desktop_* tools"}: look at the screen, click, type, press keys and scroll, like a person at the keyboard.`,

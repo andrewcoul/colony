@@ -1,4 +1,4 @@
-import type { AppState, Bot, Chat, Message, Routine, Schedule } from "@shared/types";
+import type { Access, Account, AppState, Bot, Chat, Message, Routine, Schedule } from "@shared/types";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -52,6 +52,10 @@ export type BotMemory = {
 };
 
 export type RoutineInput = { title: string; prompt: string; schedule: Schedule; enabled?: boolean };
+
+/** Connected accounts, and the OAuth clients you registered (ids only). */
+export type AccountsView = { accounts: Account[]; access: Access[]; apps: { google: { clientId: string } | null; microsoft: { clientId: string } | null } };
+export type SignInStatus = { status: "pending" | "done" | "error"; error?: string; account?: Account };
 
 export type NewBot = { name: string; title: string; description: string; model?: string; computer: boolean; desktop?: boolean; faceSeed?: string };
 
@@ -108,4 +112,13 @@ export const api = {
   pushStatus: (endpoint: string) => request<{ subscribed: boolean }>("POST", "/push/status", { endpoint }),
   pushTest: () => request<{ delivered: number }>("POST", "/push/test"),
   focus: (input: { clientId: string; chatId: string | null; visible: boolean }) => request<void>("POST", "/focus", input),
+  accounts: () => request<AccountsView>("GET", "/accounts"),
+  startGoogle: (app: { clientId?: string; clientSecret?: string }) => request<{ id: string; url: string; redirectUri: string }>("POST", "/accounts/google/start", app),
+  finishGoogle: (id: string, url: string) => request<SignInStatus>("POST", "/accounts/google/finish", { id, url }),
+  startMicrosoft: (app: { clientId?: string }) => request<{ id: string; userCode: string; verificationUri: string; expiresIn: number }>("POST", "/accounts/microsoft/start", app),
+  signInStatus: (id: string) => request<SignInStatus>("GET", `/accounts/signin/${encodeURIComponent(id)}`),
+  cancelSignIn: (id: string) => request<void>("POST", `/accounts/signin/${encodeURIComponent(id)}/cancel`),
+  connectOnePassword: (input: { token: string } | { desktopAccount: string }) => request<Account>("POST", "/accounts/onepassword", input),
+  removeAccount: (id: string) => request<void>("DELETE", `/accounts/${encodeURIComponent(id)}`),
+  setAccess: (botId: string, accountId: string, patch: Partial<Pick<Access, "mail" | "calendar" | "vault">>) => request<Access>("PUT", `/bots/${botId}/access/${encodeURIComponent(accountId)}`, patch),
 };

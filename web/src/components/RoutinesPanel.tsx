@@ -103,11 +103,22 @@ function RoutineEditor({ bot, routine, onDone }: { bot: Bot; routine: Routine | 
   const [days, setDays] = useState<number[]>(initial.type === "daily" ? initial.days : []);
   const [minutes, setMinutes] = useState(initial.type === "interval" ? initial.minutes : 60);
   const [at, setAt] = useState(initial.type === "once" ? localInput(initial.at) : localInput(Date.now() + 60 * 60_000));
+  // Mailboxes this Bot can read, for routines that run when mail arrives.
+  const accounts = useLive((s) => s.accounts);
+  const access = useLive((s) => s.access);
+  const mailboxes = accounts.filter((account) => account.kind !== "onepassword"
+    && access.some((item) => item.botId === bot.id && item.accountId === account.id && item.mail !== "none"));
+  const [accountId, setAccountId] = useState(initial.type === "mail" ? initial.accountId : mailboxes[0]?.id ?? "");
+  const [from, setFrom] = useState(initial.type === "mail" ? initial.from ?? "" : "");
+  const [subject, setSubject] = useState(initial.type === "mail" ? initial.subject ?? "" : "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   const invalidOnce = type === "once" && Number.isNaN(new Date(at).getTime());
-  const schedule: Schedule = type === "daily" ? { type, time, days } : type === "interval" ? { type, minutes } : { type, at: new Date(at).getTime() };
+  const schedule: Schedule = type === "daily" ? { type, time, days }
+    : type === "interval" ? { type, minutes }
+    : type === "mail" ? { type, accountId, ...(from.trim() ? { from: from.trim() } : {}), ...(subject.trim() ? { subject: subject.trim() } : {}) }
+    : { type, at: new Date(at).getTime() };
   // No days selected means every day, so start from all seven; keep at least one.
   const toggleDay = (day: number) => setDays((current) => {
     const selected = current.length ? current : [0, 1, 2, 3, 4, 5, 6];
@@ -138,7 +149,7 @@ function RoutineEditor({ bot, routine, onDone }: { bot: Bot; routine: Routine | 
 
       <span className="mb-1.5 text-label text-muted">When</span>
       <div className="mb-3 flex rounded-full bg-raised p-[3px]" role="radiogroup" aria-label="Schedule type">
-        {([["daily", "Daily"], ["interval", "Repeat"], ["once", "Once"]] as const).map(([value, label]) => (
+        {([["daily", "Daily"], ["interval", "Repeat"], ["once", "Once"], ...(mailboxes.length || initial.type === "mail" ? [["mail", "New mail"]] as const : [])] as const).map(([value, label]) => (
           <button key={value} type="button" role="radio" aria-checked={type === value} onClick={() => setType(value)}
             className={cn("h-7 flex-1 rounded-full text-meta", type === value ? "bg-ground text-ink" : "text-muted hover:text-ink")}>{label}</button>
         ))}
@@ -166,11 +177,23 @@ function RoutineEditor({ bot, routine, onDone }: { bot: Bot; routine: Routine | 
       {type === "once" && (
         <Input type="datetime-local" aria-label="Date and time" value={at} onChange={(e) => setAt(e.target.value)} required className="mb-3.5 w-60 [color-scheme:dark]" />
       )}
+      {type === "mail" && (
+        <div className="mb-3.5 flex flex-col gap-2">
+          <select aria-label="Mailbox" value={accountId} onChange={(e) => setAccountId(e.target.value)}
+            className="h-[42px] w-full rounded-lg border border-rule bg-ground px-3 text-sm text-ink outline-none">
+            {mailboxes.length === 0 && <option value={accountId}>No mailbox {bot.name} can read</option>}
+            {mailboxes.map((account) => <option key={account.id} value={account.id}>{account.label} · {account.email}</option>)}
+          </select>
+          <Input aria-label="Only mail from" value={from} onChange={(e) => setFrom(e.target.value)} maxLength={200} placeholder="Only from… (optional, e.g. @bank.com)" />
+          <Input aria-label="Only mail about" value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={200} placeholder="Subject contains… (optional)" />
+          <span className="text-meta text-muted">Checked every couple of minutes; mail arriving close together goes into one run, at most every 10 minutes.</span>
+        </div>
+      )}
       <p className="m-0 mb-4 text-meta text-muted">{invalidOnce ? "Pick a date and time" : describeSchedule(schedule)}</p>
 
       {error && <p role="alert" className="m-0 mb-3 text-label text-danger">{error}</p>}
       <div className="mt-auto flex gap-2">
-        <Button type="submit" variant="primary" className="flex-1" disabled={busy || !title.trim() || !prompt.trim()}>{busy ? "Saving…" : routine ? "Save" : "Create routine"}</Button>
+        <Button type="submit" variant="primary" className="flex-1" disabled={busy || !title.trim() || !prompt.trim() || (type === "mail" && !mailboxes.some((account) => account.id === accountId))}>{busy ? "Saving…" : routine ? "Save" : "Create routine"}</Button>
         <Button variant="outline" onClick={onDone}>Cancel</Button>
       </div>
     </form>
