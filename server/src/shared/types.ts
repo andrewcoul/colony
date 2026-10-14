@@ -121,6 +121,8 @@ export type AppState = {
   routines: Routine[];
   models: string[];
   defaultModel: string;
+  /** Whether a model connection is set up (Settings shows a prompt when it isn't). */
+  configured: boolean;
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };
@@ -133,6 +135,7 @@ export type ServerEvent =
   | { type: "chat.deleted"; chatId: string }
   | { type: "message.upserted"; message: Message }
   | { type: "approval.upserted"; approval: Approval }
+  | { type: "settings.updated"; models: string[]; defaultModel: string; configured: boolean }
   | { type: "routine.upserted"; routine: Routine }
   | { type: "routine.deleted"; routineId: string };
 

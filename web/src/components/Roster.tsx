@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, Search, Users } from "lucide-react";
+import { KeyRound, Plus, Search, Settings, Users } from "lucide-react";
 import type { Bot, Chat, Presence } from "@shared/types";
 import { shortTime } from "../lib/dates";
 import { useLive } from "../lib/live";
@@ -16,13 +16,15 @@ const LABEL: Partial<Record<Presence, { text: string; className: string }>> = {
   blocked: { text: "blocked", className: "text-coral" },
 };
 
-export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
+export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings, phone }: {
   activeChatId: string | null;
   onOpen: (chatId: string) => void;
   onNewBot: () => void;
   onNewGroup: () => void;
+  onSettings: () => void;
   phone: boolean;
 }) {
+  const configured = useLive((s) => s.configured);
   const botMap = useLive((s) => s.bots);
   const chatMap = useLive((s) => s.chats);
   const approvals = useLive((s) => s.approvals);
@@ -48,6 +50,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
         <div className="flex items-center justify-between px-5 pt-[max(env(safe-area-inset-top),16px)] pb-4">
           <h1 className="m-0 text-[30px] font-semibold tracking-tight">Bots</h1>
           <div className="flex gap-2.5">
+            <Button variant="outline" size="icon" className="size-10 bg-raised" aria-label="Settings" onClick={onSettings}><Settings size={18} /></Button>
             <NotificationsMenu className="size-10 bg-raised" />
             <Button variant="outline" size="icon" className="size-10 bg-raised" aria-label="New group" onClick={onNewGroup}><Users size={18} /></Button>
             <Button variant="primary" size="icon" className="size-10" aria-label="New Bot" onClick={onNewBot}><Plus size={19} strokeWidth={2.4} /></Button>
@@ -57,6 +60,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
         <div className="flex items-center justify-between px-3.5 pt-4 pb-3.5">
           <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><LogoMark />Colony</span>
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="icon" aria-label="Settings" onClick={onSettings}><Settings size={17} /></Button>
             <NotificationsMenu className="border-transparent" />
             <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />New Bot</Button>
           </div>
@@ -72,6 +76,16 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-2.5 pt-3.5 pb-3 [scrollbar-width:thin]">
+        {!configured && (
+          <button type="button" onClick={onSettings}
+            className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-lemon/30 bg-lemon/8 p-3.5 text-left">
+            <KeyRound size={18} className="shrink-0 text-lemon" />
+            <span className="flex flex-col gap-0.5">
+              <strong className="text-sm">Connect a model</strong>
+              <span className="text-meta text-soft">Add an API key from any OpenAI-compatible provider so your Bots can think.</span>
+            </span>
+          </button>
+        )}
         {phone && needsYou.length > 0 && !query && (
           <section className="mb-4">
             <h2 className="m-0 px-2.5 pb-2 text-label font-normal text-muted">Needs you · {needsYou.length}</h2>

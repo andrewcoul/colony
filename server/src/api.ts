@@ -1,7 +1,8 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { config, resolveModel } from "./config.js";
+import { config, modelConfigured, resolveModel } from "./config.js";
+import * as settings from "./settings.js";
 import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
@@ -69,6 +70,7 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     routines: store.listRoutines(),
     models: [...config.model.models],
     defaultModel: config.model.defaultModel,
+    configured: modelConfigured(),
     seq: events.latestSeq(),
   }));
 
@@ -255,6 +257,29 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
   api.post("/chats/:id/read", (c) => {
     store.markRead(c.req.param("id"));
     return c.body(null, 204);
+  });
+
+  // ---------- Settings: the model connection, switchable any time ----------
+  const providerURL = z.string().trim().url().max(500).refine((url) => /^https?:\/\//i.test(url), "Use an http(s) address.");
+  api.get("/settings/model", (c) => c.json(settings.modelSettingsView()));
+  api.put("/settings/model", async (c) => {
+    const input = z.object({
+      providerName: z.string().trim().min(1, "Name the provider.").max(40),
+      baseURL: providerURL,
+      apiKey: z.string().max(500).optional(),
+      models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(30),
+    }).parse(await c.req.json());
+    const view = settings.saveModelSettings(input);
+    events.emit({ type: "settings.updated", models: view.models, defaultModel: view.defaultModel, configured: view.configured });
+    return c.json(view);
+  });
+  api.post("/settings/model/check", async (c) => {
+    const { baseURL, apiKey } = z.object({ baseURL: providerURL, apiKey: z.string().max(500).optional() }).parse(await c.req.json());
+    try {
+      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(baseURL, apiKey)) });
+    } catch (failure) {
+      return c.json({ error: failure instanceof Error ? failure.message : "Couldn't connect." }, 400);
+    }
   });
 
   // ---------- Routines ----------

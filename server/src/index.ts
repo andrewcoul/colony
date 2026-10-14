@@ -18,6 +18,7 @@ import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
 import { PushService } from "./push.js";
 import { RoutineScheduler } from "./routines.js";
+import { loadSettings } from "./settings.js";
 import { Store } from "./store.js";
 
 // One Colony per data folder: a second one would run every routine twice.
@@ -40,6 +41,7 @@ const db = openDb(path.join(config.dataDir, "colony.db"));
 const events = new EventLog(db);
 const store = new Store(db, events);
 store.recoverAfterRestart();
+loadSettings();
 const gate = new ApprovalGate(store);
 const computer = new ComputerService(store, events);
 void computer.syncStates();
@@ -65,5 +67,5 @@ if (fs.existsSync(webDist)) {
 serve({ fetch: app.fetch, hostname: config.host, port: config.port }, ({ address, port }) => {
   console.log(`Colony is running at http://${address}:${port}`);
   console.log(`Data: ${config.dataDir}`);
-  if (!modelConfigured()) console.log("No model configured yet: set COLONY_API_BASE_URL, COLONY_API_KEY and COLONY_MODELS in .env.");
+  if (!modelConfigured()) console.log("No model configured yet: open Colony and add your API key in Settings.");
 });

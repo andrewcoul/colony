@@ -10,19 +10,26 @@ function list(value: string | undefined) {
 
 const models = list(process.env.COLONY_MODELS);
 
-/** Everything configurable lives in environment variables (see .env.example). */
+export type ModelConfig = { providerName: string; baseURL: string; apiKey: string; models: string[]; defaultModel: string };
+
+/**
+ * Any OpenAI-compatible endpoint: OpenCode Go, OpenRouter, xAI, a local server…
+ * .env gives the starting values; Settings in the app replace them at runtime (see settings.ts).
+ */
+const model: ModelConfig = {
+  baseURL: process.env.COLONY_API_BASE_URL ?? "",
+  apiKey: process.env.COLONY_API_KEY ?? "",
+  providerName: process.env.COLONY_PROVIDER_NAME ?? "colony",
+  models,
+  defaultModel: models[0] ?? "",
+};
+
+/** Server configuration from environment variables (see .env.example). */
 export const config = {
   host: process.env.COLONY_HOST ?? "127.0.0.1",
   port: Number(process.env.COLONY_PORT ?? 8787),
   dataDir: path.resolve(root, process.env.COLONY_DATA_DIR ?? "data"),
-  /** Any OpenAI-compatible endpoint: OpenCode Go, OpenRouter, xAI, a local server… */
-  model: {
-    baseURL: process.env.COLONY_API_BASE_URL ?? "",
-    apiKey: process.env.COLONY_API_KEY ?? "",
-    providerName: process.env.COLONY_PROVIDER_NAME ?? "colony",
-    models,
-    defaultModel: models[0] ?? "",
-  },
+  model,
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
   /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */
   allowedUsers: list(process.env.COLONY_ALLOWED_USERS),

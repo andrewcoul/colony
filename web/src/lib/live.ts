@@ -14,11 +14,12 @@ export type LiveState = {
   messages: Record<string, Message[]>;
   models: string[];
   defaultModel: string;
+  configured: boolean;
   error: string | null;
 };
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", error: null,
+  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -56,6 +57,7 @@ function apply(event: ServerEvent) {
       return set({ approvals: { ...state.approvals, [event.approval.id]: event.approval } });
     case "routine.upserted": return set({ routines: { ...state.routines, [event.routine.id]: event.routine } });
     case "routine.deleted": return set({ routines: without(state.routines, event.routineId) });
+    case "settings.updated": return set({ models: event.models, defaultModel: event.defaultModel, configured: event.configured });
   }
 }
 
@@ -87,7 +89,7 @@ async function loadState() {
   set({
     ready: true, error: null,
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
-    models: snapshot.models, defaultModel: snapshot.defaultModel,
+    models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
   });
 }
 

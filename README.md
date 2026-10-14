@@ -37,15 +37,27 @@ has no accounts: your Tailscale network is the only way in.
 ```powershell
 git clone <this repo> colony; cd colony
 npm ci
-copy .env.example .env      # then fill in COLONY_API_BASE_URL, COLONY_API_KEY, COLONY_MODELS
 npm run computer:build      # once, if you use Docker computers
 npm run build
 npm start                   # http://127.0.0.1:8787
 ```
 
-Everything Colony stores lives in `data/`: the SQLite database, each Bot's folder
-(`data/bots/<id>/` with `SOUL.md`, `MEMORY.md`, `skills/`, `workspace/`), and the
-push keys. Your API key stays in `.env`. Both are git-ignored.
+Open Colony and tap the **gear** (Settings) to connect a model.
+- Pick a provider preset or type any OpenAI-compatible base URL, then paste your
+  API key.
+- **Check connection** lists the provider's models; choose yours. The first is
+  the default for new Bots.
+- Switch keys, providers or models any time. The next reply uses them, with no
+  restart.
+- The key is saved in `data/settings.json`, readable only by you. Devices only
+  ever see its last four characters.
+- A saved key is never sent to a different address than the one it was saved for.
+
+Optionally, `.env` (see `.env.example`) can supply starting values instead.
+
+Everything Colony stores lives in `data/`: the SQLite database, settings, each
+Bot's folder (`data/bots/<id>/` with `SOUL.md`, `MEMORY.md`, `skills/`,
+`workspace/`), and the push keys. `data/` and `.env` are git-ignored.
 
 Only run one Colony per `data/` folder. A second copy refuses to start, so
 routines can't run twice.

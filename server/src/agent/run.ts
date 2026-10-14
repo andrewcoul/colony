@@ -123,7 +123,7 @@ export class AgentRunner {
     const emitSteps = () => this.store.updateMessage(messageId, { text, reasoning, steps });
 
     try {
-      if (!modelConfigured()) throw new Error("No model is configured. Set COLONY_API_BASE_URL, COLONY_API_KEY and COLONY_MODELS in .env.");
+      if (!modelConfigured()) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
       const bots = this.store.listBots();
       const names = new Map(bots.map((item) => [item.id, item.name]));
       const others = bots.filter((item) => chat.memberIds.includes(item.id) && item.id !== botId);
