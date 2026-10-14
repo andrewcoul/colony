@@ -3,7 +3,7 @@
 #   Install:  powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1
 #   Remove:   powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1 -Remove
 # Build first (npm run build). After pulling changes, rebuild and restart:
-#   npm run build; powershell -ExecutionPolicy Bypass -File scriptsestart.ps1
+#   npm run build; powershell -ExecutionPolicy Bypass -File scripts\restart.ps1
 param([switch]$Remove)
 
 $ErrorActionPreference = "Stop"
