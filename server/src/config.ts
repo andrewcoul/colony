@@ -13,8 +13,8 @@ const models = list(process.env.COLONY_MODELS);
 export type ModelConfig = { providerName: string; baseURL: string; apiKey: string; models: string[]; defaultModel: string };
 
 /**
- * Any OpenAI-compatible endpoint: OpenCode Go, OpenRouter, xAI, a local server…
- * .env gives the starting values; Settings in the app replace them at runtime (see settings.ts).
+ * Starting values for the model provider (any OpenAI-compatible endpoint). Settings in
+ * the app take over once saved; see settings.ts.
  */
 const model: ModelConfig = {
   baseURL: process.env.COLONY_API_BASE_URL ?? "",
@@ -43,10 +43,3 @@ export const config = {
   },
 } as const;
 
-export function modelConfigured() {
-  return Boolean(config.model.baseURL && config.model.defaultModel);
-}
-
-export function resolveModel(requested: string | undefined) {
-  return requested && config.model.models.includes(requested) ? requested : config.model.defaultModel;
-}

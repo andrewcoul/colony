@@ -11,6 +11,7 @@ export type Bot = {
   description: string;
   /** Seed for the generated face; defaults to the name. */
   faceSeed: string;
+  /** "<provider id>::<model id>", picked from the providers in Settings. */
   model: string;
   /** Whether the Bot has its own Docker computer. */
   computer: boolean;
@@ -95,6 +96,9 @@ export type Routine = {
   createdAt: number;
 };
 
+/** A model a Bot can use: which provider, and which of its models. */
+export type ModelOption = { ref: string; providerId: string; providerName: string; model: string };
+
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
 export type Approval = {
@@ -119,7 +123,8 @@ export type AppState = {
   /** Pending approvals plus the most recent resolved ones. */
   approvals: Approval[];
   routines: Routine[];
-  models: string[];
+  /** Every model across every provider in Settings. */
+  models: ModelOption[];
   defaultModel: string;
   /** Whether a model connection is set up (Settings shows a prompt when it isn't). */
   configured: boolean;
@@ -135,7 +140,7 @@ export type ServerEvent =
   | { type: "chat.deleted"; chatId: string }
   | { type: "message.upserted"; message: Message }
   | { type: "approval.upserted"; approval: Approval }
-  | { type: "settings.updated"; models: string[]; defaultModel: string; configured: boolean }
+  | { type: "settings.updated"; models: ModelOption[]; defaultModel: string; configured: boolean }
   | { type: "routine.upserted"; routine: Routine }
   | { type: "routine.deleted"; routineId: string };
 

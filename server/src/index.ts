@@ -13,12 +13,12 @@ import { BrowserService } from "./computer/browser.js";
 import { ComputerService } from "./computer/docker.js";
 import { tailnetOnly } from "./access.js";
 import { createApi } from "./api.js";
-import { config, modelConfigured } from "./config.js";
+import { config } from "./config.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
 import { PushService } from "./push.js";
 import { RoutineScheduler } from "./routines.js";
-import { loadSettings } from "./settings.js";
+import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
 import { Store } from "./store.js";
 
 // One Colony per data folder: a second one would run every routine twice.
@@ -42,6 +42,11 @@ const events = new EventLog(db);
 const store = new Store(db, events);
 store.recoverAfterRestart();
 loadSettings();
+// Bots from before multiple providers stored a plain model id; point them at its provider.
+for (const bot of store.listBots()) {
+  const target = bot.model.includes("::") ? null : resolveModel(bot.model, { fallback: false });
+  if (target) store.updateBot(bot.id, { model: target.ref });
+}
 const gate = new ApprovalGate(store);
 const computer = new ComputerService(store, events);
 void computer.syncStates();

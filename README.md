@@ -42,18 +42,24 @@ npm run build
 npm start                   # http://127.0.0.1:8787
 ```
 
-Open Colony and tap the **gear** (Settings) to connect a model.
-- Pick a provider preset or type any OpenAI-compatible base URL, then paste your
-  API key.
-- **Check connection** lists the provider's models; choose yours. The first is
-  the default for new Bots.
-- Switch keys, providers or models any time. The next reply uses them, with no
+Open Colony and tap the **gear** (Settings) to connect models.
+- **Add provider**: pick a preset or type any OpenAI-compatible base URL, then
+  paste its API key.
+- **Check connection** lists that provider's models; choose the ones you want.
+- Add as many providers as you like, each with its own key. For example,
+  OpenRouter for Claude, OpenCode Go for DeepSeek, and Ollama for local models.
+- Each Bot uses any model from any provider (pick it in the Bot's profile). Set
+  the **default model** for new Bots at the top of Settings.
+- Change keys, providers or models any time. The next reply uses them, with no
   restart.
-- The key is saved in `data/settings.json`, readable only by you. Devices only
-  ever see its last four characters.
-- A saved key is never sent to a different address than the one it was saved for.
+- If you remove a model or provider, Bots that used it fall back to the default.
+- A Bot's failed reply shows the provider's own error, e.g. a model that needs a
+  different API.
+- Keys are saved in `data/settings.json`, readable only by you. Devices only ever
+  see their last four characters.
+- A saved key is only ever sent to the address it was saved for.
 
-Optionally, `.env` (see `.env.example`) can supply starting values instead.
+Optionally, `.env` (see `.env.example`) can supply a first provider instead.
 
 Everything Colony stores lives in `data/`: the SQLite database, settings, each
 Bot's folder (`data/bots/<id>/` with `SOUL.md`, `MEMORY.md`, `skills/`,

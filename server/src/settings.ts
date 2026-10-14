@@ -1,81 +1,160 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { config, modelConfigured } from "./config.js";
+import { config } from "./config.js";
+import type { ModelOption } from "./shared/types.js";
 
-export type ModelSettingsInput = { providerName: string; baseURL: string; apiKey?: string; models: string[] };
+/** One OpenAI-compatible provider: its address, key, and the models you've picked from it. */
+export type Provider = { id: string; name: string; baseURL: string; apiKey: string; models: string[] };
+export type ProviderInput = { name: string; baseURL: string; apiKey?: string; models: string[] };
+export type ModelTarget = { provider: Provider; model: string; ref: string };
 
-/** What devices see. The key itself never leaves the server. */
-export type ModelSettingsView = {
-  providerName: string;
-  baseURL: string;
-  models: string[];
-  defaultModel: string;
-  keySet: boolean;
-  /** Last four characters, so you can tell keys apart. */
-  keyHint: string | null;
-  configured: boolean;
-  source: "app" | "env";
-};
-
-const settingsFile = () => path.join(config.dataDir, "settings.json");
-let source: "app" | "env" = "env";
-
-const normalizeURL = (url: string) => url.trim().replace(/\/+$/, "");
-
-/** Applies settings saved in the app over the .env values. Call once at startup. */
-export function loadSettings() {
-  try {
-    const saved = JSON.parse(fs.readFileSync(settingsFile(), "utf8")) as { model?: Omit<ModelSettingsInput, "apiKey"> & { apiKey: string } };
-    if (saved.model) { apply(saved.model); source = "app"; }
-  } catch { /* No saved settings yet: .env values stand. */ }
-}
-
-function apply(next: { providerName: string; baseURL: string; apiKey: string; models: string[] }) {
-  Object.assign(config.model, { ...next, baseURL: normalizeURL(next.baseURL), defaultModel: next.models[0] ?? "" });
-}
+/** What devices see. Keys never leave the server. */
+export type ProviderView = Omit<Provider, "apiKey"> & { keySet: boolean; keyHint: string | null };
+export type SettingsView = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
 
 /**
- * Saves the model connection and switches to it immediately (the next reply uses it).
- * A blank key keeps the saved one, but only for the same address: a key is never
- * sent to a different provider than the one it was saved for.
+ * Bots point at "<provider id>::<model id>". Model ids often contain "/" or ":"
+ * (openai/gpt-…, llama3:8b), so the separator is a double colon.
  */
-export function saveModelSettings(input: ModelSettingsInput) {
-  const baseURL = normalizeURL(input.baseURL);
-  const sameProvider = baseURL === normalizeURL(config.model.baseURL);
-  const apiKey = input.apiKey?.trim() || (sameProvider ? config.model.apiKey : "");
-  const models = [...new Set(input.models.map((item) => item.trim()).filter(Boolean))];
-  const next = { providerName: input.providerName.trim(), baseURL, apiKey, models };
+const SEP = "::";
+export const modelRef = (providerId: string, model: string) => `${providerId}${SEP}${model}`;
+
+let providers: Provider[] = [];
+let defaultRef = "";
+let source: "app" | "env" = "env";
+
+const settingsFile = () => path.join(config.dataDir, "settings.json");
+const normalizeURL = (url: string) => url.trim().replace(/\/+$/, "");
+const hostName = (url: string) => { try { return new URL(url).hostname; } catch { return "Provider"; } };
+
+/** Loads providers saved in the app, or starts from .env. Call once at startup. */
+export function loadSettings() {
+  const env = config.model;
+  providers = env.baseURL && env.models.length
+    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), apiKey: env.apiKey, models: [...env.models] }]
+    : [];
+  defaultRef = "";
+  source = "env";
+  try {
+    const saved = JSON.parse(fs.readFileSync(settingsFile(), "utf8")) as {
+      providers?: Provider[];
+      defaultModel?: string;
+      /** The single-provider format from before multiple providers. */
+      model?: { providerName: string; baseURL: string; apiKey: string; models: string[] };
+    };
+    if (saved.providers) {
+      providers = saved.providers;
+      defaultRef = saved.defaultModel ?? "";
+    } else if (saved.model) {
+      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), apiKey: saved.model.apiKey, models: saved.model.models }];
+    }
+    source = "app";
+  } catch { /* Nothing saved yet: .env values stand. */ }
+  ensureDefault();
+}
+
+function ensureDefault() {
+  if (find(defaultRef)) return;
+  const first = providers.find((provider) => provider.models.length);
+  defaultRef = first ? modelRef(first.id, first.models[0]) : "";
+}
+
+function persist() {
   fs.mkdirSync(config.dataDir, { recursive: true });
   // Write then rename, so a crash never leaves half a file. Readable only by you.
   const temp = `${settingsFile()}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify({ model: next }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef }, null, 2), { mode: 0o600 });
   fs.renameSync(temp, settingsFile());
-  apply(next);
   source = "app";
-  return modelSettingsView();
 }
 
-export function modelSettingsView(): ModelSettingsView {
-  const key = config.model.apiKey;
+/** An exact "<provider>::<model>" ref that's still configured, or null. */
+function find(ref: string | undefined): ModelTarget | null {
+  if (!ref) return null;
+  const split = ref.indexOf(SEP);
+  if (split < 0) return null;
+  const provider = providers.find((item) => item.id === ref.slice(0, split));
+  const model = ref.slice(split + SEP.length);
+  return provider?.models.includes(model) ? { provider, model, ref } : null;
+}
+
+/**
+ * What a Bot's model setting means right now. Accepts refs and plain model ids from
+ * before multiple providers (matched to the first provider offering that model).
+ * Falls back to the default model unless `fallback` is false.
+ */
+export function resolveModel(requested: string | undefined, { fallback = true } = {}): ModelTarget | null {
+  const exact = find(requested);
+  if (exact) return exact;
+  if (requested && !requested.includes(SEP)) {
+    const provider = providers.find((item) => item.models.includes(requested));
+    if (provider) return { provider, model: requested, ref: modelRef(provider.id, requested) };
+  }
+  return fallback ? find(defaultRef) : null;
+}
+
+export const modelConfigured = () => Boolean(find(defaultRef));
+
+export function modelOptions(): ModelOption[] {
+  return providers.flatMap((provider) => provider.models.map((model) => ({ ref: modelRef(provider.id, model), providerId: provider.id, providerName: provider.name, model })));
+}
+
+export function defaultModel() {
+  return defaultRef;
+}
+
+export function settingsView(): SettingsView {
   return {
-    providerName: config.model.providerName,
-    baseURL: config.model.baseURL,
-    models: [...config.model.models],
-    defaultModel: config.model.defaultModel,
-    keySet: Boolean(key),
-    keyHint: key.length >= 12 ? key.slice(-4) : null,
+    providers: providers.map(({ apiKey, ...provider }) => ({ ...provider, keySet: Boolean(apiKey), keyHint: apiKey.length >= 12 ? apiKey.slice(-4) : null })),
+    defaultModel: defaultRef,
     configured: modelConfigured(),
     source,
   };
 }
 
-/** The key to use when checking `baseURL`: one typed in, or the saved one for that same address. */
-export function keyFor(baseURL: string, typed?: string) {
-  if (typed?.trim()) return typed.trim();
-  return normalizeURL(baseURL) === normalizeURL(config.model.baseURL) ? config.model.apiKey : "";
+/**
+ * Adds a provider (id null) or updates one. A blank key keeps the saved one only while
+ * the address stays the same: a key is never sent anywhere but where it was saved for.
+ */
+export function saveProvider(id: string | null, input: ProviderInput) {
+  const existing = id ? providers.find((item) => item.id === id) : undefined;
+  if (id && !existing) throw new Error("That provider no longer exists.");
+  const baseURL = normalizeURL(input.baseURL);
+  const keepKey = existing && normalizeURL(existing.baseURL) === baseURL;
+  const next: Provider = {
+    id: existing?.id ?? `p${randomBytes(4).toString("hex")}`,
+    name: input.name.trim() || hostName(baseURL),
+    baseURL,
+    apiKey: input.apiKey?.trim() || (keepKey ? existing.apiKey : ""),
+    models: [...new Set(input.models.map((item) => item.trim()).filter(Boolean))],
+  };
+  providers = existing ? providers.map((item) => (item.id === next.id ? next : item)) : [...providers, next];
+  ensureDefault();
+  persist();
+  return next.id;
 }
 
-/** Lists the provider's models (OpenAI-compatible GET /models). Doubles as a connection check. */
+export function deleteProvider(id: string) {
+  providers = providers.filter((item) => item.id !== id);
+  ensureDefault();
+  persist();
+}
+
+export function setDefaultModel(ref: string) {
+  if (!find(ref)) throw new Error("That model isn't configured.");
+  defaultRef = ref;
+  persist();
+}
+
+/** The key for checking `baseURL`: one typed in, or the named provider's saved key if the address matches. */
+export function keyFor(providerId: string | undefined, baseURL: string, typed?: string) {
+  if (typed?.trim()) return typed.trim();
+  const provider = providers.find((item) => item.id === providerId);
+  return provider && normalizeURL(provider.baseURL) === normalizeURL(baseURL) ? provider.apiKey : "";
+}
+
+/** Lists a provider's models (OpenAI-compatible GET /models). Doubles as a connection check. */
 export async function listProviderModels(baseURL: string, apiKey: string): Promise<string[]> {
   let response: Response;
   try {

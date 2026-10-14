@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { config, modelConfigured, resolveModel } from "./config.js";
+
 import * as settings from "./settings.js";
 import type { EventLog } from "./events.js";
 import * as files from "./files.js";
@@ -78,9 +78,9 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     // Recent approvals of every status, so old cards can show "Approved"/"Denied".
     approvals: store.listApprovals(),
     routines: store.listRoutines(),
-    models: [...config.model.models],
-    defaultModel: config.model.defaultModel,
-    configured: modelConfigured(),
+    models: settings.modelOptions(),
+    defaultModel: settings.defaultModel(),
+    configured: settings.modelConfigured(),
     seq: events.latestSeq(),
   }));
 
@@ -93,7 +93,7 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
   // ---------- Bots ----------
   api.post("/bots", async (c) => {
     const input = botInput.parse(await c.req.json());
-    const bot = store.createBot({ ...input, model: resolveModel(input.model) });
+    const bot = store.createBot({ ...input, model: settings.resolveModel(input.model)?.ref ?? "" });
     files.initBotFolder(bot);
     try { runner.start(bot.chatId, bot.id, { hiddenPrompt: INTRO_PROMPT }); } catch { /* no model yet: the Bot still exists */ }
     return c.json(bot, 201);
@@ -101,7 +101,8 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
 
   api.patch("/bots/:id", async (c) => {
     const patch = botPatch.parse(await c.req.json());
-    const bot = store.updateBot(c.req.param("id"), { ...patch, ...(patch.model ? { model: resolveModel(patch.model) } : {}) });
+    if (patch.model && !settings.resolveModel(patch.model, { fallback: false })) return c.json({ error: "That model isn't in Settings." }, 400);
+    const bot = store.updateBot(c.req.param("id"), { ...patch, ...(patch.model ? { model: settings.resolveModel(patch.model)!.ref } : {}) });
     return bot ? c.json(bot) : c.json({ error: "Bot not found." }, 404);
   });
 
@@ -269,24 +270,42 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     return c.body(null, 204);
   });
 
-  // ---------- Settings: the model connection, switchable any time ----------
+  // ---------- Settings: model providers, switchable any time ----------
   const providerURL = z.string().trim().url().max(500).refine((url) => /^https?:\/\//i.test(url), "Use an http(s) address.");
-  api.get("/settings/model", (c) => c.json(settings.modelSettingsView()));
-  api.put("/settings/model", async (c) => {
-    const input = z.object({
-      providerName: z.string().trim().min(1, "Name the provider.").max(40),
-      baseURL: providerURL,
-      apiKey: z.string().max(500).optional(),
-      models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(30),
-    }).parse(await c.req.json());
-    const view = settings.saveModelSettings(input);
-    events.emit({ type: "settings.updated", models: view.models, defaultModel: view.defaultModel, configured: view.configured });
-    return c.json(view);
+  const providerInput = z.object({
+    name: z.string().trim().max(40).default(""),
+    baseURL: providerURL,
+    apiKey: z.string().max(500).optional(),
+    models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(60),
   });
-  api.post("/settings/model/check", async (c) => {
-    const { baseURL, apiKey } = z.object({ baseURL: providerURL, apiKey: z.string().max(500).optional() }).parse(await c.req.json());
+  const settingsChanged = () => {
+    const view = settings.settingsView();
+    events.emit({ type: "settings.updated", models: settings.modelOptions(), defaultModel: view.defaultModel, configured: view.configured });
+    return view;
+  };
+  api.get("/settings", (c) => c.json(settings.settingsView()));
+  api.post("/settings/providers", async (c) => {
+    settings.saveProvider(null, providerInput.parse(await c.req.json()));
+    return c.json(settingsChanged(), 201);
+  });
+  api.put("/settings/providers/:id", async (c) => {
+    try { settings.saveProvider(c.req.param("id"), providerInput.parse(await c.req.json())); }
+    catch (failure) { if (failure instanceof z.ZodError) throw failure; return c.json({ error: (failure as Error).message }, 404); }
+    return c.json(settingsChanged());
+  });
+  api.delete("/settings/providers/:id", (c) => {
+    settings.deleteProvider(c.req.param("id"));
+    return c.json(settingsChanged());
+  });
+  api.put("/settings/default-model", async (c) => {
+    const { model } = z.object({ model: z.string().max(300) }).parse(await c.req.json());
+    try { settings.setDefaultModel(model); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }
+    return c.json(settingsChanged());
+  });
+  api.post("/settings/providers/check", async (c) => {
+    const { providerId, baseURL, apiKey } = z.object({ providerId: z.string().max(40).optional(), baseURL: providerURL, apiKey: z.string().max(500).optional() }).parse(await c.req.json());
     try {
-      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(baseURL, apiKey)) });
+      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(providerId, baseURL, apiKey)) });
     } catch (failure) {
       return c.json({ error: failure instanceof Error ? failure.message : "Couldn't connect." }, 400);
     }

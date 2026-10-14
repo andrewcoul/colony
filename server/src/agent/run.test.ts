@@ -21,6 +21,8 @@ const { createApi } = await import("../api.js");
 const { RoutineScheduler } = await import("../routines.js");
 const { PushService } = await import("../push.js");
 const files = await import("../files.js");
+// .env values become the one provider "env" (models mock-model and other-model).
+(await import("../settings.js")).loadSettings();
 type ColonyTool = import("./tools.js").ColonyTool;
 
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
@@ -177,14 +179,14 @@ describe("Bots", () => {
     const { json: bot } = await call("POST", "/bots", { name: "Kenny", title: "Researcher", description: "Finds things.", computer: true });
     await finished(store, bot.chatId, 1);
     const { json: patched } = await call("PATCH", `/bots/${bot.id}`, { model: "other-model" });
-    expect(patched).toMatchObject({ model: "other-model", title: "Researcher", description: "Finds things.", computer: true });
+    expect(patched).toMatchObject({ model: "env::other-model", title: "Researcher", description: "Finds things.", computer: true });
   });
 
   test("unknown models fall back to the default", async () => {
     script = scriptedModel([textTurn("Hi.")]);
     const { call } = setup();
-    expect((await call("POST", "/bots", { name: "A", model: "expensive-unlisted" })).json.model).toBe("mock-model");
-    expect((await call("POST", "/bots", { name: "B", model: "other-model" })).json.model).toBe("other-model");
+    expect((await call("POST", "/bots", { name: "A", model: "expensive-unlisted" })).json.model).toBe("env::mock-model");
+    expect((await call("POST", "/bots", { name: "B", model: "env::other-model" })).json.model).toBe("env::other-model");
   });
 });
 

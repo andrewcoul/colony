@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Approval, Bot, Chat, EphemeralEvent, Message, Routine, ServerEvent } from "@shared/types";
+import type { Approval, Bot, Chat, EphemeralEvent, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -12,7 +12,7 @@ export type LiveState = {
   routines: Record<string, Routine>;
   /** Loaded transcripts, keyed by chat id. Chats load on first open. */
   messages: Record<string, Message[]>;
-  models: string[];
+  models: ModelOption[];
   defaultModel: string;
   configured: boolean;
   error: string | null;

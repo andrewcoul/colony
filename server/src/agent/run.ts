@@ -1,6 +1,7 @@
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { stepCountIs, streamText, type LanguageModel, type ModelMessage } from "ai";
-import { config, modelConfigured, resolveModel } from "../config.js";
+import { APICallError, stepCountIs, streamText, type LanguageModel, type ModelMessage } from "ai";
+import { config } from "../config.js";
+import { resolveModel, type ModelTarget } from "../settings.js";
 import type { EventLog } from "../events.js";
 import type { Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
@@ -9,17 +10,17 @@ import { historyFor, stripNotes, systemPrompt } from "./prompt.js";
 import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./tools.js";
 
 /** `sessionId` groups one chat's requests; some providers (OpenCode Go) require it. */
-export type ModelFactory = (modelId: string, sessionId: string) => LanguageModel;
+export type ModelFactory = (target: ModelTarget, sessionId: string) => LanguageModel;
 
-export const defaultModelFactory: ModelFactory = (modelId, sessionId) => createOpenAICompatible({
-  name: config.model.providerName,
-  baseURL: config.model.baseURL,
-  apiKey: config.model.apiKey,
+export const defaultModelFactory: ModelFactory = ({ provider, model }, sessionId) => createOpenAICompatible({
+  name: provider.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "provider",
+  baseURL: provider.baseURL,
+  apiKey: provider.apiKey,
   headers: {
     "User-Agent": "colony/0.2",
-    ...(new URL(config.model.baseURL).hostname.endsWith("opencode.ai") ? { "x-opencode-session": sessionId } : {}),
+    ...(new URL(provider.baseURL).hostname.endsWith("opencode.ai") ? { "x-opencode-session": sessionId } : {}),
   },
-}).chatModel(modelId);
+}).chatModel(model);
 
 type StartOptions = {
   /** Extra user-turn text that is sent to the model but not shown in the chat. */
@@ -122,8 +123,9 @@ export class AgentRunner {
     };
     const emitSteps = () => this.store.updateMessage(messageId, { text, reasoning, steps });
 
+    const target = resolveModel(bot.model);
     try {
-      if (!modelConfigured()) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
+      if (!target) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
       const bots = this.store.listBots();
       const names = new Map(bots.map((item) => [item.id, item.name]));
       const others = bots.filter((item) => chat.memberIds.includes(item.id) && item.id !== botId);
@@ -140,7 +142,7 @@ export class AgentRunner {
         consult: (toId, message) => this.consult(botId, toId, message, controller.signal, depth),
       };
       const result = streamText({
-        model: this.modelFactory(resolveModel(bot.model), `${chatId}:${botId}`),
+        model: this.modelFactory(target, `${chatId}:${botId}`),
         system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId)),
         messages: history,
         tools: toToolSet(registry, ctx),
@@ -210,7 +212,11 @@ export class AgentRunner {
       } else {
         // Provider errors can echo request details; log only the shape.
         console.warn(`[colony] ${bot.name} run failed:`, failure instanceof Error ? `${failure.name}: ${failure.message.slice(0, 300)}` : "unknown error");
-        error = failure instanceof Error && /configured|Nothing to reply/.test(failure.message) ? failure.message : "The model couldn't finish this reply. Check the model settings and try again.";
+        // Say what the provider said (e.g. a model that needs another protocol), without request details.
+        const said = APICallError.isInstance(failure) ? failure.message.replace(/\s+/g, " ").trim().slice(0, 160) : "";
+        error = failure instanceof Error && /configured|Nothing to reply/.test(failure.message)
+          ? failure.message
+          : `The model couldn't finish this reply${said && target ? ` (${target.provider.name} said: “${said}”)` : ""}. Check this Bot's model in its profile or in Settings.`;
       }
     } finally {
       clearTimeout(timeout);

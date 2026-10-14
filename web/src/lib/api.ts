@@ -24,16 +24,9 @@ export type BrowserInput =
 
 export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
 
-export type ModelSettings = {
-  providerName: string;
-  baseURL: string;
-  models: string[];
-  defaultModel: string;
-  keySet: boolean;
-  keyHint: string | null;
-  configured: boolean;
-  source: "app" | "env";
-};
+export type ProviderView = { id: string; name: string; baseURL: string; models: string[]; keySet: boolean; keyHint: string | null };
+export type ProviderInput = { name: string; baseURL: string; apiKey?: string; models: string[] };
+export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
 
 export type MemoryUsage = { used: number; budget: number };
 export type BotMemory = {
@@ -63,9 +56,12 @@ export const api = {
   files: (botId: string, path = "") => request<FileEntry[]>("GET", `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
-  modelSettings: () => request<ModelSettings>("GET", "/settings/model"),
-  saveModelSettings: (input: { providerName: string; baseURL: string; apiKey?: string; models: string[] }) => request<ModelSettings>("PUT", "/settings/model", input),
-  checkModelSettings: (baseURL: string, apiKey?: string) => request<{ models: string[] }>("POST", "/settings/model/check", { baseURL, apiKey }),
+  settings: () => request<Settings>("GET", "/settings"),
+  addProvider: (input: ProviderInput) => request<Settings>("POST", "/settings/providers", input),
+  updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
+  deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),
+  setDefaultModel: (model: string) => request<Settings>("PUT", "/settings/default-model", { model }),
+  checkProvider: (input: { providerId?: string; baseURL: string; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
   soul: (botId: string) => request<{ content: string }>("GET", `/bots/${botId}/soul`),
   saveSoul: (botId: string, content: string) => request<void>("PUT", `/bots/${botId}/soul`, { content }),
   memory: (botId: string) => request<BotMemory>("GET", `/bots/${botId}/memory`),
