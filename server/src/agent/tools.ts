@@ -2,6 +2,9 @@ import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { config } from "../config.js";
 import * as files from "../files.js";
+import type { Store } from "../store.js";
+import { describeSchedule, MIN_INTERVAL_MINUTES, parseTime } from "../shared/schedule.js";
+import type { Schedule } from "../shared/types.js";
 import { isPublicWebUrl } from "../shared/urlPolicy.js";
 import type { ApprovalGate } from "./approvals.js";
 
@@ -13,6 +16,7 @@ export type ToolContext = {
   messageId: string;
   signal: AbortSignal;
   gate: ApprovalGate;
+  store: Store;
 };
 
 /**
@@ -40,6 +44,27 @@ async function firecrawl<T>(path: string, body: unknown, signal: AbortSignal, ti
   const data = (await response.json()) as { success?: boolean; data?: T; error?: string };
   if (!data.success || data.data === undefined) throw new Error(data.error || "Firecrawl request failed.");
   return data.data;
+}
+
+const MAX_ROUTINES = 20;
+
+/** Schedules as the model writes them; "once" takes a local date-time string. */
+const scheduleInput = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("daily"),
+    time: z.string().refine((time) => parseTime(time) !== null, "time must be 24-hour HH:MM").describe("24-hour local time, e.g. \"08:00\"."),
+    days: z.array(z.number().int().min(0).max(6)).max(7).default([]).describe("0 = Sunday … 6 = Saturday. Empty means every day; [1,2,3,4,5] is weekdays."),
+  }),
+  z.object({ type: z.literal("interval"), minutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(7 * 1440) }),
+  z.object({ type: z.literal("once"), at: z.string().describe("Local date-time, e.g. \"2026-10-14T09:00\".") }),
+]);
+
+function toSchedule(input: z.infer<typeof scheduleInput>): Schedule {
+  if (input.type !== "once") return input;
+  const at = new Date(input.at).getTime();
+  if (Number.isNaN(at)) throw new Error(`Couldn't read the date "${input.at}". Use a local date-time like 2026-10-14T09:00.`);
+  if (at <= Date.now()) throw new Error("That time has already passed.");
+  return { type: "once", at };
 }
 
 const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; } };
@@ -114,6 +139,47 @@ export const coreTools = {
     }),
     describe: ({ name }) => `Saved skill ${quote(name, 40)}`,
     execute: async ({ name, description, body }, ctx) => ({ slug: files.saveSkill(ctx.botId, name, description, body) }),
+  }),
+
+  routines: define({
+    description: "Manage your routines: standing work you do on a schedule without being asked, like a morning briefing or a Friday reminder. Each run you receive the routine's instruction and post the result to the chat it was created in; the user gets a notification. Times are the user's local time. Write the prompt so it stands alone. Confirm the schedule to the user in your reply.",
+    inputSchema: z.object({
+      action: z.enum(["create", "update", "delete", "list"]),
+      id: z.string().max(80).optional().describe("The routine's id, for update and delete."),
+      title: z.string().trim().min(1).max(80).optional().describe("Short name, e.g. \"Morning briefing\"."),
+      prompt: z.string().trim().min(1).max(4000).optional().describe("What to do on every run, self-contained."),
+      schedule: scheduleInput.optional(),
+      enabled: z.boolean().optional().describe("false pauses the routine; true resumes it."),
+    }),
+    describe: ({ action, title }) => action === "list" ? "Checked my routines"
+      : `${{ create: "Created", update: "Updated", delete: "Deleted" }[action]} routine${title ? ` ${quote(title, 40)}` : ""}`,
+    summarize: (output: { schedule?: string; count?: number }) => output.schedule ?? (output.count !== undefined ? `${output.count} routine${output.count === 1 ? "" : "s"}` : undefined),
+    execute: async ({ action, id, title, prompt, schedule, enabled }, ctx) => {
+      const mine = ctx.store.listRoutines(ctx.botId);
+      const view = (routine: (typeof mine)[number]) => ({
+        id: routine.id, title: routine.title, schedule: describeSchedule(routine.schedule), enabled: routine.enabled,
+        nextRun: routine.nextRunAt ? new Date(routine.nextRunAt).toString() : null, prompt: routine.prompt,
+      });
+      if (action === "list") return { count: mine.length, routines: mine.map(view) };
+      if (action === "create") {
+        if (!title || !prompt || !schedule) throw new Error("create needs a title, a prompt and a schedule.");
+        if (mine.length >= MAX_ROUTINES) throw new Error(`You already have ${MAX_ROUTINES} routines; delete one first.`);
+        const routine = ctx.store.createRoutine({ botId: ctx.botId, chatId: ctx.chatId, title, prompt, schedule: toSchedule(schedule) });
+        ctx.store.appendCard(ctx.messageId, { type: "routine", routineId: routine.id, action: "created", title: routine.title });
+        return view(routine);
+      }
+      const routine = mine.find((item) => item.id === id) ?? mine.find((item) => title && item.title.toLowerCase() === title.toLowerCase());
+      if (!routine) throw new Error("No routine of yours matches; list them to get the id.");
+      if (action === "delete") {
+        ctx.store.deleteRoutine(routine.id);
+        return { deleted: routine.title };
+      }
+      const updated = ctx.store.updateRoutine(routine.id, {
+        ...(title ? { title } : {}), ...(prompt ? { prompt } : {}), ...(schedule ? { schedule: toSchedule(schedule) } : {}), ...(enabled !== undefined ? { enabled } : {}),
+      })!;
+      ctx.store.appendCard(ctx.messageId, { type: "routine", routineId: updated.id, action: "updated", title: updated.title });
+      return view(updated);
+    },
   }),
 } satisfies Record<string, ColonyTool>;
 

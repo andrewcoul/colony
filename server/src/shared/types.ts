@@ -52,7 +52,7 @@ export type Step = {
 
 export type Card =
   | { type: "approval"; approvalId: string }
-  | { type: "routine"; routineId: string; action: "created" | "updated" | "ran" }
+  | { type: "routine"; routineId: string; action: "created" | "updated" | "ran"; title: string }
   | { type: "handoff"; botIds: string[]; count: number; summary?: string };
 
 export type MessageStatus = "streaming" | "done" | "failed" | "stopped";
@@ -68,6 +68,28 @@ export type Message = {
   cards: Card[];
   status: MessageStatus;
   error: string | null;
+  createdAt: number;
+};
+
+/** When a routine runs, in the PC's local time. Days are 0 (Sunday) to 6; empty means every day. */
+export type Schedule =
+  | { type: "daily"; time: string; days: number[] }
+  | { type: "interval"; minutes: number }
+  | { type: "once"; at: number };
+
+export type Routine = {
+  id: string;
+  botId: string;
+  /** Where results land: the Bot's own chat or a group it belongs to. */
+  chatId: string;
+  title: string;
+  /** The standing instruction the Bot follows each time. */
+  prompt: string;
+  schedule: Schedule;
+  enabled: boolean;
+  nextRunAt: number | null;
+  lastRunAt: number | null;
+  lastStatus: "done" | "failed" | "stopped" | null;
   createdAt: number;
 };
 
@@ -94,6 +116,7 @@ export type AppState = {
   chats: Chat[];
   /** Pending approvals plus the most recent resolved ones. */
   approvals: Approval[];
+  routines: Routine[];
   models: string[];
   defaultModel: string;
   /** Latest event sequence number; subscribe to /api/events from here. */
@@ -107,7 +130,9 @@ export type ServerEvent =
   | { type: "chat.upserted"; chat: Chat }
   | { type: "chat.deleted"; chatId: string }
   | { type: "message.upserted"; message: Message }
-  | { type: "approval.upserted"; approval: Approval };
+  | { type: "approval.upserted"; approval: Approval }
+  | { type: "routine.upserted"; routine: Routine }
+  | { type: "routine.deleted"; routineId: string };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
 export type EphemeralEvent =

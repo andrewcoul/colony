@@ -13,6 +13,8 @@ import { createApi } from "./api.js";
 import { config, modelConfigured } from "./config.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
+import { PushService } from "./push.js";
+import { RoutineScheduler } from "./routines.js";
 import { Store } from "./store.js";
 
 const db = openDb(path.join(config.dataDir, "colony.db"));
@@ -24,9 +26,12 @@ const computer = new ComputerService(store, events);
 void computer.syncStates();
 const computerToolset = computerTools(computer);
 const runner = new AgentRunner(store, events, gate, (botId) => (store.getBot(botId)?.computer ? { ...coreTools, ...computerToolset } : coreTools));
+const routines = new RoutineScheduler(store, runner);
+routines.start();
+const push = new PushService(db, store, events);
 
 const app = new Hono();
-app.route("/api", createApi({ store, events, gate, runner, computer }));
+app.route("/api", createApi({ store, events, gate, runner, computer, routines, push }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");

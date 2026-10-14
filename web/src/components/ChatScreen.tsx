@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ChevronLeft, Monitor, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowDown, CalendarClock, ChevronLeft, Monitor, MoreHorizontal, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
@@ -8,6 +8,7 @@ import { Composer } from "./Composer";
 import { ComputerPanel } from "./ComputerPanel";
 import { Face } from "./Face";
 import { GroupFaces } from "./Roster";
+import { RoutinesPanel } from "./RoutinesPanel";
 import { MessageItem } from "./Transcript";
 import { Button } from "./ui/button";
 import { MenuContent, MenuItem, MenuRoot, MenuTrigger } from "./ui/menu";
@@ -25,9 +26,11 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
   const [hasOlder, setHasOlder] = useState(true);
-  const [computerOpen, setComputerOpen] = useState(false);
+  const [panel, setPanel] = useState<"computer" | "routines" | null>(null);
+  const togglePanel = (name: "computer" | "routines") => setPanel((current) => (current === name ? null : name));
   const members = useMemo(() => chat.memberIds.map((id) => botMap[id]).filter(Boolean) as Bot[], [chat.memberIds, botMap]);
   const bot = chat.kind === "bot" ? members[0] : undefined;
+  const routineCount = useLive((s) => (bot ? Object.values(s.routines).filter((routine) => routine.botId === bot.id && routine.enabled).length : 0));
   const busy = messages.some((message) => message.status === "streaming");
   const last = messages.at(-1);
   const { ref, onScroll, atBottom, scrollToBottom, unpin } = useStickToBottom(`${messages.length}:${last?.text.length}:${last?.steps.length}:${last?.cards.length}`);
@@ -58,11 +61,20 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
           <strong className="truncate text-[15px]">{chat.title}</strong>
           <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
         </div>
+        {bot && (
+          <Button
+            variant="ghost" size="pill" aria-pressed={panel === "routines"} aria-label={`${bot.name}'s routines`}
+            onClick={() => togglePanel("routines")}
+            className={cn(routineCount ? "text-sky hover:text-sky" : "text-muted", panel === "routines" && "ring-1 ring-sky/40")}
+          >
+            <CalendarClock size={15} /><span className="max-sm:hidden">Routines</span>{routineCount > 0 && <span className="tabular-nums">{routineCount}</span>}
+          </Button>
+        )}
         {bot?.computer && (
           <Button
-            variant="ghost" size="pill" aria-pressed={computerOpen} aria-label={`${bot.name}'s computer`}
-            onClick={() => setComputerOpen(!computerOpen)}
-            className={cn(bot.computerState === "on" ? "bg-lilac/14 text-lilac hover:bg-lilac/20 hover:text-lilac" : "text-muted", computerOpen && "ring-1 ring-lilac/40")}
+            variant="ghost" size="pill" aria-pressed={panel === "computer"} aria-label={`${bot.name}'s computer`}
+            onClick={() => togglePanel("computer")}
+            className={cn(bot.computerState === "on" ? "bg-lilac/14 text-lilac hover:bg-lilac/20 hover:text-lilac" : "text-muted", panel === "computer" && "ring-1 ring-lilac/40")}
           >
             <Monitor size={15} /><span className="max-sm:hidden">Computer</span>
           </Button>
@@ -94,7 +106,8 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
               <p className="py-10 text-center text-label text-muted">{bot ? `Say hello to ${bot.name}.` : "Message the group, or @mention one Bot."}</p>
             )}
             {messages.map((message) => (
-              <MessageItem key={message.id} message={message} bot={botMap[message.author]} showAuthor={chat.kind === "group"} />
+              <MessageItem key={message.id} message={message} bot={botMap[message.author]} showAuthor={chat.kind === "group"}
+                onOpenRoutines={bot ? () => setPanel("routines") : undefined} />
             ))}
           </div>
         </div>
@@ -115,7 +128,8 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
         />
       </div>
     </section>
-    {bot && computerOpen && <ComputerPanel bot={bot} phone={phone} onClose={() => setComputerOpen(false)} />}
+    {bot && panel === "computer" && <ComputerPanel bot={bot} phone={phone} onClose={() => setPanel(null)} />}
+    {bot && panel === "routines" && <RoutinesPanel bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
     </div>
   );
 }

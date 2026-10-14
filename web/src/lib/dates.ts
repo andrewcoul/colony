@@ -29,3 +29,14 @@ export function shortTime(time: number, now = Date.now()) {
   if (time >= startOfToday - 6 * DAY) return date.toLocaleDateString([], { weekday: "short" });
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
+
+/** When a routine runs next: "Today 8:00 AM", "Tomorrow 8:00 AM", "Fri 6:00 PM", or "Oct 30, 9:00 AM". */
+export function upcoming(time: number, now = Date.now()) {
+  const date = new Date(time);
+  const clock = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const startOfToday = new Date(now).setHours(0, 0, 0, 0);
+  if (time < startOfToday + DAY) return `Today ${clock}`;
+  if (time < startOfToday + 2 * DAY) return `Tomorrow ${clock}`;
+  if (time < startOfToday + 7 * DAY) return `${date.toLocaleDateString([], { weekday: "short" })} ${clock}`;
+  return `${date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${clock}`;
+}

@@ -15,8 +15,7 @@ export class ApprovalGate {
 
   async request(input: Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt">, signal: AbortSignal): Promise<boolean> {
     const approval = this.store.createApproval(input);
-    const message = this.store.getMessage(input.messageId);
-    if (message) this.store.updateMessage(message.id, { cards: [...message.cards, { type: "approval", approvalId: approval.id }] });
+    this.store.appendCard(input.messageId, { type: "approval", approvalId: approval.id });
     this.store.setPresence(input.botId, "waiting", input.summary);
 
     const approved = await new Promise<boolean>((resolve) => {

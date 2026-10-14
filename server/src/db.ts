@@ -65,6 +65,28 @@ const MIGRATIONS = [
   );
   `,
   `ALTER TABLE bots ADD COLUMN computer_state TEXT NOT NULL DEFAULT 'off';`,
+  `
+  CREATE TABLE routines (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    chat_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    prompt TEXT NOT NULL,
+    schedule TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    next_run_at INTEGER,
+    last_run_at INTEGER,
+    last_status TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX routines_due ON routines (enabled, next_run_at);
+  CREATE TABLE push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

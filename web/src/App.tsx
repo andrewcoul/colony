@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Plus, WifiOff, X } from "lucide-react";
-import { useLive } from "./lib/live";
+import { setFocusedChat, useLive } from "./lib/live";
 import { ChatScreen } from "./components/ChatScreen";
 import { CreateBotDialog, NewGroupDialog } from "./components/Dialogs";
 import { LogoMark } from "./components/Logo";
@@ -52,6 +52,8 @@ export default function App() {
   useEffect(() => {
     if (ready && chatId && !chat) openChat(null); // Deleted or unknown chat.
   }, [ready, chatId, chat, openChat]);
+  // Tell the server what's on screen so it doesn't notify about it.
+  useEffect(() => { setFocusedChat(chat?.id ?? null); }, [chat?.id]);
 
   if (!ready) {
     return (

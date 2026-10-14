@@ -4,6 +4,7 @@ import type { Bot } from "@shared/types";
 import { api, type FileEntry } from "../lib/api";
 import { onComputerOutput } from "../lib/live";
 import { cn } from "../lib/utils";
+import { SidePanel } from "./SidePanel";
 import { Button } from "./ui/button";
 
 const MAX_TERMINAL = 200_000;
@@ -16,11 +17,7 @@ const STATE_LABEL = { off: "Off", starting: "Starting…", on: "On", error: "Cou
 export function ComputerPanel({ bot, phone, onClose }: { bot: Bot; phone: boolean; onClose: () => void }) {
   const [tab, setTab] = useState<"terminal" | "files">("terminal");
   return (
-    <aside
-      aria-label={`${bot.name}'s computer`}
-      className={cn("flex flex-col gap-3 bg-surface px-4 pt-3.5 pb-4",
-        phone ? "fixed inset-0 z-40 pt-[max(env(safe-area-inset-top),14px)] pb-[max(env(safe-area-inset-bottom),14px)]" : "w-[430px] shrink-0 border-l border-rule")}
-    >
+    <SidePanel label={`${bot.name}'s computer`} phone={phone}>
       <div className="flex items-center gap-2.5">
         <span className={cn("size-2 rounded-full", bot.computerState === "on" ? "bg-lilac" : bot.computerState === "error" ? "bg-coral" : "bg-muted")} />
         <strong className="min-w-0 flex-1 truncate text-sm">{bot.name}'s computer</strong>
@@ -40,7 +37,7 @@ export function ComputerPanel({ bot, phone, onClose }: { bot: Bot; phone: boolea
       </div>
       {tab === "terminal" ? <Terminal bot={bot} /> : <Files botId={bot.id} />}
       <span className="truncate text-meta text-muted">Docker · colony-{bot.id.slice(0, 8)} · /workspace persists</span>
-    </aside>
+    </SidePanel>
   );
 }
 

@@ -6,6 +6,7 @@ import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { LogoMark } from "./Logo";
+import { NotificationsMenu } from "./NotificationsMenu";
 import { Button } from "./ui/button";
 
 const LABEL: Partial<Record<Presence, { text: string; className: string }>> = {
@@ -44,6 +45,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
         <div className="flex items-center justify-between px-5 pt-[max(env(safe-area-inset-top),16px)] pb-4">
           <h1 className="m-0 text-[30px] font-semibold tracking-tight">Bots</h1>
           <div className="flex gap-2.5">
+            <NotificationsMenu className="size-10 bg-raised" />
             <Button variant="outline" size="icon" className="size-10 bg-raised" aria-label="New group" onClick={onNewGroup}><Users size={18} /></Button>
             <Button variant="primary" size="icon" className="size-10" aria-label="New Bot" onClick={onNewBot}><Plus size={19} strokeWidth={2.4} /></Button>
           </div>
@@ -51,7 +53,10 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
       ) : (
         <div className="flex items-center justify-between px-3.5 pt-4 pb-3.5">
           <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><LogoMark />Colony</span>
-          <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />New Bot</Button>
+          <div className="flex items-center gap-2">
+            <NotificationsMenu className="border-transparent" />
+            <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />New Bot</Button>
+          </div>
         </div>
       )}
 

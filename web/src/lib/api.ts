@@ -1,4 +1,4 @@
-import type { AppState, Bot, Chat, Message } from "@shared/types";
+import type { AppState, Bot, Chat, Message, Routine, Schedule } from "@shared/types";
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -14,6 +14,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 }
 
 export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
+
+export type RoutineInput = { title: string; prompt: string; schedule: Schedule; enabled?: boolean };
 
 export type NewBot = { name: string; title: string; description: string; model?: string; computer: boolean; faceSeed?: string };
 
@@ -33,4 +35,14 @@ export const api = {
   files: (botId: string, path = "") => request<FileEntry[]>("GET", `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
+  createRoutine: (botId: string, input: RoutineInput) => request<Routine>("POST", `/bots/${botId}/routines`, input),
+  updateRoutine: (id: string, patch: Partial<RoutineInput>) => request<Routine>("PATCH", `/routines/${id}`, patch),
+  deleteRoutine: (id: string) => request<void>("DELETE", `/routines/${id}`),
+  runRoutine: (id: string) => request<{ messageId: string }>("POST", `/routines/${id}/run`),
+  pushKey: () => request<{ publicKey: string }>("GET", "/push/key"),
+  pushSubscribe: (subscription: PushSubscriptionJSON) => request<void>("POST", "/push/subscribe", subscription),
+  pushUnsubscribe: (endpoint: string) => request<void>("POST", "/push/unsubscribe", { endpoint }),
+  pushStatus: (endpoint: string) => request<{ subscribed: boolean }>("POST", "/push/status", { endpoint }),
+  pushTest: () => request<{ delivered: number }>("POST", "/push/test"),
+  focus: (input: { clientId: string; chatId: string | null; visible: boolean }) => request<void>("POST", "/focus", input),
 };

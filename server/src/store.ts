@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
-import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Message, MessageStatus, Presence, Step } from "./shared/types.js";
+import { nextRun } from "./shared/schedule.js";
+import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Message, MessageStatus, Presence, Routine, Schedule, Step } from "./shared/types.js";
 
 type Row = Record<string, unknown>;
 
@@ -46,6 +47,22 @@ const toApproval = (row: Row): Approval => ({
   createdAt: row.created_at as number,
   resolvedAt: (row.resolved_at as number | null) ?? null,
 });
+
+const toRoutine = (row: Row): Routine => ({
+  id: row.id as string,
+  botId: row.bot_id as string,
+  chatId: row.chat_id as string,
+  title: row.title as string,
+  prompt: row.prompt as string,
+  schedule: JSON.parse(row.schedule as string) as Schedule,
+  enabled: Boolean(row.enabled),
+  nextRunAt: (row.next_run_at as number | null) ?? null,
+  lastRunAt: (row.last_run_at as number | null) ?? null,
+  lastStatus: (row.last_status as Routine["lastStatus"]) ?? null,
+  createdAt: row.created_at as number,
+});
+
+export type RoutinePatch = Partial<Pick<Routine, "title" | "prompt" | "schedule" | "enabled" | "chatId" | "nextRunAt" | "lastRunAt" | "lastStatus">>;
 
 export const newId = () => randomUUID();
 
@@ -103,6 +120,7 @@ export class Store {
     const bot = this.getBot(id);
     if (!bot) return;
     this.db.prepare("DELETE FROM bots WHERE id = ?").run(id);
+    for (const routine of this.listRoutines(id)) this.deleteRoutine(routine.id);
     this.deleteChat(bot.chatId);
     for (const row of this.db.prepare("SELECT chat_id FROM chat_members WHERE bot_id = ?").all(id) as Row[]) {
       this.db.prepare("DELETE FROM chat_members WHERE chat_id = ? AND bot_id = ?").run(row.chat_id as string, id);
@@ -185,6 +203,12 @@ export class Store {
   }
 
   deleteChat(id: string) {
+    // Routines that posted to a deleted group fall back to their Bot's own chat.
+    for (const row of this.db.prepare("SELECT id, bot_id FROM routines WHERE chat_id = ?").all(id) as Row[]) {
+      const bot = this.getBot(row.bot_id as string);
+      if (bot && bot.chatId !== id) this.updateRoutine(row.id as string, { chatId: bot.chatId });
+      else this.deleteRoutine(row.id as string);
+    }
     this.db.prepare("DELETE FROM messages WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chats WHERE id = ?").run(id);
@@ -241,6 +265,57 @@ export class Store {
     if (options.emit !== false) this.events.emit({ type: "message.upserted", message: next });
     if (message.status === "streaming" && next.status !== "streaming") this.touchChat(next);
     return next;
+  }
+
+  appendCard(messageId: string, card: Card) {
+    const message = this.getMessage(messageId);
+    if (message) this.updateMessage(messageId, { cards: [...message.cards, card] });
+  }
+
+  // ---------- Routines ----------
+  listRoutines(botId?: string): Routine[] {
+    const rows = botId
+      ? this.db.prepare("SELECT * FROM routines WHERE bot_id = ? ORDER BY created_at").all(botId)
+      : this.db.prepare("SELECT * FROM routines ORDER BY created_at").all();
+    return (rows as Row[]).map(toRoutine);
+  }
+
+  getRoutine(id: string): Routine | null {
+    const row = this.db.prepare("SELECT * FROM routines WHERE id = ?").get(id) as Row | undefined;
+    return row ? toRoutine(row) : null;
+  }
+
+  dueRoutines(now: number): Routine[] {
+    return (this.db.prepare("SELECT * FROM routines WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at").all(now) as Row[]).map(toRoutine);
+  }
+
+  createRoutine(input: { botId: string; chatId: string; title: string; prompt: string; schedule: Schedule }): Routine {
+    const id = newId();
+    const now = Date.now();
+    this.db.prepare(`INSERT INTO routines (id, bot_id, chat_id, title, prompt, schedule, enabled, next_run_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
+      .run(id, input.botId, input.chatId, input.title, input.prompt, JSON.stringify(input.schedule), nextRun(input.schedule, now), now);
+    const routine = this.getRoutine(id)!;
+    this.events.emit({ type: "routine.upserted", routine });
+    return routine;
+  }
+
+  /** Changing the schedule or re-enabling recomputes the next run unless one is given. */
+  updateRoutine(id: string, patch: RoutinePatch): Routine | null {
+    const routine = this.getRoutine(id);
+    if (!routine) return null;
+    const next = { ...routine, ...patch };
+    if (patch.nextRunAt === undefined && (patch.schedule || (patch.enabled && !routine.enabled))) next.nextRunAt = nextRun(next.schedule, Date.now());
+    this.db.prepare(`UPDATE routines SET chat_id = ?, title = ?, prompt = ?, schedule = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_status = ? WHERE id = ?`)
+      .run(next.chatId, next.title, next.prompt, JSON.stringify(next.schedule), next.enabled ? 1 : 0, next.nextRunAt, next.lastRunAt, next.lastStatus, id);
+    const updated = this.getRoutine(id)!;
+    this.events.emit({ type: "routine.upserted", routine: updated });
+    return updated;
+  }
+
+  deleteRoutine(id: string) {
+    this.db.prepare("DELETE FROM routines WHERE id = ?").run(id);
+    this.events.emit({ type: "routine.deleted", routineId: id });
   }
 
   // ---------- Approvals ----------

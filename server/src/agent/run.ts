@@ -3,7 +3,7 @@ import { stepCountIs, streamText, type LanguageModel, type ModelMessage } from "
 import { config, modelConfigured, resolveModel } from "../config.js";
 import type { EventLog } from "../events.js";
 import type { Store } from "../store.js";
-import type { Message, Step } from "../shared/types.js";
+import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
 import { historyFor, systemPrompt } from "./prompt.js";
 import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./tools.js";
@@ -24,6 +24,8 @@ export const defaultModelFactory: ModelFactory = (modelId, sessionId) => createO
 type StartOptions = {
   /** Extra user-turn text that is sent to the model but not shown in the chat. */
   hiddenPrompt?: string;
+  /** Cards the reply starts with, e.g. the routine that triggered it. */
+  cards?: Card[];
   /** Called with the finished reply (used by groups and routines). */
   onFinish?: (message: Message) => void;
 };
@@ -63,7 +65,7 @@ export class AgentRunner {
     const key = `${chatId}:${botId}`;
     if (this.active.has(key)) throw new Error(`${bot.name} is already working in this chat.`);
 
-    const message = this.store.createMessage({ chatId, author: botId, status: "streaming" });
+    const message = this.store.createMessage({ chatId, author: botId, status: "streaming", cards: options.cards });
     const controller = new AbortController();
     this.active.set(key, { controller, botId, chatId, messageId: message.id });
     clearTimeout(this.idleTimers.get(botId));
@@ -103,10 +105,10 @@ export class AgentRunner {
       if (!history.length) throw new Error("Nothing to reply to.");
 
       const registry = this.tools(botId);
-      const ctx: ToolContext = { botId, botName: bot.name, chatId, messageId, signal: controller.signal, gate: this.gate };
+      const ctx: ToolContext = { botId, botName: bot.name, chatId, messageId, signal: controller.signal, gate: this.gate, store: this.store };
       const result = streamText({
         model: this.modelFactory(resolveModel(bot.model), `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId)),
         messages: history,
         tools: toToolSet(registry, ctx),
         stopWhen: stepCountIs(config.limits.maxSteps),

@@ -1,6 +1,8 @@
 import { useState } from "react";
-import { Check, ChevronDown, CircleAlert, Clock, Copy, Loader2, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, CircleAlert, Clock, Copy, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
+import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
+import { upcoming } from "../lib/dates";
 import { api } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
@@ -9,7 +11,9 @@ import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
 import { Button } from "./ui/button";
 
-export function MessageItem({ message, bot, showAuthor }: { message: Message; bot: Bot | undefined; showAuthor: boolean }) {
+type ItemProps = { message: Message; bot: Bot | undefined; showAuthor: boolean; onOpenRoutines?: () => void };
+
+export function MessageItem({ message, bot, showAuthor, onOpenRoutines }: ItemProps) {
   if (message.author === "user") {
     return (
       <div className="flex justify-end">
@@ -22,19 +26,26 @@ export function MessageItem({ message, bot, showAuthor }: { message: Message; bo
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
-  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} />;
+  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} />;
 }
 
-function BotMessage({ message, bot, showAuthor }: { message: Message; bot: Bot | undefined; showAuthor: boolean }) {
+function BotMessage({ message, bot, showAuthor, onOpenRoutines }: ItemProps) {
   const streaming = message.status === "streaming";
+  const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();
   const body = (
     <div className="group flex min-w-0 flex-1 flex-col gap-3">
       {showAuthor && bot && <span className="text-label font-semibold" style={{ color: "var(--soft)" }}>{bot.name}</span>}
+      {ran?.type === "routine" && (
+        <button type="button" onClick={onOpenRoutines} disabled={!onOpenRoutines}
+          className="-mb-1 flex items-center gap-1.5 self-start text-meta text-sky enabled:hover:underline">
+          <Repeat size={13} />Routine · {ran.title}
+        </button>
+      )}
       {message.steps.length > 0 && <StepLog steps={message.steps} live={streaming} />}
       {message.text && <MarkdownView text={message.text} />}
       {!message.text && streaming && message.steps.length === 0 && <Typing />}
-      {message.cards.map((card, index) => <CardView key={index} card={card} />)}
+      {message.cards.map((card, index) => <CardView key={index} card={card} onOpenRoutines={onOpenRoutines} />)}
       {message.status === "failed" && message.error && (
         <p className="m-0 flex items-center gap-2 rounded-xl bg-danger-wash px-3.5 py-2.5 text-label text-danger"><CircleAlert size={15} />{message.error}</p>
       )}
@@ -114,9 +125,29 @@ function StepIcon({ status }: { status: Step["status"] }) {
   return <Check size={size} className="shrink-0 text-mint" strokeWidth={2.4} />;
 }
 
-function CardView({ card }: { card: Card }) {
+function CardView({ card, onOpenRoutines }: { card: Card; onOpenRoutines?: () => void }) {
   if (card.type === "approval") return <ApprovalCard approvalId={card.approvalId} />;
-  return null; // Routine and handoff cards arrive with routines and groups.
+  if (card.type === "routine" && card.action !== "ran") return <RoutineCard card={card} onOpen={onOpenRoutines} />;
+  return null; // Handoff cards arrive with bot-to-bot messaging.
+}
+
+/** "Created routine · Morning briefing · Every day at 8:00 AM", live from the routine itself. */
+function RoutineCard({ card, onOpen }: { card: Extract<Card, { type: "routine" }>; onOpen?: () => void }) {
+  const routine = useLive((s) => s.routines[card.routineId]);
+  const detail = !routine ? "Deleted"
+    : !routine.enabled ? "Paused"
+    : `${describeSchedule(routine.schedule)}${routine.nextRunAt ? ` · next ${upcoming(routine.nextRunAt)}` : ""}`;
+  return (
+    <button type="button" onClick={onOpen} disabled={!onOpen || !routine}
+      className="flex items-center gap-3 self-start rounded-xl border border-rule bg-surface py-3 pr-4 pl-3.5 text-left enabled:hover:bg-hover max-sm:self-stretch">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-sky/14 text-sky"><CalendarClock size={17} /></span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <span className="text-meta text-muted">{card.action === "created" ? "Created routine" : "Updated routine"}</span>
+        <strong className="truncate text-sm">{routine?.title ?? card.title}</strong>
+        <span className="truncate text-meta text-soft">{detail}</span>
+      </span>
+    </button>
+  );
 }
 
 function ApprovalCard({ approvalId }: { approvalId: string }) {

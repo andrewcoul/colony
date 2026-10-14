@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Approval, Bot, Chat, EphemeralEvent, Message, ServerEvent } from "@shared/types";
+import type { Approval, Bot, Chat, EphemeralEvent, Message, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -9,6 +9,7 @@ export type LiveState = {
   chats: Record<string, Chat>;
   /** Pending approvals from the snapshot, plus any seen (resolved or not) since. */
   approvals: Record<string, Approval>;
+  routines: Record<string, Routine>;
   /** Loaded transcripts, keyed by chat id. Chats load on first open. */
   messages: Record<string, Message[]>;
   models: string[];
@@ -17,7 +18,7 @@ export type LiveState = {
 };
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, messages: {}, models: [], defaultModel: "", error: null,
+  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -53,6 +54,8 @@ function apply(event: ServerEvent) {
     }
     case "approval.upserted":
       return set({ approvals: { ...state.approvals, [event.approval.id]: event.approval } });
+    case "routine.upserted": return set({ routines: { ...state.routines, [event.routine.id]: event.routine } });
+    case "routine.deleted": return set({ routines: without(state.routines, event.routineId) });
   }
 }
 
@@ -83,7 +86,7 @@ async function loadState() {
   seq = snapshot.seq;
   set({
     ready: true, error: null,
-    bots: byId(snapshot.bots), chats: byId(snapshot.chats), approvals: byId(snapshot.approvals),
+    bots: byId(snapshot.bots), chats: byId(snapshot.chats), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel,
   });
 }
@@ -109,13 +112,14 @@ function connect() {
   clearTimeout(retryTimer);
   source?.close();
   lastBeat = Date.now();
-  const current = new EventSource(`/api/events?since=${seq}`);
+  const current = new EventSource(`/api/events?since=${seq}&client=${clientId}`);
   source = current;
   const beat = () => { lastBeat = Date.now(); };
   current.addEventListener("ready", () => {
     beat();
     retryDelay = 1000;
     set({ connected: true });
+    sendFocus();
     // Streamed text isn't replayed, so resync open transcripts after any (re)connect.
     if (state.ready) void refreshLoadedChats();
   });
@@ -141,6 +145,7 @@ export async function startLive() {
     connect();
     // Phones suspend background tabs; reconnect and resync when Colony comes back.
     document.addEventListener("visibilitychange", () => {
+      sendFocus();
       if (document.visibilityState === "visible" && (!source || source.readyState !== EventSource.OPEN || Date.now() - lastBeat > STALE_MS)) connect();
     });
     setInterval(() => { if (Date.now() - lastBeat > STALE_MS) connect(); }, 5000);
@@ -148,6 +153,20 @@ export async function startLive() {
     set({ error: error instanceof Error ? error.message : "Couldn't reach the Colony server." });
     setTimeout(startLive, 3000);
   }
+}
+
+/** Identifies this window to the server, which skips notifications for the chat on screen. */
+const clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);
+let focusedChat: string | null = null;
+
+function sendFocus() {
+  void api.focus({ clientId, chatId: focusedChat, visible: document.visibilityState === "visible" }).catch(() => {});
+}
+
+export function setFocusedChat(chatId: string | null) {
+  if (chatId === focusedChat) return;
+  focusedChat = chatId;
+  sendFocus();
 }
 
 export async function loadMessages(chatId: string) {
