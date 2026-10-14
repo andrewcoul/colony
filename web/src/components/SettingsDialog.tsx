@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Monitor, Plus, Server, Trash2, X } from "lucide-react";
 import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settings } from "../lib/api";
 import { useLive } from "../lib/live";
+import { openUpdates } from "../lib/settings";
+import { pending, useUpdates, WEB_VERSION } from "../lib/updates";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
@@ -33,6 +35,8 @@ const message = (failure: unknown, fallback: string) => (failure instanceof Erro
 /** Model providers (each with its own key and models) and the default model for new Bots. */
 export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const models = useLive((s) => s.models);
+  const updates = useUpdates();
+  const news = pending(updates);
   const [settings, setSettings] = useState<Settings | null>(null);
   const [editing, setEditing] = useState<ProviderView | "new" | null>(null);
   const [error, setError] = useState("");
@@ -97,6 +101,13 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <Button variant="outline" onClick={() => setEditing("new")}><Plus size={15} />Add provider</Button>
           <p className="m-0 mt-4 text-meta leading-relaxed text-muted">Keys stay on this PC; devices only see their last four characters. A key is only ever sent to the address it was saved for.</p>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
+          <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
+            className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">
+            <span>Colony {updates.system?.version ?? WEB_VERSION}</span>
+            <span className={cn("flex items-center gap-1", (news.server || news.desktop || news.reload) && "text-lemon")}>
+              {news.server || news.desktop ? "Update available" : news.reload ? "Reload to update" : "Updates"}<ChevronRight size={14} />
+            </span>
+          </button>
         </div>
       )}
     </Dialog>

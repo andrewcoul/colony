@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Plus, WifiOff, X } from "lucide-react";
 import { setFocusedChat, useLive } from "./lib/live";
-import { onOpenSettings } from "./lib/settings";
+import { onOpenSettings, onOpenUpdates } from "./lib/settings";
+import { startUpdates } from "./lib/updates";
 import { ChatScreen } from "./components/ChatScreen";
 import { CreateBotDialog, NewGroupDialog } from "./components/Dialogs";
 import { LogoMark } from "./components/Logo";
 import { Roster } from "./components/Roster";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { UpdatesDialog } from "./components/UpdatesDialog";
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
 
@@ -50,6 +52,8 @@ export default function App() {
   const [grouping, setGrouping] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => onOpenSettings(() => setSettingsOpen(true)), []);
+  const [updatesOpen, setUpdatesOpen] = useState(false);
+  useEffect(() => { startUpdates(); return onOpenUpdates(() => setUpdatesOpen(true)); }, []);
   const [error, setError] = useState("");
   const chat = chatId ? chats[chatId] : undefined;
 
@@ -103,6 +107,7 @@ export default function App() {
       <CreateBotDialog open={creating} onOpenChange={setCreating} onCreated={(bot) => openChat(bot.chatId)} />
       <NewGroupDialog open={grouping} onOpenChange={setGrouping} onCreated={openChat} />
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+      <UpdatesDialog open={updatesOpen} onOpenChange={setUpdatesOpen} />
     </TooltipProvider>
   );
 }

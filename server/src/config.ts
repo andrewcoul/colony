@@ -10,6 +10,9 @@ function list(value: string | undefined) {
 
 const models = list(process.env.COLONY_MODELS);
 
+/** An installed Colony's home folder (set by its launcher); unset when run from a checkout. */
+const home = process.env.COLONY_HOME ? path.resolve(process.env.COLONY_HOME) : null;
+
 export type ModelConfig = { providerName: string; baseURL: string; apiKey: string; models: string[]; defaultModel: string };
 
 /**
@@ -28,7 +31,12 @@ const model: ModelConfig = {
 export const config = {
   host: process.env.COLONY_HOST ?? "127.0.0.1",
   port: Number(process.env.COLONY_PORT ?? 8787),
-  dataDir: path.resolve(root, process.env.COLONY_DATA_DIR ?? "data"),
+  dataDir: path.resolve(home ?? root, process.env.COLONY_DATA_DIR ?? "data"),
+  home,
+  /** GitHub repository whose releases Colony updates from. */
+  updateRepo: process.env.COLONY_UPDATE_REPO ?? "andrewcoul/colony",
+  /** Where to ask about releases (tests point this at a local server). */
+  updateApi: process.env.COLONY_UPDATE_API ?? "https://api.github.com",
   model,
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
   /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */

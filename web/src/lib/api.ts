@@ -31,6 +31,18 @@ export type ProviderInput = { name: string; baseURL: string; protocol: Protocol;
 export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
 export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
 
+/** The server's version and updates (server/src/updates.ts). */
+export type SystemInfo = {
+  version: string;
+  managed: boolean;
+  latest: { version: string; notes: string; url: string; publishedAt: string } | null;
+  available: boolean;
+  checkedAt: number | null;
+  update: { status: "idle" | "downloading" | "installing" | "restarting" | "failed"; target: string | null; progress: number | null; error: string | null };
+  failed: { version: string; at: string; reason: string } | null;
+  updated: { from: string | null; to: string; at: string } | null;
+};
+
 export type MemoryUsage = { used: number; budget: number };
 export type BotMemory = {
   memory: string[];
@@ -45,6 +57,16 @@ export type NewBot = { name: string; title: string; description: string; model?:
 
 export const api = {
   state: () => request<AppState>("GET", "/state"),
+  system: () => request<SystemInfo>("GET", "/system"),
+  checkUpdates: () => request<SystemInfo>("POST", "/system/check"),
+  /** Starts a server update; while Bots are mid-reply it says who instead (unless forced). */
+  async updateServer(force = false): Promise<SystemInfo | { busy: string[]; message: string }> {
+    const response = await fetch("/api/system/update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force }) });
+    const data = await response.json().catch(() => null) as (SystemInfo & { error?: string; busy?: string[] }) | null;
+    if (response.status === 409 && data?.busy) return { busy: data.busy, message: data.error ?? "Bots are working." };
+    if (!response.ok || !data) throw new Error(data?.error || `Request failed (${response.status}).`);
+    return data;
+  },
   createBot: (input: NewBot) => request<Bot>("POST", "/bots", input),
   updateBot: (id: string, patch: Partial<NewBot>) => request<Bot>("PATCH", `/bots/${id}`, patch),
   deleteBot: (id: string) => request<void>("DELETE", `/bots/${id}`),

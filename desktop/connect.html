@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'" />
+  <title>Connect to Colony</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 24px;
+      background: #141414; color: #fff; font: 14px/1.5 "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+    }
+    main { width: 100%; max-width: 420px; display: flex; flex-direction: column; gap: 16px; }
+    h1 { margin: 0; font-size: 26px; font-weight: 600; letter-spacing: -0.02em; }
+    p { margin: 0; color: #c8c8c8; }
+    label { display: flex; flex-direction: column; gap: 6px; color: #8a8a8a; font-size: 13px; }
+    input {
+      height: 42px; padding: 0 12px; border-radius: 8px; border: 1px solid #2a2a2a; background: #0f0f0f;
+      color: #fff; font: 13px ui-monospace, "Cascadia Mono", Consolas, monospace; outline: none;
+    }
+    input:focus { border-color: #8a8a8a; }
+    button {
+      height: 42px; border: 0; border-radius: 999px; background: #fff; color: #141414; font: inherit; font-weight: 600; cursor: pointer;
+    }
+    button:disabled { opacity: 0.6; cursor: default; }
+    .error { color: #f2726b; min-height: 1.5em; }
+    .hint { color: #8a8a8a; font-size: 13px; }
+    code { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; color: #c8c8c8; }
+    footer { color: #8a8a8a; font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Connect to Colony</h1>
+    <p>Enter the address of your Colony server: this PC, or another computer on your tailnet.</p>
+    <form id="form">
+      <label>Server address
+        <input id="address" autocomplete="off" spellcheck="false" placeholder="http://127.0.0.1:8787" autofocus />
+      </label>
+    </form>
+    <div class="error" id="error" role="alert"></div>
+    <button id="connect" form="form" type="submit">Connect</button>
+    <p class="hint">On this PC it's usually <code>http://127.0.0.1:8787</code>. From another computer, use the
+      <code>https://&lt;machine&gt;.&lt;tailnet&gt;.ts.net</code> address from <code>tailscale serve status</code>.</p>
+    <footer id="version"></footer>
+  </main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const address = document.getElementById("address");
+    const error = document.getElementById("error");
+    const button = document.getElementById("connect");
+    address.value = params.get("server") || "http://127.0.0.1:8787";
+    error.textContent = params.get("error") || "";
+    document.getElementById("version").textContent = params.get("version") ? `Colony for desktop ${params.get("version")}` : "";
+    document.getElementById("form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      button.disabled = true;
+      button.textContent = "Connecting…";
+      error.textContent = "";
+      const result = await window.colonyDesktop.connect(address.value);
+      if (result && result.error) {
+        error.textContent = result.error;
+        button.disabled = false;
+        button.textContent = "Connect";
+      }
+    });
+  </script>
+</body>
+</html>

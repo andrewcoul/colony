@@ -1,12 +1,15 @@
+import fs from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 
 const serverPort = Number(process.env.COLONY_PORT ?? 8787);
+const { version } = JSON.parse(fs.readFileSync(path.resolve(import.meta.dirname, "../package.json"), "utf8")) as { version: string };
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  define: { __COLONY_VERSION__: JSON.stringify(version) },
   resolve: {
     alias: { "@shared": path.resolve(import.meta.dirname, "../server/src/shared") },
   },

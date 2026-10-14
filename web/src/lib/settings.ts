@@ -7,3 +7,13 @@ export function onOpenSettings(listener: () => void) {
   window.addEventListener("colony:settings", listener);
   return () => window.removeEventListener("colony:settings", listener);
 }
+
+/** Opens Updates (versions of the server and the desktop app). */
+export function openUpdates() {
+  window.dispatchEvent(new Event("colony:updates"));
+}
+
+export function onOpenUpdates(listener: () => void) {
+  window.addEventListener("colony:updates", listener);
+  return () => window.removeEventListener("colony:updates", listener);
+}

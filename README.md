@@ -23,6 +23,8 @@ has no accounts: your Tailscale network is the only way in.
   when a Bot finishes, a routine runs, or something needs your approval.
 - **Groups**: group chats with a coordinator. `@Name` asks one Bot.
 - **Web**: search and page reading through your self-hosted Firecrawl.
+- **Updates**: the server and the desktop app update themselves from GitHub
+  Releases. Update the server from any device, even your phone.
 
 ## Requirements
 
@@ -32,15 +34,61 @@ has no accounts: your Tailscale network is the only way in.
 - Optional: **self-hosted Firecrawl** at `127.0.0.1:3002`, for web search and reading
 - Optional: **Tailscale**, for your phone and other devices
 
-## Set up
+## Install
+
+**The server** (Windows; needs Node.js 22.13+). In PowerShell:
 
 ```powershell
-git clone <this repo> colony; cd colony
+irm https://github.com/andrewcoul/colony/releases/latest/download/install-colony-server.ps1 | iex
+```
+
+The installer:
+- downloads the latest release and checks it against the release's checksums;
+- installs it in `%LOCALAPPDATA%\Colony`;
+- starts it, and again every time you sign in.
+
+Then open http://127.0.0.1:8787. Options: `-InstallDir`, `-DataDir` (where
+your Bots live), `-EnvFile` (a `.env` to start from). To pass them, run
+`& ([scriptblock]::Create((irm <same URL>))) -DataDir D:\Colony`.
+
+**The desktop app** (Windows): download `Colony-Setup-<version>.exe` from the
+[latest release](https://github.com/andrewcoul/colony/releases/latest).
+- It finds a Colony on the same PC by itself.
+- Otherwise, give it the server's address, e.g. its `https://…ts.net` address
+  on your tailnet.
+- The app isn't code-signed yet, so the first time it runs, Windows SmartScreen
+  asks: choose **More info → Run anyway**.
+
+**Phones** don't need an app. Open the server's address and add it to your Home
+Screen (see [Use it from your phone](#use-it-from-your-phone-tailscale)).
+
+### Updates
+
+- Tap the **gear → Colony <version>** (or the card that appears above your Bots)
+  to see what's new and update.
+- **The server** checks GitHub every few hours. **Update server** downloads the
+  new version, checks it against the release's checksums, and restarts into
+  it. Open pages reload by themselves.
+- If Bots are mid-reply, Colony asks first: restarting stops those replies.
+- If a new version fails to start, Colony goes back to the previous one and
+  says why. It keeps the previous version until the next update.
+- **The desktop app** checks every hour and downloads updates in the
+  background. **Restart to update** installs one; otherwise it installs the
+  next time you quit.
+- Colony runs from source when you start it from a checkout (below). Then it
+  only tells you about updates; pull and rebuild to update.
+
+## Run from source
+
+```powershell
+git clone https://github.com/andrewcoul/colony; cd colony
 npm ci
 npm run computer:build      # once, if you use Docker computers
 npm run build
 npm start                   # http://127.0.0.1:8787
 ```
+
+## Connect models
 
 Open Colony and tap the **gear** (Settings) to connect models.
 - **Add provider**: pick a preset or type a base URL, then paste its API key.
@@ -71,9 +119,10 @@ Bot's folder (`data/bots/<id>/` with `SOUL.md`, `MEMORY.md`, `skills/`,
 Only run one Colony per `data/` folder. A second copy refuses to start, so
 routines can't run twice.
 
-### Start with Windows
+### Start with Windows (from source)
 
-Routines only run while Colony is running. To start it whenever you sign in:
+The installer already does this. For a checkout, routines only run while Colony
+is running. To start it whenever you sign in:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\autostart.ps1          # install
@@ -240,6 +289,34 @@ To develop while your real Colony keeps running, give the dev copy its own data 
 
 To try the dev build on your phone, run `tailscale serve --bg --https=8443 http://127.0.0.1:5180`.
 Vite accepts `*.ts.net` hosts.
+
+The desktop app (`desktop/`, Electron) has its own dependencies: `npm ci --prefix desktop`,
+then `npm run desktop` to run it, or `npm run dist --prefix desktop` to build its installer.
+
+### Releasing
+
+```powershell
+npm run release -- 0.2.0   # sets the version everywhere, commits and tags v0.2.0
+git push --follow-tags     # GitHub Actions builds and publishes the release
+```
+
+A release has these files:
+- `colony-server-<version>-win-x64.zip`: the server and web app with their
+  dependencies (`npm run package` builds it locally).
+- `install-colony-server.ps1`: the installer.
+- `SHA256SUMS`.
+- `Colony-Setup-<version>.exe`, `latest.yml` and its `.blockmap`: the desktop
+  app and what its updater reads.
+
+The server, web app and desktop app share one version number.
+
+An installed server lives in `%LOCALAPPDATA%\Colony`:
+- `versions/<version>/`: each installed version.
+- `state.json`: which version is current.
+- `launcher.mjs`: runs the current version, switches versions for updates, and
+  goes back if a new one fails to start.
+- `service.ps1`: the scheduled task's runner.
+- `.env`, `data/` and `logs/`.
 
 - **Server** (`server/`): Hono on Node, `node:sqlite`, and the Vercel AI SDK.
   - Persistent state goes through `Store`, and every change is a sequenced event.

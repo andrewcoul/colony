@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
-import { KeyRound, Plus, Search, Settings, Users } from "lucide-react";
+import { Download, KeyRound, Plus, Search, Settings, Users } from "lucide-react";
+import { openUpdates } from "../lib/settings";
+import { pending, useUpdates } from "../lib/updates";
 import type { Bot, Chat, Presence } from "@shared/types";
 import { shortTime } from "../lib/dates";
 import { useLive } from "../lib/live";
@@ -31,6 +33,8 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings,
   // A Bot waiting on you may be waiting in a group or a thread, not its own chat.
   const chatFor = (bot: Bot) => Object.values(approvals).find((item) => item.botId === bot.id && item.status === "pending")?.chatId ?? bot.chatId;
   const [query, setQuery] = useState("");
+  const updates = useUpdates();
+  const news = pending(updates);
 
   const { bots, groups, needsYou } = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -83,6 +87,26 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings,
             <span className="flex flex-col gap-0.5">
               <strong className="text-sm">Connect a model</strong>
               <span className="text-meta text-soft">Add an API key from any OpenAI-compatible provider so your Bots can think.</span>
+            </span>
+          </button>
+        )}
+        {(news.server || news.desktop || news.reload || updates.waitingFor) && !query && (
+          <button type="button" onClick={openUpdates}
+            className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-rule bg-raised/60 p-3.5 text-left hover:bg-hover">
+            <Download size={18} className="shrink-0 text-soft" />
+            <span className="flex flex-col gap-0.5">
+              <strong className="text-sm">
+                {updates.waitingFor ? `Updating to ${updates.waitingFor}…`
+                  : news.server ? `Colony ${updates.system?.latest?.version} is out`
+                  : news.desktop ? "Desktop app update ready"
+                  : `Colony was updated to ${updates.system?.version}`}
+              </strong>
+              <span className="text-meta text-soft">
+                {updates.waitingFor ? "It reloads by itself when it's done."
+                  : news.server ? "Update the server from here, in about a minute."
+                  : news.desktop ? "Restart the app to finish updating."
+                  : "Reload to use the new version."}
+              </span>
             </span>
           </button>
         )}

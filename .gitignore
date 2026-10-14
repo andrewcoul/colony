@@ -28,3 +28,6 @@ data/
 data-*/
 .env
 server/dist
+
+# Packaged releases (scripts/package.mjs)
+release/

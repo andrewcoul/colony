@@ -14,6 +14,8 @@ import { BrowserService } from "./computer/browser.js";
 import { DesktopService } from "./computer/desktop.js";
 import { ComputerService } from "./computer/docker.js";
 import { IdleStopper } from "./computer/idle.js";
+import { Updater } from "./updates.js";
+import { VERSION } from "./version.js";
 import { accessCheck, tailnetOnly } from "./access.js";
 import { createApi } from "./api.js";
 import { config } from "./config.js";
@@ -63,7 +65,15 @@ const push = new PushService(db, store, events);
 
 const app = new Hono();
 app.use(tailnetOnly(config.allowedUsers));
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push }));
+const updater = new Updater({
+  version: VERSION,
+  home: config.home,
+  repo: config.updateRepo,
+  apiBase: config.updateApi,
+  busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => bot.name),
+});
+updater.start();
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -74,7 +84,10 @@ if (fs.existsSync(webDist)) {
 }
 
 const server = serve({ fetch: app.fetch, hostname: config.host, port: config.port }, ({ address, port }) => {
-  console.log(`Colony is running at http://${address}:${port}`);
+  console.log(`Colony ${VERSION} is running at http://${address}:${port}`);
+  // A new version confirms itself once it has stayed up for a bit; until then its launcher
+  // would go back to the previous version if it exited.
+  setTimeout(() => { try { updater.confirm(); } catch (error) { console.log(`[colony] Couldn't confirm the update: ${error}`); } }, 15_000).unref();
   console.log(`Data: ${config.dataDir}`);
   if (!modelConfigured()) console.log("No model configured yet: open Colony and add your API key in Settings.");
 });
@@ -86,7 +99,8 @@ const allowed = accessCheck(config.allowedUsers);
 const screenViewers = new Map<string, number>();
 const idle = new IdleStopper({
   idleMs: config.limits.computerIdleMinutes * 60_000,
-  running: () => computer.runningBots(),
+  // Only this Colony's Bots: another Colony (e.g. a dev copy) may share Docker.
+  running: async () => (await computer.runningBots()).filter((botId) => store.getBot(botId)),
   busy: (botId) => runner.isBotRunning(botId) || browser.isWatched(botId) || (screenViewers.get(botId) ?? 0) > 0,
   stop: async (botId) => {
     await browser.close(botId);

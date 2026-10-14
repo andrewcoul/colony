@@ -1,0 +1,57 @@
+# Builds and publishes a release when a version tag is pushed (npm run release -- <version>,
+# then git push --follow-tags). Colony servers and desktop apps update from the latest release:
+#   colony-server-<version>-win-x64.zip   the server and web app, with its dependencies
+#   install-colony-server.ps1             installs the server and starts it at sign-in
+#   SHA256SUMS                            checksums the server checks before updating
+#   Colony-Setup-<version>.exe            the desktop app (+ latest.yml and .blockmap for its updater)
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            desktop/package-lock.json
+
+      - name: Check the tag matches the version
+        shell: bash
+        run: |
+          version="v$(node -p "require('./package.json').version")"
+          if [ "$version" != "$GITHUB_REF_NAME" ]; then echo "Tag $GITHUB_REF_NAME doesn't match package.json ($version)."; exit 1; fi
+
+      - run: npm ci
+      - run: npm ci --prefix desktop
+      - run: npm run check
+      - run: npm test
+      - run: npm run build
+
+      - name: Package the server
+        run: npm run package
+
+      - name: Build the desktop app
+        run: npm run dist --prefix desktop
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            release/colony-server-*.zip
+            release/install-colony-server.ps1
+            release/SHA256SUMS
+            desktop/release/Colony-Setup-*.exe
+            desktop/release/Colony-Setup-*.exe.blockmap
+            desktop/release/latest.yml

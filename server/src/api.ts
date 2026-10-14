@@ -16,11 +16,13 @@ import type { RoutineScheduler } from "./routines.js";
 import { MIN_INTERVAL_MINUTES, parseTime } from "./shared/schedule.js";
 import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
+import { BusyError, type Updater } from "./updates.js";
 import type { AppState } from "./shared/types.js";
 
 export type Services = {
   store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner;
   computer?: ComputerService; browser?: BrowserService; desktop?: DesktopService; routines?: RoutineScheduler; push?: PushService;
+  updater?: Updater;
   /** The model client used by the desktop check (tests pass a scripted one). */
   modelFactory?: ModelFactory;
 };
@@ -79,7 +81,7 @@ function addressedBots(text: string, memberIds: string[], store: Store, coordina
   return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
 }
 
-export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, modelFactory = defaultModelFactory }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory }: Services) {
   const api = new Hono();
 
   api.onError((error, c) => {
@@ -99,6 +101,25 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     configured: settings.modelConfigured(),
     seq: events.latestSeq(),
   }));
+
+  // ---------- Version and updates ----------
+  api.get("/system", (c) => updater ? c.json(updater.info()) : c.json({ error: "Updates aren't available here." }, 404));
+
+  api.post("/system/check", async (c) => {
+    if (!updater) return c.json({ error: "Updates aren't available here." }, 404);
+    try { await updater.check(); } catch (error) { return c.json({ error: `Couldn't check for updates: ${error instanceof Error ? error.message : error}` }, 502); }
+    return c.json(updater.info());
+  });
+
+  api.post("/system/update", async (c) => {
+    if (!updater) return c.json({ error: "Updates aren't available here." }, 404);
+    const { force } = z.object({ force: z.boolean().optional() }).parse(await c.req.json().catch(() => ({})));
+    try { await updater.install({ force }); } catch (error) {
+      if (error instanceof BusyError) return c.json({ error: error.message, busy: error.names }, 409);
+      return c.json({ error: error instanceof Error ? error.message : "Couldn't update." }, 400);
+    }
+    return c.json(updater.info(), 202);
+  });
 
   // Bot ids become folder names, so every per-Bot route must name a Bot that exists.
   api.use("/bots/:id/*", async (c, next) => {
