@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Approval, Bot, Chat, EphemeralEvent, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Bot, Chat, EphemeralEvent, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -15,11 +15,14 @@ export type LiveState = {
   models: ModelOption[];
   defaultModel: string;
   configured: boolean;
+  /** Connected mail, calendar and 1Password accounts, and what each Bot may do with them. */
+  accounts: Account[];
+  access: Access[];
   error: string | null;
 };
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, error: null,
+  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -58,6 +61,7 @@ function apply(event: ServerEvent) {
     case "routine.upserted": return set({ routines: { ...state.routines, [event.routine.id]: event.routine } });
     case "routine.deleted": return set({ routines: without(state.routines, event.routineId) });
     case "settings.updated": return set({ models: event.models, defaultModel: event.defaultModel, configured: event.configured });
+    case "accounts.updated": return set({ accounts: event.accounts, access: event.access });
   }
 }
 
@@ -90,6 +94,7 @@ async function loadState() {
     ready: true, error: null,
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
+    accounts: snapshot.accounts ?? [], access: snapshot.access ?? [],
   });
 }
 

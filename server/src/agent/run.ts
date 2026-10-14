@@ -11,6 +11,8 @@ import type { Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
 import { historyFor, stripNotes, systemPrompt } from "./prompt.js";
+import { Scrubber } from "./scrub.js";
+import type { Integrations } from "../integrations/index.js";
 import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./tools.js";
 
 /** `sessionId` groups one chat's requests; some providers (OpenCode Go) require it. */
@@ -45,6 +47,9 @@ type StartOptions = {
   onFinish?: (message: Message) => void;
 };
 
+/** Connected accounts, when Colony has them: what each Bot can use, for its prompt and tools. */
+export type RunnerExtras = { integrations?: Integrations; guidance?: (botId: string) => string };
+
 type ActiveRun = { controller: AbortController; botId: string; chatId: string; messageId: string };
 
 /** Runs Bot turns: streams the model, records steps, and drives presence. */
@@ -59,6 +64,7 @@ export class AgentRunner {
     private tools: (botId: string) => ToolRegistry = () => coreTools,
     private modelFactory: ModelFactory = defaultModelFactory,
     private desktop?: DesktopService,
+    private extras: RunnerExtras = {},
   ) {}
 
   /** How this Bot drives its desktop on this model, or null when it doesn't. */
@@ -166,13 +172,15 @@ export class AgentRunner {
         botId, botName: bot.name, chatId, messageId, signal: controller.signal, gate: this.gate, store: this.store, depth,
         consult: (toId, message) => this.consult(botId, toId, message, controller.signal, depth),
         attachScreenshot: (shot) => { latestShot = shot; },
+        secrets: new Scrubber(),
+        integrations: this.extras.integrations,
       };
       const desktopMode = this.desktopMode(bot, target);
       if (desktopMode === "claude") registry.computer = claudeComputer(this.desktop!, ctx);
       if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
       const result = streamText({
         model: this.modelFactory(target, `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? ""),
         messages: history,
         tools: toToolSet(registry, ctx),
         // Desktop work takes many small steps; screenshots are pruned so they stay affordable.

@@ -5,6 +5,7 @@ import { api, type BotMemory } from "../lib/api";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
+import { BotAccess } from "./BotAccess";
 import { DesktopToggle } from "./DesktopToggle";
 import { ModelPicker } from "./ModelPicker";
 import { SidePanel } from "./SidePanel";
@@ -84,6 +85,8 @@ export function BotProfile({ bot, phone, onClose, onError }: { bot: Bot; phone: 
           </label>
           <DesktopToggle computer={bot.computer} desktop={bot.desktop} model={bot.model} onChange={(patch) => update(patch)} />
         </div>
+
+        <BotAccess bot={bot} onError={onError} />
 
         <section className="flex flex-col gap-2">
           <h3 className="m-0 flex items-center gap-2 text-label font-semibold"><User size={14} className="text-muted" />Persona <span className="font-normal text-muted">SOUL.md</span></h3>

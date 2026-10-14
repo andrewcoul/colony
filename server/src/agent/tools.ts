@@ -8,6 +8,9 @@ import { describeSchedule, MIN_INTERVAL_MINUTES, parseTime } from "../shared/sch
 import type { Message, Schedule } from "../shared/types.js";
 import { isPublicWebUrl } from "../shared/urlPolicy.js";
 import type { ApprovalGate } from "./approvals.js";
+import type { Scrubber } from "./scrub.js";
+import { allows } from "../integrations/accounts.js";
+import type { Integrations } from "../integrations/index.js";
 
 /** Everything a tool needs to act on behalf of one Bot in one run. */
 export type ToolContext = {
@@ -24,6 +27,10 @@ export type ToolContext = {
   consult: (botId: string, text: string) => Promise<{ chatId: string; reply: Message }>;
   /** Shows the model this screenshot as an image on its next step (desktop tools). */
   attachScreenshot?: (shot: DesktopShot) => void;
+  /** Secrets typed into pages this run; scrubbed from everything tools return. */
+  secrets: Scrubber;
+  /** Connected accounts (mail-triggered routines look up mailboxes here). */
+  integrations?: Integrations;
 };
 
 /**
@@ -66,9 +73,30 @@ const scheduleInput = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("interval"), minutes: z.number().int().min(MIN_INTERVAL_MINUTES).max(7 * 1440) }),
   z.object({ type: z.literal("once"), at: z.string().describe("Local date-time, e.g. \"2026-10-14T09:00\".") }),
+  z.object({
+    type: z.literal("mail").describe("Run whenever new mail arrives in a mailbox you can read."),
+    account: z.string().trim().max(200).optional().describe("The mailbox's address, if you can read more than one."),
+    from: z.string().trim().max(200).optional().describe("Only mail whose sender contains this, e.g. \"@bank.com\"."),
+    subject: z.string().trim().max(200).optional().describe("Only mail whose subject contains this."),
+  }),
 ]);
 
-function toSchedule(input: z.infer<typeof scheduleInput>): Schedule {
+/** The mailbox a mail-triggered routine watches: one this Bot can read. */
+function mailboxFor(ctx: ToolContext, requested: string | undefined) {
+  const readable = (ctx.integrations?.accounts.forBot(ctx.botId) ?? [])
+    .filter(({ account, access }) => account.kind !== "onepassword" && allows.mail(access.mail, "read"))
+    .map(({ account }) => account);
+  if (!readable.length) throw new Error("You can't read any mailbox, so a mail-triggered routine can't run. The user can give you mail access in your profile.");
+  const match = requested ? readable.find((account) => account.email.toLowerCase() === requested.toLowerCase() || account.id === requested) : readable.length === 1 ? readable[0] : null;
+  if (!match) throw new Error(`Say which mailbox with \`account\`: ${readable.map((account) => account.email).join(", ")}.`);
+  return match;
+}
+
+function toSchedule(input: z.infer<typeof scheduleInput>, ctx: ToolContext): Schedule {
+  if (input.type === "mail") {
+    const account = mailboxFor(ctx, input.account);
+    return { type: "mail", accountId: account.id, ...(input.from ? { from: input.from } : {}), ...(input.subject ? { subject: input.subject } : {}) };
+  }
   if (input.type !== "once") return input;
   const at = new Date(input.at).getTime();
   if (Number.isNaN(at)) throw new Error(`Couldn't read the date "${input.at}". Use a local date-time like 2026-10-14T09:00.`);
@@ -172,7 +200,7 @@ export const coreTools = {
   }),
 
   routines: define({
-    description: "Manage your routines: standing work you do on a schedule without being asked, like a morning briefing or a Friday reminder. Each run you receive the routine's instruction and post the result to the chat it was created in; the user gets a notification. Times are the user's local time. Write the prompt so it stands alone. Confirm the schedule to the user in your reply.",
+    description: "Manage your routines: standing work you do on a schedule without being asked, like a morning briefing or a Friday reminder, or whenever new mail arrives (if you can read the user's mail). Each run you receive the routine's instruction and post the result to the chat it was created in; the user gets a notification. Times are the user's local time. Write the prompt so it stands alone. Confirm the schedule to the user in your reply.",
     inputSchema: z.object({
       action: z.enum(["create", "update", "delete", "list"]),
       id: z.string().max(80).optional().describe("The routine's id, for update and delete."),
@@ -194,7 +222,7 @@ export const coreTools = {
       if (action === "create") {
         if (!title || !prompt || !schedule) throw new Error("create needs a title, a prompt and a schedule.");
         if (mine.length >= MAX_ROUTINES) throw new Error(`You already have ${MAX_ROUTINES} routines; delete one first.`);
-        const routine = ctx.store.createRoutine({ botId: ctx.botId, chatId: ctx.chatId, title, prompt, schedule: toSchedule(schedule) });
+        const routine = ctx.store.createRoutine({ botId: ctx.botId, chatId: ctx.chatId, title, prompt, schedule: toSchedule(schedule, ctx) });
         ctx.store.appendCard(ctx.messageId, { type: "routine", routineId: routine.id, action: "created", title: routine.title });
         return view(routine);
       }
@@ -205,7 +233,7 @@ export const coreTools = {
         return { deleted: routine.title };
       }
       const updated = ctx.store.updateRoutine(routine.id, {
-        ...(title ? { title } : {}), ...(prompt ? { prompt } : {}), ...(schedule ? { schedule: toSchedule(schedule) } : {}), ...(enabled !== undefined ? { enabled } : {}),
+        ...(title ? { title } : {}), ...(prompt ? { prompt } : {}), ...(schedule ? { schedule: toSchedule(schedule, ctx) } : {}), ...(enabled !== undefined ? { enabled } : {}),
       })!;
       ctx.store.appendCard(ctx.messageId, { type: "routine", routineId: updated.id, action: "updated", title: updated.title });
       return view(updated);
@@ -215,11 +243,17 @@ export const coreTools = {
 
 export type ToolRegistry = Record<string, ColonyTool>;
 
-/** Binds Colony tools to one run, producing an AI SDK ToolSet. */
+/** Binds Colony tools to one run, producing an AI SDK ToolSet. Results and errors pass through the run's secret scrubber. */
 export function toToolSet(registry: ToolRegistry, ctx: ToolContext): ToolSet {
   return Object.fromEntries(Object.entries(registry).map(([name, spec]) => [name, spec.sdkTool ?? tool({
     description: spec.description,
     inputSchema: spec.inputSchema,
-    execute: (input: unknown) => spec.execute(input, ctx),
+    execute: async (input: unknown) => {
+      try {
+        return ctx.secrets.deep(await spec.execute(input, ctx));
+      } catch (error) {
+        throw error instanceof Error ? Object.assign(new Error(ctx.secrets.text(error.message)), { name: error.name }) : error;
+      }
+    },
   })]));
 }

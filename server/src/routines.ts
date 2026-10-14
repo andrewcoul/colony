@@ -9,7 +9,7 @@ const MISSED_GRACE_MS = 6 * 60 * 60_000;
 const BUSY_RETRY_MS = 60_000;
 
 const routinePrompt = (routine: Routine) =>
-  `(System: your routine "${routine.title}" is running on its schedule. The user isn't watching right now; do the work and post the result as your reply, written for them to read later. Don't ask questions you could answer yourself.)\n\n${routine.prompt}`;
+  `(System: your routine "${routine.title}" ${routine.schedule.type === "mail" ? "was triggered by new mail" : "is running on its schedule"}. The user isn't watching right now; do the work and post the result as your reply, written for them to read later. Don't ask questions you could answer yourself.)\n\n${routine.prompt}`;
 
 /** Fires due routines. Results land in the routine's chat with a "routine" card. */
 export class RoutineScheduler {
@@ -42,8 +42,16 @@ export class RoutineScheduler {
     }
   }
 
-  /** Runs a routine now. A manual run leaves the schedule alone. Returns the reply message id. */
-  run(routineId: string, { now = Date.now(), manual = false } = {}): string | null {
+  /** Whether the routine's Bot is already replying in the routine's chat. */
+  busy(routine: Routine) {
+    return this.runner.isRunning(routine.chatId, routine.botId);
+  }
+
+  /**
+   * Runs a routine now. A manual run leaves the schedule alone. `context` is added to the
+   * instruction (e.g. the new mail that triggered it). Returns the reply message id.
+   */
+  run(routineId: string, { now = Date.now(), manual = false, context = "" } = {}): string | null {
     const routine = this.store.getRoutine(routineId);
     if (!routine) return null;
     const bot = this.store.getBot(routine.botId);
@@ -52,13 +60,15 @@ export class RoutineScheduler {
     const chatId = chat?.memberIds.includes(bot.id) ? chat.id : bot.chatId;
 
     const next = manual ? routine.nextRunAt : nextRun(routine.schedule, now);
+    // A spent one-off routine switches off; mail-triggered routines have no next time but aren't spent.
+    const spent = !manual && next === null && routine.schedule.type !== "mail";
     this.store.updateRoutine(routine.id, {
       chatId, lastRunAt: now, nextRunAt: next,
-      ...(!manual && next === null ? { enabled: false } : {}),
+      ...(spent ? { enabled: false } : {}),
     });
     try {
       return this.runner.start(chatId, bot.id, {
-        hiddenPrompt: routinePrompt(routine),
+        hiddenPrompt: routinePrompt(routine) + (context ? `\n\n${context}` : ""),
         cards: [{ type: "routine", routineId: routine.id, action: "ran", title: routine.title }],
         onFinish: (message) => {
           const status = message.status === "done" ? "done" : message.status === "stopped" ? "stopped" : "failed";

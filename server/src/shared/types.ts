@@ -80,7 +80,9 @@ export type Message = {
 export type Schedule =
   | { type: "daily"; time: string; days: number[] }
   | { type: "interval"; minutes: number }
-  | { type: "once"; at: number };
+  | { type: "once"; at: number }
+  /** Runs when new mail arrives in a connected account's inbox (optionally only matching mail). */
+  | { type: "mail"; accountId: string; from?: string; subject?: string };
 
 export type Routine = {
   id: string;
@@ -107,6 +109,29 @@ export type ModelOption = {
   /** Can read screenshots and point accurately enough to drive a desktop. */
   desktop: boolean;
 };
+
+/** A connected outside account: a mailbox and calendar, or a 1Password account. */
+export type AccountKind = "google" | "microsoft" | "onepassword";
+
+/** What devices see of a connected account. Tokens never leave the server. */
+export type Account = {
+  id: string;
+  kind: AccountKind;
+  /** e.g. "Gmail", "Outlook", "1Password". */
+  label: string;
+  /** The mailbox address, or the 1Password account and vaults it reaches. */
+  email: string;
+  /** "needs_reauth" when its sign-in stopped working and you need to reconnect it. */
+  status: "ok" | "needs_reauth";
+  createdAt: number;
+};
+
+export type MailAccess = "none" | "read" | "draft" | "send";
+export type CalendarAccess = "none" | "read" | "write";
+export type VaultAccess = "none" | "use" | "save";
+
+/** What one Bot may do with one account. Bots get nothing until you grant it. */
+export type Access = { botId: string; accountId: string; mail: MailAccess; calendar: CalendarAccess; vault: VaultAccess };
 
 export type ApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
@@ -137,6 +162,9 @@ export type AppState = {
   defaultModel: string;
   /** Whether a model connection is set up (Settings shows a prompt when it isn't). */
   configured: boolean;
+  accounts: Account[];
+  /** Every Bot's access to every account it has been given. */
+  access: Access[];
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };
@@ -151,7 +179,8 @@ export type ServerEvent =
   | { type: "approval.upserted"; approval: Approval }
   | { type: "settings.updated"; models: ModelOption[]; defaultModel: string; configured: boolean }
   | { type: "routine.upserted"; routine: Routine }
-  | { type: "routine.deleted"; routineId: string };
+  | { type: "routine.deleted"; routineId: string }
+  | { type: "accounts.updated"; accounts: Account[]; access: Access[] };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
 export type EphemeralEvent =

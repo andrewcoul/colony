@@ -10,8 +10,9 @@ export function parseTime(time: string): number | null {
   return match ? Number(match[1]) * 60 + Number(match[2]) : null;
 }
 
-/** The next run strictly after `after` (local time), or null if the schedule is spent. */
+/** The next run strictly after `after` (local time), or null if the schedule is spent or isn't time-based. */
 export function nextRun(schedule: Schedule, after: number): number | null {
+  if (schedule.type === "mail") return null;
   if (schedule.type === "once") return schedule.at > after ? schedule.at : null;
   if (schedule.type === "interval") return after + Math.max(MIN_INTERVAL_MINUTES, schedule.minutes) * 60_000;
   const minutes = parseTime(schedule.time);
@@ -31,8 +32,12 @@ function clock(time: string) {
   return `${hours % 12 || 12}:${String(minutes % 60).padStart(2, "0")} ${hours < 12 ? "AM" : "PM"}`;
 }
 
-/** "Every day at 8:00 AM", "Weekdays at 6:00 PM", "Every 2 hours", "Once, Oct 14 at 9:00 AM". */
+/** "Every day at 8:00 AM", "Weekdays at 6:00 PM", "Every 2 hours", "Once, Oct 14 at 9:00 AM", "When mail arrives". */
 export function describeSchedule(schedule: Schedule): string {
+  if (schedule.type === "mail") {
+    const filters = [schedule.from && `from ${schedule.from}`, schedule.subject && `about “${schedule.subject}”`].filter(Boolean);
+    return `When mail arrives${filters.length ? ` ${filters.join(" ")}` : ""}`;
+  }
   if (schedule.type === "interval") {
     const minutes = Math.max(MIN_INTERVAL_MINUTES, schedule.minutes);
     if (minutes % 1440 === 0) return minutes === 1440 ? "Every day" : `Every ${minutes / 1440} days`;
