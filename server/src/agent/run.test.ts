@@ -40,15 +40,17 @@ const toolTurn = (toolName: string, input: unknown) => [
 /** A model that plays back scripted turns, one per model call. */
 function scriptedModel(turns: unknown[][]) {
   const prompts: unknown[] = [];
+  const toolNames: string[][] = [];
   let call = 0;
   const model = new MockLanguageModelV4({
     doStream: async (options) => {
       prompts.push(options.prompt);
+      toolNames.push((options.tools ?? []).map((item) => item.name));
       const chunks = turns[Math.min(call++, turns.length - 1)];
       return { stream: convertArrayToReadableStream(chunks as never[]) };
     },
   });
-  return { model, prompts };
+  return { model, prompts, toolNames };
 }
 
 let script: ReturnType<typeof scriptedModel>;
@@ -297,5 +299,79 @@ describe("routines and notifications", () => {
     expect(store.getRoutine(routine.id)!.chatId).toBe(a.chatId);
     store.deleteBot(a.id);
     expect(store.getRoutine(routine.id)).toBeNull();
+  });
+});
+
+describe("Bots messaging each other", () => {
+  async function team(call: (method: string, url: string, body?: unknown) => Promise<{ json: any }>, store: InstanceType<typeof Store>) {
+    const { json: kenny } = await call("POST", "/bots", { name: "Kenny", title: "Chief of staff" });
+    await finished(store, kenny.chatId, 1);
+    const { json: john } = await call("POST", "/bots", { name: "John", title: "Engineer", description: "Owns the build." });
+    await finished(store, john.chatId, 1);
+    return { kenny, john };
+  }
+
+  test("a Bot asks a teammate in a private thread and gets a handoff card", async () => {
+    script = scriptedModel([
+      textTurn("Hi."), textTurn("Hi."),
+      toolTurn("message_bot", { to: "John", message: "Is the build green?" }),
+      textTurn("Yes, all 212 tests pass."),
+      textTurn("John says the build is green."),
+    ]);
+    const { store, pushed, call } = setup();
+    const { kenny, john } = await team(call, store);
+    await call("POST", `/chats/${kenny.chatId}/messages`, { text: "Ask John if the build is green." });
+    const reply = (await finished(store, kenny.chatId, 2)).at(-1)!;
+    expect(reply.text).toBe("John says the build is green.");
+    expect(reply.steps[0]).toMatchObject({ title: "Messaged John", detail: "John replied", status: "done" });
+
+    const thread = store.findThread(kenny.id, john.id)!;
+    expect(thread.kind).toBe("thread");
+    expect(reply.cards).toEqual([{ type: "handoff", threads: [{ botId: john.id, chatId: thread.id, count: 2 }] }]);
+    expect(store.listMessages(thread.id).map((m) => [m.author, m.text])).toEqual([[kenny.id, "Is the build green?"], [john.id, "Yes, all 212 tests pass."]]);
+    // Kenny's prompt lists his teammates; John answers in a thread and can't pass the work on.
+    expect(JSON.stringify(script.prompts[2])).toContain("John, Engineer: Owns the build.");
+    expect(JSON.stringify(script.prompts[3])).toContain("private thread with Kenny");
+    expect(script.toolNames[2]).toContain("message_bot");
+    expect(script.toolNames[3]).not.toContain("message_bot");
+    // Only the answer the user asked for notifies, not the Bots' chatter.
+    expect(pushed.map((item) => item.title)).toEqual(["Kenny", "John", "Kenny"]);
+    expect(store.getChat(thread.id)!.unread).toBe(0);
+    // You can read a thread but not post in it.
+    expect((await call("POST", `/chats/${thread.id}/messages`, { text: "hi" })).status).toBe(400);
+  });
+
+  test("stopping the asker stops the teammate's answer, and its pending approval is denied", async () => {
+    script = scriptedModel([
+      textTurn("Hi."), textTurn("Hi."),
+      toolTurn("message_bot", { to: "John", message: "Email the client." }),
+      toolTurn("send_email", { to: "client@acme.com", body: "Update" }),
+      textTurn("…"),
+    ]);
+    const { store, call } = setup();
+    const { kenny, john } = await team(call, store);
+    await call("POST", `/chats/${kenny.chatId}/messages`, { text: "Get John to email the client." });
+    const approval = await until(() => store.listApprovals("pending")[0]);
+    expect(store.getBot(john.id)!.presence).toBe("waiting");
+    await call("POST", `/chats/${kenny.chatId}/stop`);
+    expect((await finished(store, kenny.chatId, 2)).at(-1)!.status).toBe("stopped");
+    const thread = store.findThread(kenny.id, john.id)!;
+    expect((await until(() => { const last = store.listMessages(thread.id).at(-1)!; return last.status !== "streaming" && last; })).status).toBe("stopped");
+    expect(store.getApproval(approval.id)!.status).toBe("denied");
+    expect(sent).toEqual([]);
+  });
+
+  test("unknown teammates get a helpful error, and threads go when a Bot is deleted", async () => {
+    script = scriptedModel([textTurn("Hi."), textTurn("Hi."), toolTurn("message_bot", { to: "Tyler", message: "?" }), textTurn("There's no Tyler.")]);
+    const { store, call } = setup();
+    const { kenny, john } = await team(call, store);
+    await call("POST", `/chats/${kenny.chatId}/messages`, { text: "Ask Tyler." });
+    const reply = (await finished(store, kenny.chatId, 2)).at(-1)!;
+    expect(reply.steps[0]).toMatchObject({ status: "error" });
+    expect(reply.steps[0].detail).toContain("Your teammates: John");
+
+    const thread = store.createChat({ kind: "thread", title: "Kenny & John", memberIds: [kenny.id, john.id], coordinatorId: null });
+    store.deleteBot(john.id);
+    expect(store.getChat(thread.id)).toBeNull();
   });
 });

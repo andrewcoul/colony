@@ -133,7 +133,7 @@ export function createApi({ store, events, gate, runner, computer, routines, pus
   api.delete("/chats/:id", (c) => {
     const chat = store.getChat(c.req.param("id"));
     if (!chat) return c.json({ error: "Chat not found." }, 404);
-    if (chat.kind !== "group") return c.json({ error: "A Bot's own chat can't be deleted; delete the Bot instead." }, 400);
+    if (chat.kind === "bot") return c.json({ error: "A Bot's own chat can't be deleted; delete the Bot instead." }, 400);
     runner.stop(chat.id);
     store.deleteChat(chat.id);
     return c.body(null, 204);
@@ -147,6 +147,7 @@ export function createApi({ store, events, gate, runner, computer, routines, pus
   api.post("/chats/:id/messages", async (c) => {
     const chat = store.getChat(c.req.param("id"));
     if (!chat) return c.json({ error: "Chat not found." }, 404);
+    if (chat.kind === "thread") return c.json({ error: "This is a private thread between two Bots; message one of them directly." }, 400);
     const { text } = z.object({ text: z.string().trim().min(1).max(32_000) }).parse(await c.req.json());
     const message = store.createMessage({ chatId: chat.id, author: "user", text });
     const targets = chat.kind === "bot" ? chat.memberIds : addressedBots(text, chat.memberIds, store, chat.coordinatorId);

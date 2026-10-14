@@ -84,7 +84,7 @@ export class PushService {
     if (this.notified.has(message.id) || Date.now() - message.createdAt > FRESH_MS) return;
     const bot = this.store.getBot(message.author);
     const chat = this.store.getChat(message.chatId);
-    if (!bot || !chat) return;
+    if (!bot || !chat || chat.kind === "thread") return; // Bot-to-Bot chatter isn't news; the asker's reply is.
     this.notified.add(message.id);
     if (this.notified.size > 500) this.notified.delete(this.notified.values().next().value!);
     const routine = message.cards.find((card) => card.type === "routine" && card.action === "ran");

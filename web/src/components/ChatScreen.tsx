@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, CalendarClock, ChevronLeft, Monitor, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowDown, CalendarClock, ChevronLeft, Lock, Monitor, MoreHorizontal, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
@@ -16,10 +16,11 @@ import { cn } from "../lib/utils";
 
 const EMPTY: never[] = [];
 
-export function ChatScreen({ chat, phone, onBack, onError }: {
+export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   chat: Chat;
   phone: boolean;
   onBack: () => void;
+  onOpenChat: (chatId: string) => void;
   onError: (message: string) => void;
 }) {
   const botMap = useLive((s) => s.bots);
@@ -47,9 +48,11 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
     catch (failure) { onError(failure instanceof Error ? failure.message : "Couldn't send that."); throw failure; }
   }
 
+  const thread = chat.kind === "thread";
+  const title = thread ? members.map((member) => member.name).join(" & ") || chat.title : chat.title;
   const subtitle = bot
     ? [bot.title, bot.activity && bot.presence !== "idle" && bot.presence !== "done" ? bot.activity : null].filter(Boolean).join(" · ")
-    : `Group · ${members.map((member) => member.name).join(", ")}`;
+    : thread ? "Private thread between Bots" : `Group · ${members.map((member) => member.name).join(", ")}`;
 
   return (
     <div className="flex min-w-0 flex-1">
@@ -58,7 +61,7 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
         {phone && <Button size="icon" aria-label="Back" className="-ml-2 text-ink" onClick={onBack}><ChevronLeft size={22} /></Button>}
         {bot ? <Face seed={bot.faceSeed} state={bot.presence} size={36} title={bot.name} /> : <GroupFaces bots={members} size={22} />}
         <div className="flex min-w-0 flex-1 flex-col">
-          <strong className="truncate text-[15px]">{chat.title}</strong>
+          <strong className="truncate text-[15px]">{title}</strong>
           <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
         </div>
         {bot && (
@@ -87,8 +90,8 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
                 <Trash2 size={15} />Delete {bot.name}
               </MenuItem>
             ) : (
-              <MenuItem className="text-danger" onClick={() => { if (confirm(`Delete the group "${chat.title}"?`)) void api.deleteChat(chat.id).then(onBack); }}>
-                <Trash2 size={15} />Delete group
+              <MenuItem className="text-danger" onClick={() => { if (confirm(thread ? `Delete the thread between ${title}?` : `Delete the group "${chat.title}"?`)) void api.deleteChat(chat.id).then(onBack); }}>
+                <Trash2 size={15} />{thread ? "Delete thread" : "Delete group"}
               </MenuItem>
             )}
           </MenuContent>
@@ -103,11 +106,11 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
             )}
             {!loaded && <p className="py-10 text-center text-label text-muted">Loading…</p>}
             {loaded && messages.length === 0 && (
-              <p className="py-10 text-center text-label text-muted">{bot ? `Say hello to ${bot.name}.` : "Message the group, or @mention one Bot."}</p>
+              <p className="py-10 text-center text-label text-muted">{bot ? `Say hello to ${bot.name}.` : thread ? "No messages yet." : "Message the group, or @mention one Bot."}</p>
             )}
             {messages.map((message) => (
-              <MessageItem key={message.id} message={message} bot={botMap[message.author]} showAuthor={chat.kind === "group"}
-                onOpenRoutines={bot ? () => setPanel("routines") : undefined} />
+              <MessageItem key={message.id} message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"}
+                onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} />
             ))}
           </div>
         </div>
@@ -118,6 +121,12 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
         )}
       </div>
 
+      {thread ? (
+        <div className="mx-auto flex w-full max-w-[844px] shrink-0 items-center gap-2.5 px-5 pt-3 pb-[max(env(safe-area-inset-bottom),14px)] text-meta text-muted sm:px-8 sm:pb-5">
+          <Lock size={13} className="shrink-0" /><span className="flex-1">Bots talk here when one asks another for help. You can read along; message a Bot directly to join in.</span>
+          {busy && <Button variant="outline" size="pill" onClick={() => void api.stop(chat.id)}><Square size={11} fill="currentColor" />Stop</Button>}
+        </div>
+      ) : (
       <div className="mx-auto w-full max-w-[844px] shrink-0 px-3 pb-[max(env(safe-area-inset-bottom),12px)] sm:px-8 sm:pb-5">
         <Composer
           placeholder={bot ? `Message ${bot.name}` : "Message the group"}
@@ -127,6 +136,7 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
           onStop={() => void api.stop(chat.id)}
         />
       </div>
+      )}
     </section>
     {bot && panel === "computer" && <ComputerPanel bot={bot} phone={phone} onClose={() => setPanel(null)} />}
     {bot && panel === "routines" && <RoutinesPanel bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}

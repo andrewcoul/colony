@@ -123,9 +123,12 @@ export class Store {
     for (const routine of this.listRoutines(id)) this.deleteRoutine(routine.id);
     this.deleteChat(bot.chatId);
     for (const row of this.db.prepare("SELECT chat_id FROM chat_members WHERE bot_id = ?").all(id) as Row[]) {
-      this.db.prepare("DELETE FROM chat_members WHERE chat_id = ? AND bot_id = ?").run(row.chat_id as string, id);
       const chat = this.getChat(row.chat_id as string);
-      if (chat) this.events.emit({ type: "chat.upserted", chat });
+      // A thread can't outlive either Bot; groups just lose a member.
+      if (chat?.kind === "thread") { this.deleteChat(chat.id); continue; }
+      this.db.prepare("DELETE FROM chat_members WHERE chat_id = ? AND bot_id = ?").run(row.chat_id as string, id);
+      const updated = this.getChat(row.chat_id as string);
+      if (updated) this.events.emit({ type: "chat.upserted", chat: updated });
     }
     this.events.emit({ type: "bot.deleted", botId: id });
   }
@@ -182,6 +185,15 @@ export class Store {
     return chat;
   }
 
+  /** The private thread between two Bots, if they've talked before. */
+  findThread(a: string, b: string): Chat | null {
+    const row = this.db.prepare(`SELECT c.* FROM chats c
+      JOIN chat_members x ON x.chat_id = c.id AND x.bot_id = ?
+      JOIN chat_members y ON y.chat_id = c.id AND y.bot_id = ?
+      WHERE c.kind = 'thread' LIMIT 1`).get(a, b) as Row | undefined;
+    return row ? this.toChat(row) : null;
+  }
+
   private renameChat(id: string, title: string) {
     this.db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(title, id);
     const chat = this.getChat(id);
@@ -225,8 +237,9 @@ export class Store {
     const preview = plainText(message.text).slice(0, 140);
     if (!preview) return;
     const fromBot = message.author !== "user" && message.author !== "system";
+    const thread = this.getChat(message.chatId)?.kind === "thread";
     this.db.prepare(`UPDATE chats SET last_preview = ?, last_author = ?, updated_at = ?, unread = unread + ? WHERE id = ?`)
-      .run(preview, message.author, Date.now(), fromBot && message.status !== "streaming" ? 1 : 0, message.chatId);
+      .run(preview, message.author, Date.now(), fromBot && !thread && message.status !== "streaming" ? 1 : 0, message.chatId);
     const chat = this.getChat(message.chatId);
     if (chat) this.events.emit({ type: "chat.upserted", chat });
   }
@@ -270,6 +283,19 @@ export class Store {
   appendCard(messageId: string, card: Card) {
     const message = this.getMessage(messageId);
     if (message) this.updateMessage(messageId, { cards: [...message.cards, card] });
+  }
+
+  /** Adds messages exchanged with another Bot to the reply's single handoff card. */
+  recordHandoff(messageId: string, thread: { botId: string; chatId: string }, count: number) {
+    const message = this.getMessage(messageId);
+    if (!message) return;
+    const existing = message.cards.find((card) => card.type === "handoff");
+    const threads = existing?.type === "handoff" ? existing.threads.map((item) => ({ ...item })) : [];
+    const entry = threads.find((item) => item.chatId === thread.chatId);
+    if (entry) entry.count += count;
+    else threads.push({ ...thread, count });
+    const card: Card = { type: "handoff", threads };
+    this.updateMessage(messageId, { cards: existing ? message.cards.map((item) => (item === existing ? card : item)) : [...message.cards, card] });
   }
 
   // ---------- Routines ----------

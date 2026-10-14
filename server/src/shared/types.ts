@@ -24,7 +24,8 @@ export type Bot = {
 
 export type Chat = {
   id: string;
-  kind: "bot" | "group";
+  /** "thread" is a private conversation between two Bots, opened from a handoff card. */
+  kind: "bot" | "group" | "thread";
   title: string;
   /** Bot ids; a bot chat has exactly one. */
   memberIds: string[];
@@ -53,7 +54,8 @@ export type Step = {
 export type Card =
   | { type: "approval"; approvalId: string }
   | { type: "routine"; routineId: string; action: "created" | "updated" | "ran"; title: string }
-  | { type: "handoff"; botIds: string[]; count: number; summary?: string };
+  /** Messages this reply exchanged with other Bots, one thread per Bot. */
+  | { type: "handoff"; threads: { botId: string; chatId: string; count: number }[] };
 
 export type MessageStatus = "streaming" | "done" | "failed" | "stopped";
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CalendarClock, Check, ChevronDown, CircleAlert, Clock, Copy, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
@@ -11,9 +11,9 @@ import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
 import { Button } from "./ui/button";
 
-type ItemProps = { message: Message; bot: Bot | undefined; showAuthor: boolean; onOpenRoutines?: () => void };
+type ItemProps = { message: Message; bot: Bot | undefined; showAuthor: boolean; onOpenRoutines?: () => void; onOpenChat?: (chatId: string) => void };
 
-export function MessageItem({ message, bot, showAuthor, onOpenRoutines }: ItemProps) {
+export function MessageItem({ message, bot, showAuthor, onOpenRoutines, onOpenChat }: ItemProps) {
   if (message.author === "user") {
     return (
       <div className="flex justify-end">
@@ -26,10 +26,10 @@ export function MessageItem({ message, bot, showAuthor, onOpenRoutines }: ItemPr
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
-  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} />;
+  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} />;
 }
 
-function BotMessage({ message, bot, showAuthor, onOpenRoutines }: ItemProps) {
+function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat }: ItemProps) {
   const streaming = message.status === "streaming";
   const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();
@@ -45,7 +45,7 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines }: ItemProps) {
       {message.steps.length > 0 && <StepLog steps={message.steps} live={streaming} />}
       {message.text && <MarkdownView text={message.text} />}
       {!message.text && streaming && message.steps.length === 0 && <Typing />}
-      {message.cards.map((card, index) => <CardView key={index} card={card} onOpenRoutines={onOpenRoutines} />)}
+      {message.cards.map((card, index) => <CardView key={index} card={card} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} />)}
       {message.status === "failed" && message.error && (
         <p className="m-0 flex items-center gap-2 rounded-xl bg-danger-wash px-3.5 py-2.5 text-label text-danger"><CircleAlert size={15} />{message.error}</p>
       )}
@@ -125,10 +125,58 @@ function StepIcon({ status }: { status: Step["status"] }) {
   return <Check size={size} className="shrink-0 text-mint" strokeWidth={2.4} />;
 }
 
-function CardView({ card, onOpenRoutines }: { card: Card; onOpenRoutines?: () => void }) {
+function CardView({ card, author, onOpenRoutines, onOpenChat }: { card: Card; author: Bot | undefined; onOpenRoutines?: () => void; onOpenChat?: (chatId: string) => void }) {
   if (card.type === "approval") return <ApprovalCard approvalId={card.approvalId} />;
   if (card.type === "routine" && card.action !== "ran") return <RoutineCard card={card} onOpen={onOpenRoutines} />;
-  return null; // Handoff cards arrive with bot-to-bot messaging.
+  if (card.type === "handoff") return <HandoffCard card={card} author={author} onOpenChat={onOpenChat} />;
+  return null;
+}
+
+const listNames = (names: string[]) => names.length <= 1 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+
+/** "6 messages with Tyler and Jenny": the Bots this reply talked to, each thread one tap away. */
+function HandoffCard({ card, author, onOpenChat }: { card: Extract<Card, { type: "handoff" }>; author: Bot | undefined; onOpenChat?: (chatId: string) => void }) {
+  const bots = useLive((s) => s.bots);
+  const chats = useLive((s) => s.chats);
+  const [open, setOpen] = useState(false);
+  const total = card.threads.reduce((sum, thread) => sum + thread.count, 0);
+  const names = card.threads.map((thread) => bots[thread.botId]?.name ?? "a deleted Bot");
+  const single = card.threads.length === 1 ? card.threads[0] : null;
+  const go = (chatId: string) => { if (chats[chatId]) onOpenChat?.(chatId); };
+  return (
+    <div className="flex flex-col self-start rounded-xl border border-rule bg-surface max-sm:self-stretch">
+      <button type="button" aria-expanded={single ? undefined : open}
+        onClick={() => (single ? go(single.chatId) : setOpen(!open))}
+        disabled={Boolean(single && !chats[single.chatId])}
+        className="flex items-center gap-3 rounded-xl py-2.5 pr-3.5 pl-3 text-left enabled:hover:bg-hover">
+        <span className="flex shrink-0">
+          {[author, ...card.threads.map((thread) => bots[thread.botId])].filter(Boolean).slice(0, 4).map((bot, index) => (
+            <Face key={bot!.id} seed={bot!.faceSeed} size={24} title={bot!.name} className={cn(index > 0 && "-ml-1")} />
+          ))}
+        </span>
+        <span className="min-w-0 flex-1 text-label text-soft">
+          {total} message{total === 1 ? "" : "s"} with <strong className="font-medium text-ink">{listNames(names)}</strong>
+        </span>
+        {single ? <ChevronRight size={15} className="text-muted" /> : <ChevronDown size={15} className={cn("text-muted transition-transform", open && "rotate-180")} />}
+      </button>
+      {open && !single && (
+        <div className="flex flex-col border-t border-rule p-1.5">
+          {card.threads.map((thread) => {
+            const bot = bots[thread.botId];
+            return (
+              <button key={thread.chatId} type="button" onClick={() => go(thread.chatId)} disabled={!chats[thread.chatId]}
+                className="flex items-center gap-2.5 rounded-lg px-2 py-2 text-left text-label enabled:hover:bg-hover">
+                {bot && <Face seed={bot.faceSeed} size={22} title={bot.name} />}
+                <span className="flex-1 truncate">{bot?.name ?? "A deleted Bot"}</span>
+                <span className="text-meta text-muted">{thread.count} message{thread.count === 1 ? "" : "s"}</span>
+                <ChevronRight size={14} className="text-muted" />
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /** "Created routine · Morning briefing · Every day at 8:00 AM", live from the routine itself. */

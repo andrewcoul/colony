@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import * as files from "../files.js";
 import type { Store } from "../store.js";
 import { describeSchedule, MIN_INTERVAL_MINUTES, parseTime } from "../shared/schedule.js";
-import type { Schedule } from "../shared/types.js";
+import type { Message, Schedule } from "../shared/types.js";
 import { isPublicWebUrl } from "../shared/urlPolicy.js";
 import type { ApprovalGate } from "./approvals.js";
 
@@ -17,6 +17,10 @@ export type ToolContext = {
   signal: AbortSignal;
   gate: ApprovalGate;
   store: Store;
+  /** 0 for a turn the user started; 1 when another Bot asked. Bots can't chain further. */
+  depth: number;
+  /** Messages another Bot in your private thread and waits for its reply. */
+  consult: (botId: string, text: string) => Promise<{ chatId: string; reply: Message }>;
 };
 
 /**
@@ -139,6 +143,27 @@ export const coreTools = {
     }),
     describe: ({ name }) => `Saved skill ${quote(name, 40)}`,
     execute: async ({ name, description, body }, ctx) => ({ slug: files.saveSkill(ctx.botId, name, description, body) }),
+  }),
+
+  message_bot: define({
+    description: "Message another Bot on your team and wait for its reply: delegate work that fits its role, or ask what it knows. It goes in a private thread between you two that the user can open. The other Bot doesn't see your chat, so make the message specific and self-contained. Then use the reply in your own answer.",
+    inputSchema: z.object({
+      to: z.string().trim().min(1).max(40).describe("The teammate's name."),
+      message: z.string().trim().min(1).max(8000),
+    }),
+    describe: ({ to }) => `Messaged ${to.replace(/^@/, "")}`,
+    summarize: (output: { from: string }) => `${output.from} replied`,
+    execute: async ({ to, message }, ctx) => {
+      if (ctx.depth >= 1) throw new Error("You're answering another Bot right now; reply with what you have instead of messaging a third.");
+      const name = to.replace(/^@/, "").toLowerCase();
+      const others = ctx.store.listBots().filter((bot) => bot.id !== ctx.botId);
+      const target = others.find((bot) => bot.name.toLowerCase() === name);
+      if (!target) throw new Error(`No teammate named "${to}". Your teammates: ${others.map((bot) => bot.name).join(", ") || "none yet"}.`);
+      const { chatId, reply } = await ctx.consult(target.id, message);
+      ctx.store.recordHandoff(ctx.messageId, { botId: target.id, chatId }, reply.text.trim() ? 2 : 1);
+      if (reply.status !== "done" || !reply.text.trim()) throw new Error(`${target.name} couldn't answer${reply.error ? `: ${reply.error}` : "."}`);
+      return { from: target.name, reply: reply.text };
+    },
   }),
 
   routines: define({

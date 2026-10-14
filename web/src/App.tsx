@@ -73,7 +73,7 @@ export default function App() {
       <div className="flex h-dvh overflow-hidden">
         {phone ? (chat ? null : roster) : roster}
         {chat ? (
-          <ChatScreen key={chat.id} chat={chat} phone={phone} onBack={() => openChat(null)} onError={setError} />
+          <ChatScreen key={chat.id} chat={chat} phone={phone} onBack={() => openChat(null)} onOpenChat={openChat} onError={setError} />
         ) : !phone && (
           <section className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
             <LogoMark size={44} strokeWidth={1.6} />

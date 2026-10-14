@@ -25,6 +25,9 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
 }) {
   const botMap = useLive((s) => s.bots);
   const chatMap = useLive((s) => s.chats);
+  const approvals = useLive((s) => s.approvals);
+  // A Bot waiting on you may be waiting in a group or a thread, not its own chat.
+  const chatFor = (bot: Bot) => Object.values(approvals).find((item) => item.botId === bot.id && item.status === "pending")?.chatId ?? bot.chatId;
   const [query, setQuery] = useState("");
 
   const { bots, groups, needsYou } = useMemo(() => {
@@ -74,7 +77,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
             <h2 className="m-0 px-2.5 pb-2 text-label font-normal text-muted">Needs you · {needsYou.length}</h2>
             <div className="flex gap-2.5 overflow-x-auto px-1 pb-1 [scrollbar-width:none]">
               {needsYou.map((bot) => (
-                <button key={bot.id} type="button" onClick={() => onOpen(bot.chatId)}
+                <button key={bot.id} type="button" onClick={() => onOpen(chatFor(bot))}
                   className={cn("flex w-40 shrink-0 flex-col items-start gap-2 rounded-2xl border p-3 text-left",
                     bot.presence === "waiting" ? "border-lemon/30 bg-lemon/8" : "border-coral/30 bg-coral/8")}>
                   <Face seed={bot.faceSeed} state={bot.presence} size={34} title={bot.name} />
@@ -93,7 +96,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, phone }: {
           </p>
         )}
         {bots.map((bot) => (
-          <BotRow key={bot.id} bot={bot} chat={chatMap[bot.chatId]} active={bot.chatId === activeChatId} onOpen={onOpen} />
+          <BotRow key={bot.id} bot={bot} chat={chatMap[bot.chatId]} active={bot.chatId === activeChatId} onOpen={() => onOpen(chatFor(bot))} />
         ))}
 
         <div className="flex items-center justify-between px-2.5 pt-4 pb-1.5">
@@ -118,11 +121,11 @@ function RowShell({ active, onClick, children }: { active: boolean; onClick: () 
   );
 }
 
-function BotRow({ bot, chat, active, onOpen }: { bot: Bot; chat: Chat | undefined; active: boolean; onOpen: (chatId: string) => void }) {
+function BotRow({ bot, chat, active, onOpen }: { bot: Bot; chat: Chat | undefined; active: boolean; onOpen: () => void }) {
   const label = LABEL[bot.presence];
   const unread = (chat?.unread ?? 0) > 0 && !active;
   return (
-    <RowShell active={active} onClick={() => onOpen(bot.chatId)}>
+    <RowShell active={active} onClick={onOpen}>
       <Face seed={bot.faceSeed} state={bot.presence} size={40} title={bot.name} />
       <span className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="flex items-baseline justify-between gap-2">

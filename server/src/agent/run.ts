@@ -5,7 +5,7 @@ import type { EventLog } from "../events.js";
 import type { Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
-import { historyFor, systemPrompt } from "./prompt.js";
+import { historyFor, stripNotes, systemPrompt } from "./prompt.js";
 import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./tools.js";
 
 /** `sessionId` groups one chat's requests; some providers (OpenCode Go) require it. */
@@ -26,6 +26,8 @@ type StartOptions = {
   hiddenPrompt?: string;
   /** Cards the reply starts with, e.g. the routine that triggered it. */
   cards?: Card[];
+  /** How many Bots deep this turn is (another Bot asking = 1). */
+  depth?: number;
   /** Called with the finished reply (used by groups and routines). */
   onFinish?: (message: Message) => void;
 };
@@ -57,6 +59,29 @@ export class AgentRunner {
     for (const run of this.active.values()) if (run.botId === botId) run.controller.abort("stopped");
   }
 
+  /**
+   * One Bot messages another in their private thread and waits for the reply.
+   * Stopping the asker stops the answer too.
+   */
+  async consult(fromId: string, toId: string, text: string, signal: AbortSignal, depth: number) {
+    const from = this.store.getBot(fromId);
+    const to = this.store.getBot(toId);
+    if (!from || !to) throw new Error("That Bot no longer exists.");
+    const thread = this.store.findThread(fromId, toId)
+      ?? this.store.createChat({ kind: "thread", title: `${from.name} & ${to.name}`, memberIds: [fromId, toId], coordinatorId: null });
+    if (this.isRunning(thread.id, toId)) throw new Error(`${to.name} is still answering an earlier message.`);
+    this.store.createMessage({ chatId: thread.id, author: fromId, text });
+    const reply = await new Promise<Message>((resolve, reject) => {
+      let messageId: string;
+      try {
+        messageId = this.start(thread.id, toId, { depth: depth + 1, onFinish: resolve });
+      } catch (error) { reject(error); return; }
+      const key = `${thread.id}:${toId}`;
+      signal.addEventListener("abort", () => { if (this.active.get(key)?.messageId === messageId) this.active.get(key)!.controller.abort("stopped"); }, { once: true });
+    });
+    return { chatId: thread.id, reply };
+  }
+
   /** Starts a turn for `botId` in `chatId` and returns the reply message id immediately. */
   start(chatId: string, botId: string, options: StartOptions = {}): string {
     const bot = this.store.getBot(botId);
@@ -69,7 +94,8 @@ export class AgentRunner {
     const controller = new AbortController();
     this.active.set(key, { controller, botId, chatId, messageId: message.id });
     clearTimeout(this.idleTimers.get(botId));
-    this.store.setPresence(botId, "thinking", "Thinking");
+    const asker = options.depth ? this.store.listBots().find((item) => item.id !== botId && chat.memberIds.includes(item.id)) : undefined;
+    this.store.setPresence(botId, "thinking", asker ? `Helping ${asker.name}` : "Thinking");
 
     void this.execute(message.id, chatId, botId, controller, options).finally(() => this.active.delete(key));
     return message.id;
@@ -104,11 +130,17 @@ export class AgentRunner {
       if (options.hiddenPrompt) history.push({ role: "user", content: options.hiddenPrompt });
       if (!history.length) throw new Error("Nothing to reply to.");
 
-      const registry = this.tools(botId);
-      const ctx: ToolContext = { botId, botName: bot.name, chatId, messageId, signal: controller.signal, gate: this.gate, store: this.store };
+      // A Bot answering another Bot can't pass the work on again.
+      const { message_bot: _, ...withoutMessaging } = this.tools(botId);
+      const registry = options.depth ? withoutMessaging : this.tools(botId);
+      const depth = options.depth ?? 0;
+      const ctx: ToolContext = {
+        botId, botName: bot.name, chatId, messageId, signal: controller.signal, gate: this.gate, store: this.store, depth,
+        consult: (toId, message) => this.consult(botId, toId, message, controller.signal, depth),
+      };
       const result = streamText({
         model: this.modelFactory(resolveModel(bot.model), `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId)),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId)),
         messages: history,
         tools: toToolSet(registry, ctx),
         stopWhen: stepCountIs(config.limits.maxSteps),
@@ -180,12 +212,12 @@ export class AgentRunner {
 
     for (const step of steps) if (step.status === "running" || step.status === "waiting") { step.status = "error"; step.endedAt = Date.now(); }
     const stopped = controller.signal.aborted && controller.signal.reason !== "timeout";
+    text = stripNotes(text);
     const final = this.store.updateMessage(messageId, {
       text, reasoning, steps,
       status: stopped ? "stopped" : error ? "failed" : "done",
       error,
     });
-    save(true);
 
     if (error && !stopped) this.store.setPresence(botId, "blocked", error);
     else {
