@@ -13,6 +13,7 @@ import { coreTools } from "./agent/tools.js";
 import { BrowserService } from "./computer/browser.js";
 import { DesktopService } from "./computer/desktop.js";
 import { ComputerService } from "./computer/docker.js";
+import { IdleStopper } from "./computer/idle.js";
 import { accessCheck, tailnetOnly } from "./access.js";
 import { createApi } from "./api.js";
 import { config } from "./config.js";
@@ -51,7 +52,7 @@ for (const bot of store.listBots()) {
 }
 const gate = new ApprovalGate(store);
 const computer = new ComputerService(store, events);
-void computer.syncStates();
+void computer.syncStates().then(() => computer.pruneOldImages());
 const browser = new BrowserService(computer);
 const desktop = new DesktopService(computer);
 const computerToolset = { ...computerTools(computer), ...browserTools(browser) };
@@ -81,6 +82,21 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
 // The desktop viewer streams video over a WebSocket at /api/bots/<id>/screen/media. Hono doesn't
 // proxy upgrades, so pass them straight to the Bot's desktop, under the same access rules.
 const allowed = accessCheck(config.allowedUsers);
+/** Open Screen viewers per Bot; an open viewer keeps the computer awake. */
+const screenViewers = new Map<string, number>();
+const idle = new IdleStopper({
+  idleMs: config.limits.computerIdleMinutes * 60_000,
+  running: () => computer.runningBots(),
+  busy: (botId) => runner.isBotRunning(botId) || browser.isWatched(botId) || (screenViewers.get(botId) ?? 0) > 0,
+  stop: async (botId) => {
+    await browser.close(botId);
+    desktop.forget(botId);
+    await computer.stop(botId);
+    console.log(`[colony] Switched off ${store.getBot(botId)?.name ?? botId}'s computer after ${config.limits.computerIdleMinutes} idle minutes.`);
+  },
+});
+computer.onUse = (botId) => idle.touch(botId);
+idle.start();
 server.on("upgrade", (request, socket, head) => {
   const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
@@ -95,6 +111,16 @@ server.on("upgrade", (request, socket, head) => {
       upstream.write([`${request.method} ${match[2]}${match[3] ?? ""} HTTP/1.1`, `host: 127.0.0.1:${port}`, ...headers, "", ""].join("\r\n"));
       if (head?.length) upstream.write(head);
       socket.pipe(upstream).pipe(socket);
+      screenViewers.set(bot.id, (screenViewers.get(bot.id) ?? 0) + 1);
+      let closed = false;
+      const release = () => {
+        if (closed) return;
+        closed = true;
+        screenViewers.set(bot.id, Math.max(0, (screenViewers.get(bot.id) ?? 1) - 1));
+        idle.touch(bot.id); // Closing the viewer starts a fresh idle window.
+      };
+      socket.on("close", release);
+      upstream.on("close", release);
     });
     upstream.on("error", () => socket.destroy());
     socket.on("error", () => upstream.destroy());

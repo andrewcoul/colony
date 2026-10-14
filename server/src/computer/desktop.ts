@@ -51,6 +51,7 @@ export class DesktopService {
   }
 
   private async withClient<T>(botId: string, action: (client: Spacesd) => Promise<T>): Promise<T> {
+    this.computer.onUse(botId);
     try {
       return await action(await this.client(botId));
     } catch (error) {

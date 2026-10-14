@@ -139,12 +139,18 @@ as the desktop user, time out, and Stop kills their whole process group. Command
 that push, publish, send data out, or wipe the workspace need your approval. Turn
 a computer off from its panel; it starts again on demand.
 
+Computers switch themselves off after 5 idle minutes, so they don't hold memory
+all day. A computer stays on while its Bot is working or while you watch its
+Screen or Browser tab. Its next use starts it again in a few seconds, with
+`/workspace` and browser logins intact. Set `COLONY_COMPUTER_IDLE_MINUTES` in
+`.env` to change the wait, or to `0` to keep computers on.
+
 The computer panel has four tabs: **Screen** (the live desktop), **Terminal**,
 **Browser** and **Files**.
 
 The image is about 2.3 GB. After an image update, each computer is rebuilt on its
-next use; `/workspace` and browser logins are kept. Cua's usage data is switched
-off (`DO_NOT_TRACK=1`).
+next use; `/workspace` and browser logins are kept. Once no computer uses an older
+image, Colony deletes it. Cua's usage data is switched off (`DO_NOT_TRACK=1`).
 
 ### The desktop
 

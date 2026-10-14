@@ -75,6 +75,11 @@ export class AgentRunner {
     for (const run of this.active.values()) if (run.chatId === chatId) run.controller.abort("stopped");
   }
 
+  /** Whether the Bot is working on a reply in any chat. */
+  isBotRunning(botId: string) {
+    return [...this.active.values()].some((run) => run.botId === botId);
+  }
+
   stopBot(botId: string) {
     for (const run of this.active.values()) if (run.botId === botId) run.controller.abort("stopped");
   }

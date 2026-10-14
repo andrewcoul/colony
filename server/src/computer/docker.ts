@@ -40,6 +40,8 @@ function run(args: string[], options: { input?: string; env?: Record<string, str
  */
 export class ComputerService {
   private starting = new Map<string, Promise<void>>();
+  /** Called whenever a Bot's computer is used (the idle stopper listens). */
+  onUse: (botId: string) => void = () => {};
   private imageReady: Promise<void> | null = null;
 
   constructor(private store: Store, private events: EventLog) {}
@@ -78,6 +80,7 @@ export class ComputerService {
 
   /** Starts (or creates) the Bot's container. Concurrent callers share one start. */
   ensure(botId: string) {
+    this.onUse(botId);
     const existing = this.starting.get(botId);
     if (existing) return existing;
     const start = (async () => {
@@ -89,7 +92,8 @@ export class ComputerService {
       this.store.setComputerState(botId, "starting");
       try {
         await this.ensureImage();
-        if (inspect.code === 0 && !current) await run(["rm", "-f", name]); // Outdated image: rebuild around the same files.
+        const migrating = inspect.code === 0 && !current;
+        if (migrating) await run(["rm", "-f", name]); // Outdated image: rebuild around the same files.
         if (current) {
           const started = await run(["start", name]);
           if (started.code !== 0) throw new Error(started.stderr.trim());
@@ -119,6 +123,7 @@ export class ComputerService {
         await run(["exec", name, "chown", "-R", `${DESKTOP_USER}:${DESKTOP_USER}`, "/workspace", "/browser"]);
         await this.waitForDesktop(name);
         this.store.setComputerState(botId, "on");
+        if (migrating) void this.pruneOldImages();
       } catch (error) {
         this.store.setComputerState(botId, "error");
         throw new Error(`The computer couldn't start. Is Docker running? (${error instanceof Error ? error.message.slice(0, 200) : "unknown"})`);
@@ -130,6 +135,7 @@ export class ComputerService {
 
   /** Runs a command in the Bot's computer, streaming output to the terminal panel. */
   async exec(botId: string, command: string, options: { cwd?: string; timeoutSec?: number; signal: AbortSignal }): Promise<ExecResult> {
+    this.onUse(botId);
     await this.ensure(botId);
     const name = this.containerName(botId);
     const execId = randomUUID().slice(0, 8);
@@ -233,11 +239,35 @@ export class ComputerService {
     this.store.setComputerState(botId, "off");
   }
 
+  /** Bots whose computers are running right now. */
+  async runningBots() {
+    const list = await run(["ps", "--filter", "label=colony.bot", "--format", "{{.Label \"colony.bot\"}}"]);
+    return list.code === 0 ? list.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
+  }
+
   /** Marks containers that are actually running (e.g. after a server restart). */
   async syncStates() {
-    const list = await run(["ps", "--filter", "label=colony.bot", "--format", "{{.Label \"colony.bot\"}}"]);
-    const running = new Set(list.code === 0 ? list.stdout.split(/\r?\n/).filter(Boolean) : []);
+    const running = new Set(await this.runningBots());
     for (const bot of this.store.listBots()) this.store.setComputerState(bot.id, running.has(bot.id) ? "on" : "off");
+  }
+
+  /**
+   * Deletes older computer images once no container (running or stopped) uses them, i.e. after
+   * every Bot's computer has moved to the current image. The Cua base image stays: the current
+   * image is built on it and shares its layers.
+   */
+  async pruneOldImages() {
+    const images = await run(["images", "colony-computer", "--format", "{{.Repository}}:{{.Tag}}"]);
+    if (images.code !== 0) return [];
+    const removed: string[] = [];
+    for (const ref of images.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
+      if (ref === IMAGE || ref.endsWith(":<none>")) continue;
+      const users = await run(["ps", "-a", "-q", "--filter", `ancestor=${ref}`]);
+      if (users.code !== 0 || users.stdout.trim()) continue;
+      if ((await run(["rmi", ref])).code === 0) removed.push(ref);
+    }
+    if (removed.length) console.log(`[colony] Removed old computer images: ${removed.join(", ")}`);
+    return removed;
   }
 
   readLog(botId: string) {

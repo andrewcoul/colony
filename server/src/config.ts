@@ -38,6 +38,8 @@ export const config = {
     maxSteps: 25,
     /** Desktop work is many small actions (look, click, type). */
     maxDesktopSteps: 80,
+    /** Switch off a Bot's computer after this many idle minutes (0 keeps computers on). */
+    computerIdleMinutes: Number(process.env.COLONY_COMPUTER_IDLE_MINUTES ?? 5),
     memoryChars: 4000,
     userChars: 2000,
     maxOutputTokens: 8192,

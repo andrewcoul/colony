@@ -100,7 +100,13 @@ export class BrowserService {
   }
 
   /** Connects to the Bot's browser, starting its computer and Chromium if needed. */
+  /** Whether someone is watching this Bot's browser live (keeps its computer awake). */
+  isWatched(botId: string) {
+    return (this.watchers.get(botId)?.size ?? 0) > 0;
+  }
+
   open(botId: string): Promise<Session> {
+    this.computer.onUse(botId);
     let session = this.sessions.get(botId);
     if (!session) {
       session = this.connect(botId);
