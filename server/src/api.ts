@@ -6,10 +6,12 @@ import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
 import type { AgentRunner } from "./agent/run.js";
+import type { ComputerService } from "./computer/docker.js";
+import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import type { AppState } from "./shared/types.js";
 
-export type Services = { store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner };
+export type Services = { store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner; computer?: ComputerService };
 
 const botInput = z.object({
   name: z.string().trim().min(1).max(40),
@@ -30,7 +32,7 @@ function addressedBots(text: string, memberIds: string[], store: Store, coordina
   return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
 }
 
-export function createApi({ store, events, gate, runner }: Services) {
+export function createApi({ store, events, gate, runner, computer }: Services) {
   const api = new Hono();
 
   api.onError((error, c) => {
@@ -42,7 +44,8 @@ export function createApi({ store, events, gate, runner }: Services) {
   api.get("/state", (c) => c.json<AppState>({
     bots: store.listBots(),
     chats: store.listChats(),
-    approvals: store.listApprovals("pending"),
+    // Recent approvals of every status, so old cards can show "Approved"/"Denied".
+    approvals: store.listApprovals(),
     models: [...config.model.models],
     defaultModel: config.model.defaultModel,
     seq: events.latestSeq(),
@@ -63,11 +66,24 @@ export function createApi({ store, events, gate, runner }: Services) {
     return bot ? c.json(bot) : c.json({ error: "Bot not found." }, 404);
   });
 
-  api.delete("/bots/:id", (c) => {
+  api.delete("/bots/:id", async (c) => {
     const id = c.req.param("id");
     runner.stopBot(id);
     store.deleteBot(id);
+    await computer?.remove(id);
     files.removeBotFolder(id);
+    return c.body(null, 204);
+  });
+
+  // ---------- Computer ----------
+  api.get("/bots/:id/terminal", (c) => c.json({ text: computer?.readLog(c.req.param("id")) ?? "" }));
+  api.get("/bots/:id/files", (c) => c.json(ws.listWorkspace(c.req.param("id"), c.req.query("path") ?? "", 1)));
+  api.get("/bots/:id/file", (c) => {
+    const file = ws.readWorkspaceFile(c.req.param("id"), c.req.query("path") ?? "", 0, 200_000);
+    return c.json(file);
+  });
+  api.post("/bots/:id/computer/stop", async (c) => {
+    await computer?.stop(c.req.param("id"));
     return c.body(null, 204);
   });
 

@@ -2,6 +2,8 @@
 
 export type Presence = "idle" | "thinking" | "working" | "waiting" | "blocked" | "done";
 
+export type ComputerState = "off" | "starting" | "on" | "error";
+
 export type Bot = {
   id: string;
   name: string;
@@ -12,6 +14,7 @@ export type Bot = {
   model: string;
   /** Whether the Bot has its own Docker computer. */
   computer: boolean;
+  computerState: ComputerState;
   presence: Presence;
   /** Short description of what the Bot is doing right now, shown on hover. */
   activity: string | null;
@@ -89,6 +92,7 @@ export type Approval = {
 export type AppState = {
   bots: Bot[];
   chats: Chat[];
+  /** Pending approvals plus the most recent resolved ones. */
   approvals: Approval[];
   models: string[];
   defaultModel: string;
@@ -105,5 +109,7 @@ export type ServerEvent =
   | { type: "message.upserted"; message: Message }
   | { type: "approval.upserted"; approval: Approval };
 
-/** Not persisted: streamed text between snapshots. Clients refetch on reconnect. */
-export type EphemeralEvent = { type: "message.delta"; messageId: string; chatId: string; text: string; reasoning?: string };
+/** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
+export type EphemeralEvent =
+  | { type: "message.delta"; messageId: string; chatId: string; text: string; reasoning?: string }
+  | { type: "computer.output"; botId: string; text: string };

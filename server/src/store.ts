@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
-import type { Approval, ApprovalStatus, Bot, Card, Chat, Message, MessageStatus, Presence, Step } from "./shared/types.js";
+import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Message, MessageStatus, Presence, Step } from "./shared/types.js";
 
 type Row = Record<string, unknown>;
 
@@ -13,6 +13,7 @@ const toBot = (row: Row): Bot => ({
   faceSeed: row.face_seed as string,
   model: row.model as string,
   computer: Boolean(row.computer),
+  computerState: (row.computer_state as ComputerState) ?? "off",
   presence: row.presence as Presence,
   activity: (row.activity as string | null) ?? null,
   chatId: row.chat_id as string,
@@ -116,6 +117,13 @@ export class Store {
     if (!bot || (bot.presence === presence && bot.activity === activity)) return;
     this.db.prepare("UPDATE bots SET presence = ?, activity = ? WHERE id = ?").run(presence, activity, id);
     this.events.emit({ type: "bot.presence", botId: id, presence, activity });
+  }
+
+  setComputerState(id: string, state: ComputerState) {
+    const bot = this.getBot(id);
+    if (!bot || bot.computerState === state) return;
+    this.db.prepare("UPDATE bots SET computer_state = ? WHERE id = ?").run(state, id);
+    this.events.emit({ type: "bot.upserted", bot: { ...bot, computerState: state } });
   }
 
   // ---------- Chats ----------

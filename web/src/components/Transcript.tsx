@@ -74,15 +74,19 @@ const elapsed = (steps: Step[]) => {
 function StepLog({ steps, live }: { steps: Step[]; live: boolean }) {
   const [open, setOpen] = useState<boolean | null>(null);
   const expanded = open ?? live;
-  const failed = steps.filter((step) => step.status === "error" || step.status === "denied").length;
+  const failed = steps.filter((step) => step.status === "error").length;
+  const denied = steps.filter((step) => step.status === "denied").length;
+  const problems = [failed && `${failed} didn't work`, denied && `${denied} denied`].filter(Boolean).join(" · ");
   const summary = live
     ? `Working · ${steps.length} step${steps.length === 1 ? "" : "s"}`
-    : `${steps.length} step${steps.length === 1 ? "" : "s"}${failed ? ` · ${failed} didn't work` : " done"} · ${elapsed(steps)}`;
+    : `${steps.length} step${steps.length === 1 ? "" : "s"}${problems ? ` · ${problems}` : " done"} · ${elapsed(steps)}`;
   return (
     <div className="rounded-xl border border-rule bg-surface">
       <button type="button" onClick={() => setOpen(!expanded)} aria-expanded={expanded}
         className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-label">
-        {live ? <Loader2 size={15} className="animate-spin text-mint" /> : <Check size={15} className="text-mint" strokeWidth={2.4} />}
+        {live ? <Loader2 size={15} className="animate-spin text-mint" />
+          : problems ? <CircleAlert size={15} className={denied && !failed ? "text-lemon" : "text-coral"} />
+          : <Check size={15} className="text-mint" strokeWidth={2.4} />}
         <span className={cn("flex-1", live ? "font-medium text-ink" : "text-soft")}>{summary}</span>
         <ChevronDown size={15} className={cn("text-muted transition-transform", expanded && "rotate-180")} />
       </button>

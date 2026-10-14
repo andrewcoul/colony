@@ -27,6 +27,9 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[]) {
     section(`Your memory (MEMORY.md, ${memory.used}/${memory.budget} chars)`, bullets(files.readEntries(bot.id, "memory"))),
     section("Your skills (read one with skill_read before following it)", skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")),
     section("Group chat", group),
+    section("Your computer", bot.computer
+      ? "You have your own Linux computer (Debian, Node 22, Python 3, git, ripgrep). /workspace persists and is yours; the user can see your terminal and files. Use shell for commands and the file tools to read and change files (prefer edit_file for small changes). Verify your work (run it, test it) before reporting done."
+      : ""),
     section("How you work", [
       "- Finish work end to end, then report the result. The user sees your step log, so don't narrate every action; lead with outcomes.",
       "- Be concise and direct. Use Markdown when it helps. Ask one clear question when you're truly blocked.",

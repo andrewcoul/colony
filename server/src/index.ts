@@ -6,6 +6,9 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { ApprovalGate } from "./agent/approvals.js";
 import { AgentRunner } from "./agent/run.js";
+import { computerTools } from "./agent/computerTools.js";
+import { coreTools } from "./agent/tools.js";
+import { ComputerService } from "./computer/docker.js";
 import { createApi } from "./api.js";
 import { config, modelConfigured } from "./config.js";
 import { openDb } from "./db.js";
@@ -17,10 +20,13 @@ const events = new EventLog(db);
 const store = new Store(db, events);
 store.recoverAfterRestart();
 const gate = new ApprovalGate(store);
-const runner = new AgentRunner(store, events, gate);
+const computer = new ComputerService(store, events);
+void computer.syncStates();
+const computerToolset = computerTools(computer);
+const runner = new AgentRunner(store, events, gate, (botId) => (store.getBot(botId)?.computer ? { ...coreTools, ...computerToolset } : coreTools));
 
 const app = new Hono();
-app.route("/api", createApi({ store, events, gate, runner }));
+app.route("/api", createApi({ store, events, gate, runner, computer }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");

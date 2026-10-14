@@ -13,6 +13,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
 
+export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
+
 export type NewBot = { name: string; title: string; description: string; model?: string; computer: boolean; faceSeed?: string };
 
 export const api = {
@@ -27,4 +29,8 @@ export const api = {
   stop: (chatId: string) => request<void>("POST", `/chats/${chatId}/stop`),
   markRead: (chatId: string) => request<void>("POST", `/chats/${chatId}/read`),
   decide: (approvalId: string, approve: boolean) => request<void>("POST", `/approvals/${approvalId}`, { approve }),
+  terminal: (botId: string) => request<{ text: string }>("GET", `/bots/${botId}/terminal`),
+  files: (botId: string, path = "") => request<FileEntry[]>("GET", `/bots/${botId}/files?path=${encodeURIComponent(path)}`),
+  file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
+  stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
 };

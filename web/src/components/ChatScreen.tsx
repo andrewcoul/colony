@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ChevronLeft, MoreHorizontal, Trash2 } from "lucide-react";
+import { ArrowDown, ChevronLeft, Monitor, MoreHorizontal, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { Composer } from "./Composer";
+import { ComputerPanel } from "./ComputerPanel";
 import { Face } from "./Face";
 import { GroupFaces } from "./Roster";
 import { MessageItem } from "./Transcript";
 import { Button } from "./ui/button";
 import { MenuContent, MenuItem, MenuRoot, MenuTrigger } from "./ui/menu";
+import { cn } from "../lib/utils";
 
 const EMPTY: never[] = [];
 
@@ -23,6 +25,7 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
   const [hasOlder, setHasOlder] = useState(true);
+  const [computerOpen, setComputerOpen] = useState(false);
   const members = useMemo(() => chat.memberIds.map((id) => botMap[id]).filter(Boolean) as Bot[], [chat.memberIds, botMap]);
   const bot = chat.kind === "bot" ? members[0] : undefined;
   const busy = messages.some((message) => message.status === "streaming");
@@ -46,6 +49,7 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
     : `Group · ${members.map((member) => member.name).join(", ")}`;
 
   return (
+    <div className="flex min-w-0 flex-1">
     <section className="flex min-w-0 flex-1 flex-col">
       <header className="flex shrink-0 items-center gap-3 border-b border-rule px-4 pt-[max(env(safe-area-inset-top),12px)] pb-3 sm:px-5">
         {phone && <Button size="icon" aria-label="Back" className="-ml-2 text-ink" onClick={onBack}><ChevronLeft size={22} /></Button>}
@@ -54,6 +58,15 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
           <strong className="truncate text-[15px]">{chat.title}</strong>
           <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
         </div>
+        {bot?.computer && (
+          <Button
+            variant="ghost" size="pill" aria-pressed={computerOpen} aria-label={`${bot.name}'s computer`}
+            onClick={() => setComputerOpen(!computerOpen)}
+            className={cn(bot.computerState === "on" ? "bg-lilac/14 text-lilac hover:bg-lilac/20 hover:text-lilac" : "text-muted", computerOpen && "ring-1 ring-lilac/40")}
+          >
+            <Monitor size={15} /><span className="max-sm:hidden">Computer</span>
+          </Button>
+        )}
         <MenuRoot>
           <MenuTrigger><Button size="icon" aria-label="Chat options"><MoreHorizontal size={18} /></Button></MenuTrigger>
           <MenuContent>
@@ -102,5 +115,7 @@ export function ChatScreen({ chat, phone, onBack, onError }: {
         />
       </div>
     </section>
+    {bot && computerOpen && <ComputerPanel bot={bot} phone={phone} onClose={() => setComputerOpen(false)} />}
+    </div>
   );
 }

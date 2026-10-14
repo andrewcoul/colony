@@ -56,7 +56,21 @@ function apply(event: ServerEvent) {
   }
 }
 
-function applyDelta(event: EphemeralEvent) {
+type ComputerOutput = Extract<EphemeralEvent, { type: "computer.output" }>;
+const outputListeners = new Set<(event: ComputerOutput) => void>();
+
+/** Live terminal output from Bots' computers (not stored; the panel fetches the log on open). */
+export function onComputerOutput(listener: (event: ComputerOutput) => void) {
+  outputListeners.add(listener);
+  return () => { outputListeners.delete(listener); };
+}
+
+function applyEphemeral(event: EphemeralEvent) {
+  if (event.type === "computer.output") { for (const listener of outputListeners) listener(event); return; }
+  applyDelta(event);
+}
+
+function applyDelta(event: Extract<EphemeralEvent, { type: "message.delta" }>) {
   const list = state.messages[event.chatId];
   if (!list) return;
   set({ messages: { ...state.messages, [event.chatId]: list.map((message) => message.id === event.messageId
@@ -117,7 +131,7 @@ function connect() {
     if (event.lastEventId) seq = Number(event.lastEventId);
     apply(JSON.parse(event.data) as ServerEvent);
   });
-  current.addEventListener("ephemeral", (message) => { beat(); applyDelta(JSON.parse((message as MessageEvent<string>).data) as EphemeralEvent); });
+  current.addEventListener("ephemeral", (message) => { beat(); applyEphemeral(JSON.parse((message as MessageEvent<string>).data) as EphemeralEvent); });
   current.addEventListener("reset", () => { void loadState().then(refreshLoadedChats).then(connect); });
 }
 
