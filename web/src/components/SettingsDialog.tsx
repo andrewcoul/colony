@@ -1,21 +1,22 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Plus, Server, Trash2, X } from "lucide-react";
-import { api, type ProviderView, type Settings } from "../lib/api";
+import { api, type Protocol, type ProviderView, type Settings } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Field, Input } from "./ui/input";
 
-/** Common OpenAI-compatible providers. Any other works too: type its base URL. */
-const PRESETS = [
-  { name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1" },
-  { name: "OpenAI", baseURL: "https://api.openai.com/v1" },
-  { name: "xAI", baseURL: "https://api.x.ai/v1" },
-  { name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1" },
-  { name: "Groq", baseURL: "https://api.groq.com/openai/v1" },
-  { name: "DeepSeek", baseURL: "https://api.deepseek.com/v1" },
-  { name: "Ollama (this PC)", baseURL: "http://localhost:11434/v1" },
+/** Common providers. Any other works too: type its base URL and pick its API format. */
+const PRESETS: { name: string; baseURL: string; protocol: Protocol }[] = [
+  { name: "Claude (Anthropic)", baseURL: "https://api.anthropic.com/v1", protocol: "anthropic" },
+  { name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", protocol: "openai" },
+  { name: "OpenAI", baseURL: "https://api.openai.com/v1", protocol: "openai" },
+  { name: "xAI", baseURL: "https://api.x.ai/v1", protocol: "openai" },
+  { name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", protocol: "openai" },
+  { name: "Groq", baseURL: "https://api.groq.com/openai/v1", protocol: "openai" },
+  { name: "DeepSeek", baseURL: "https://api.deepseek.com/v1", protocol: "openai" },
+  { name: "Ollama (this PC)", baseURL: "http://localhost:11434/v1", protocol: "openai" },
 ];
 
 const sameURL = (a: string, b: string) => a.trim().replace(/\/+$/, "") === b.trim().replace(/\/+$/, "");
@@ -79,7 +80,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
                 <span className="flex min-w-0 flex-1 flex-col gap-0.5">
                   <strong className="truncate text-sm font-medium">{provider.name}</strong>
                   <span className="truncate text-meta text-muted">
-                    {hostOf(provider.baseURL)} · {provider.models.length} model{provider.models.length === 1 ? "" : "s"} · {provider.keySet ? `key ${provider.keyHint ? `…${provider.keyHint}` : "saved"}` : "no key"}
+                    {hostOf(provider.baseURL)}{provider.protocol === "anthropic" ? " · Anthropic API" : ""} · {provider.models.length} model{provider.models.length === 1 ? "" : "s"} · {provider.keySet ? `key ${provider.keyHint ? `…${provider.keyHint}` : "saved"}` : "no key"}
                   </span>
                 </span>
                 <ChevronRight size={16} className="shrink-0 text-muted" />
@@ -98,6 +99,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView | null; onBack: () => void; onSaved: (settings: Settings) => void }) {
   const [name, setName] = useState(provider?.name ?? "");
   const [baseURL, setBaseURL] = useState(provider?.baseURL ?? "");
+  const [protocol, setProtocol] = useState<Protocol>(provider?.protocol ?? "openai");
   const [apiKey, setApiKey] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [models, setModels] = useState<string[]>(provider?.models ?? []);
@@ -117,6 +119,7 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
   function choosePreset(preset: (typeof PRESETS)[number]) {
     setName(preset.name);
     setBaseURL(preset.baseURL);
+    setProtocol(preset.protocol);
     setAvailable(null);
     setCheck({ state: "idle" });
   }
@@ -124,7 +127,7 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
   async function checkConnection() {
     setCheck({ state: "checking" });
     try {
-      const { models: found } = await api.checkProvider({ providerId: provider?.id, baseURL, apiKey: apiKey || undefined });
+      const { models: found } = await api.checkProvider({ providerId: provider?.id, baseURL, protocol, apiKey: apiKey || undefined });
       setAvailable(found);
       setCheck({ state: "ok", message: found.length ? `Connected · ${found.length} model${found.length === 1 ? "" : "s"} available` : "Connected" });
     } catch (failure) {
@@ -142,7 +145,7 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const input = { name: name.trim(), baseURL: baseURL.trim(), apiKey: apiKey.trim() || undefined, models };
+      const input = { name: name.trim(), baseURL: baseURL.trim(), protocol, apiKey: apiKey.trim() || undefined, models };
       onSaved(provider ? await api.updateProvider(provider.id, input) : await api.addProvider(input));
     } catch (failure) { setError(message(failure, "Couldn't save.")); }
     finally { setBusy(false); }
@@ -172,6 +175,18 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
       <Field label="Base URL" htmlFor="provider-url">
         <Input id="provider-url" value={baseURL} onChange={(e) => { setBaseURL(e.target.value); setCheck({ state: "idle" }); }} required placeholder="https://openrouter.ai/api/v1" inputMode="url" autoCapitalize="off" spellCheck={false} />
       </Field>
+      <div className="mb-3.5 flex flex-col gap-1.5">
+        <span className="text-label text-muted">API format</span>
+        <div className="flex rounded-full bg-raised p-[3px]" role="radiogroup" aria-label="API format">
+          {([["openai", "OpenAI-compatible"], ["anthropic", "Anthropic (Claude)"]] as const).map(([value, label]) => (
+            <button key={value} type="button" role="radio" aria-checked={protocol === value} onClick={() => { setProtocol(value); setCheck({ state: "idle" }); }}
+              className={cn("h-8 flex-1 rounded-full text-meta", protocol === value ? "bg-ground text-ink" : "text-muted hover:text-ink")}>{label}</button>
+          ))}
+        </div>
+        {protocol === "openai" && models.some((id) => /^claude/i.test(id)) && !/openrouter\.ai/.test(baseURL) && (
+          <span className="text-meta text-lemon">Claude models usually need the Anthropic format. If they fail, add them as a separate provider with this set to Anthropic.</span>
+        )}
+      </div>
       <Field label="API key" htmlFor="provider-key">
         <div className="relative">
           <Input id="provider-key" type={showKey ? "text" : "password"} value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoComplete="off" spellCheck={false} className="pr-11"
@@ -199,7 +214,7 @@ function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView 
         ))}
       </div>
       <div className="mb-1 flex gap-1.5">
-        <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={available?.length ? "Search this provider's models…" : "Model id, e.g. deepseek/deepseek-v4.1-flash"}
+        <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={available?.length ? "Search this provider's models…" : protocol === "anthropic" ? "Model id, e.g. claude-haiku-5-5" : "Model id, e.g. deepseek/deepseek-v4.1-flash"}
           aria-label="Add a model" autoCapitalize="off" spellCheck={false} className="h-9 font-mono text-[13px]"
           onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addModel(suggestions[0] && draft && !available?.includes(draft.trim()) ? suggestions[0] : draft); } }} />
         <Button variant="outline" size="icon" className="size-9" aria-label="Add model" disabled={!draft.trim()} onClick={() => addModel(draft)}><Plus size={15} /></Button>

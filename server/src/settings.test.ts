@@ -22,16 +22,18 @@ const settings = await import("./settings.js");
 
 settings.loadSettings();
 
-/** A pretend OpenAI-compatible provider that records the Authorization header it receives. */
+/** A pretend provider that records the auth headers and query it receives. */
 async function fakeProvider(models: string[]) {
   const seen: (string | undefined)[] = [];
+  const requests: { url: string; apiKey?: string; version?: string }[] = [];
   const server = http.createServer((request, response) => {
     seen.push(request.headers.authorization);
-    if (request.url !== "/v1/models") { response.writeHead(404).end(); return; }
+    requests.push({ url: request.url ?? "", apiKey: request.headers["x-api-key"] as string | undefined, version: request.headers["anthropic-version"] as string | undefined });
+    if (!request.url?.startsWith("/v1/models")) { response.writeHead(404).end(); return; }
     response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ data: models.map((id) => ({ id })) }));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen, close: () => server.close() };
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen, requests, close: () => server.close() };
 }
 
 function app() {
@@ -115,6 +117,29 @@ test("a key is only ever sent to the address it was saved for", async () => {
   } finally {
     home.close();
     other.close();
+  }
+});
+
+test("Claude providers speak Anthropic's API: x-api-key auth, the full model list, and the Messages client", async () => {
+  const { call } = app();
+  const claude = await fakeProvider(["claude-a", "claude-b"]);
+  try {
+    const created = await call("POST", "/settings/providers", { name: "Claude", baseURL: claude.url, protocol: "anthropic", apiKey: "sk-ant-secret-3333", models: ["claude-a"] });
+    const provider = created.json.providers.find((item: { name: string }) => item.name === "Claude");
+    expect(provider.protocol).toBe("anthropic");
+    expect((await call("POST", "/settings/providers/check", { providerId: provider.id, baseURL: claude.url, protocol: "anthropic" })).json).toEqual({ models: ["claude-a", "claude-b"] });
+    expect(claude.requests.at(-1)).toEqual({ url: "/v1/models?limit=1000", apiKey: "sk-ant-secret-3333", version: "2023-06-01" });
+    expect(claude.seen.at(-1)).toBeUndefined(); // No Bearer header for Anthropic.
+    // Editing without naming the protocol keeps it.
+    await call("PUT", `/settings/providers/${provider.id}`, { name: "Claude", baseURL: claude.url, models: ["claude-a", "claude-b"] });
+    const target = settings.resolveModel(`${provider.id}::claude-b`)!;
+    expect(target.provider.protocol).toBe("anthropic");
+
+    const { defaultModelFactory } = await import("./agent/run.js");
+    expect((defaultModelFactory(target, "s") as { provider: string }).provider).toBe("anthropic.messages");
+    expect((defaultModelFactory(settings.resolveModel("env::env-model")!, "s") as { provider: string }).provider).toMatch(/\.chat$/);
+  } finally {
+    claude.close();
   }
 });
 

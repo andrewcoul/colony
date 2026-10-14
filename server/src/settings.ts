@@ -4,9 +4,15 @@ import path from "node:path";
 import { config } from "./config.js";
 import type { ModelOption } from "./shared/types.js";
 
-/** One OpenAI-compatible provider: its address, key, and the models you've picked from it. */
-export type Provider = { id: string; name: string; baseURL: string; apiKey: string; models: string[] };
-export type ProviderInput = { name: string; baseURL: string; apiKey?: string; models: string[] };
+/**
+ * The API a provider speaks: OpenAI-compatible chat completions (most providers), or
+ * Anthropic's Messages API (Claude, directly or through gateways that expose it).
+ */
+export type Protocol = "openai" | "anthropic";
+
+/** One provider: its address, API format, key, and the models you've picked from it. */
+export type Provider = { id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[] };
+export type ProviderInput = { name: string; baseURL: string; protocol?: Protocol; apiKey?: string; models: string[] };
 export type ModelTarget = { provider: Provider; model: string; ref: string };
 
 /** What devices see. Keys never leave the server. */
@@ -32,7 +38,7 @@ const hostName = (url: string) => { try { return new URL(url).hostname; } catch 
 export function loadSettings() {
   const env = config.model;
   providers = env.baseURL && env.models.length
-    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), apiKey: env.apiKey, models: [...env.models] }]
+    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), protocol: "openai", apiKey: env.apiKey, models: [...env.models] }]
     : [];
   defaultRef = "";
   source = "env";
@@ -44,10 +50,10 @@ export function loadSettings() {
       model?: { providerName: string; baseURL: string; apiKey: string; models: string[] };
     };
     if (saved.providers) {
-      providers = saved.providers;
+      providers = saved.providers.map((provider) => ({ ...provider, protocol: provider.protocol ?? "openai" }));
       defaultRef = saved.defaultModel ?? "";
     } else if (saved.model) {
-      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), apiKey: saved.model.apiKey, models: saved.model.models }];
+      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), protocol: "openai", apiKey: saved.model.apiKey, models: saved.model.models }];
     }
     source = "app";
   } catch { /* Nothing saved yet: .env values stand. */ }
@@ -126,6 +132,7 @@ export function saveProvider(id: string | null, input: ProviderInput) {
     id: existing?.id ?? `p${randomBytes(4).toString("hex")}`,
     name: input.name.trim() || hostName(baseURL),
     baseURL,
+    protocol: input.protocol ?? existing?.protocol ?? "openai",
     apiKey: input.apiKey?.trim() || (keepKey ? existing.apiKey : ""),
     models: [...new Set(input.models.map((item) => item.trim()).filter(Boolean))],
   };
@@ -154,12 +161,15 @@ export function keyFor(providerId: string | undefined, baseURL: string, typed?: 
   return provider && normalizeURL(provider.baseURL) === normalizeURL(baseURL) ? provider.apiKey : "";
 }
 
-/** Lists a provider's models (OpenAI-compatible GET /models). Doubles as a connection check. */
-export async function listProviderModels(baseURL: string, apiKey: string): Promise<string[]> {
+/** Lists a provider's models (GET /models in either API format). Doubles as a connection check. */
+export async function listProviderModels(baseURL: string, apiKey: string, protocol: Protocol = "openai"): Promise<string[]> {
+  const anthropic = protocol === "anthropic";
+  const auth: Record<string, string> = !apiKey ? {} : anthropic ? { "x-api-key": apiKey } : { Authorization: `Bearer ${apiKey}` };
   let response: Response;
   try {
-    response = await fetch(`${normalizeURL(baseURL)}/models`, {
-      headers: { Accept: "application/json", ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
+    // Anthropic pages its model list (20 by default); ask for all of them.
+    response = await fetch(`${normalizeURL(baseURL)}/models${anthropic ? "?limit=1000" : ""}`, {
+      headers: { Accept: "application/json", ...auth, ...(anthropic ? { "anthropic-version": "2023-06-01" } : {}) },
       signal: AbortSignal.timeout(10_000),
     });
   } catch {

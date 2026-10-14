@@ -24,8 +24,10 @@ export type BrowserInput =
 
 export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
 
-export type ProviderView = { id: string; name: string; baseURL: string; models: string[]; keySet: boolean; keyHint: string | null };
-export type ProviderInput = { name: string; baseURL: string; apiKey?: string; models: string[] };
+/** "openai": OpenAI-compatible chat completions; "anthropic": Anthropic's Messages API (Claude). */
+export type Protocol = "openai" | "anthropic";
+export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; keySet: boolean; keyHint: string | null };
+export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[] };
 export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
 
 export type MemoryUsage = { used: number; budget: number };
@@ -61,7 +63,7 @@ export const api = {
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),
   setDefaultModel: (model: string) => request<Settings>("PUT", "/settings/default-model", { model }),
-  checkProvider: (input: { providerId?: string; baseURL: string; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
+  checkProvider: (input: { providerId?: string; baseURL: string; protocol: Protocol; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
   soul: (botId: string) => request<{ content: string }>("GET", `/bots/${botId}/soul`),
   saveSoul: (botId: string, content: string) => request<void>("PUT", `/bots/${botId}/soul`, { content }),
   memory: (botId: string) => request<BotMemory>("GET", `/bots/${botId}/memory`),

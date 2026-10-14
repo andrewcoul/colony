@@ -1,3 +1,4 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
 import { APICallError, stepCountIs, streamText, type LanguageModel, type ModelMessage } from "ai";
 import { config } from "../config.js";
@@ -12,15 +13,22 @@ import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./too
 /** `sessionId` groups one chat's requests; some providers (OpenCode Go) require it. */
 export type ModelFactory = (target: ModelTarget, sessionId: string) => LanguageModel;
 
-export const defaultModelFactory: ModelFactory = ({ provider, model }, sessionId) => createOpenAICompatible({
-  name: provider.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "provider",
-  baseURL: provider.baseURL,
-  apiKey: provider.apiKey,
-  headers: {
+export const defaultModelFactory: ModelFactory = ({ provider, model }, sessionId) => {
+  const headers = {
     "User-Agent": "colony/0.2",
     ...(new URL(provider.baseURL).hostname.endsWith("opencode.ai") ? { "x-opencode-session": sessionId } : {}),
-  },
-}).chatModel(model);
+  };
+  // Claude speaks Anthropic's Messages API; everything else here is OpenAI-compatible.
+  if (provider.protocol === "anthropic") {
+    return createAnthropic({ baseURL: provider.baseURL, apiKey: provider.apiKey, headers }).languageModel(model);
+  }
+  return createOpenAICompatible({
+    name: provider.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "provider",
+    baseURL: provider.baseURL,
+    apiKey: provider.apiKey,
+    headers,
+  }).chatModel(model);
+};
 
 type StartOptions = {
   /** Extra user-turn text that is sent to the model but not shown in the chat. */

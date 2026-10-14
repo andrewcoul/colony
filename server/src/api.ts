@@ -275,6 +275,7 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
   const providerInput = z.object({
     name: z.string().trim().max(40).default(""),
     baseURL: providerURL,
+    protocol: z.enum(["openai", "anthropic"]).optional(),
     apiKey: z.string().max(500).optional(),
     models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(60),
   });
@@ -303,9 +304,14 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
     return c.json(settingsChanged());
   });
   api.post("/settings/providers/check", async (c) => {
-    const { providerId, baseURL, apiKey } = z.object({ providerId: z.string().max(40).optional(), baseURL: providerURL, apiKey: z.string().max(500).optional() }).parse(await c.req.json());
+    const { providerId, baseURL, protocol, apiKey } = z.object({
+      providerId: z.string().max(40).optional(),
+      baseURL: providerURL,
+      protocol: z.enum(["openai", "anthropic"]).default("openai"),
+      apiKey: z.string().max(500).optional(),
+    }).parse(await c.req.json());
     try {
-      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(providerId, baseURL, apiKey)) });
+      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(providerId, baseURL, apiKey), protocol) });
     } catch (failure) {
       return c.json({ error: failure instanceof Error ? failure.message : "Couldn't connect." }, 400);
     }

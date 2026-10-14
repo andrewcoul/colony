@@ -43,8 +43,11 @@ npm start                   # http://127.0.0.1:8787
 ```
 
 Open Colony and tap the **gear** (Settings) to connect models.
-- **Add provider**: pick a preset or type any OpenAI-compatible base URL, then
-  paste its API key.
+- **Add provider**: pick a preset or type a base URL, then paste its API key.
+- Choose the provider's **API format**. Most providers are OpenAI-compatible.
+  Claude uses the Anthropic format, both from `api.anthropic.com` and through
+  gateways that offer it (e.g. OpenCode Go's Claude models). OpenRouter serves
+  Claude in the OpenAI format.
 - **Check connection** lists that provider's models; choose the ones you want.
 - Add as many providers as you like, each with its own key. For example,
   OpenRouter for Claude, OpenCode Go for DeepSeek, and Ollama for local models.
