@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
+import { ModelPicker } from "./ModelPicker";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Field, Input } from "./ui/input";
@@ -38,7 +39,6 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
   onOpenChange: (open: boolean) => void;
   onCreated: (bot: Bot) => void;
 }) {
-  const models = useLive((s) => s.models);
   const defaultModel = useLive((s) => s.defaultModel);
   const [name, setName] = useState("");
   const [title, setTitle] = useState("");
@@ -99,14 +99,7 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
             className="w-full resize-y rounded-lg border border-rule bg-ground px-3.5 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-muted focus:border-muted" />
         </Field>
         <div className="mb-4 flex flex-col border-t border-rule">
-          {models.length > 1 && (
-            <label className="flex items-center justify-between gap-4 border-b border-rule py-3 text-sm">
-              Model
-              <select value={model} onChange={(e) => setModel(e.target.value)} className="max-w-[60%] truncate rounded-md bg-raised px-2 py-1 text-label text-ink outline-none">
-                {models.map((id) => <option key={id} value={id}>{id}</option>)}
-              </select>
-            </label>
-          )}
+          <ModelPicker value={model} onChange={setModel} />
           <label className="flex cursor-pointer items-center justify-between gap-4 py-3">
             <span className="flex flex-col gap-0.5"><span className="text-sm">Own computer</span><span className="text-meta text-muted">Terminal, files and a browser in Docker</span></span>
             <input type="checkbox" checked={computer} onChange={(e) => setComputer(e.target.checked)} className="peer sr-only" />

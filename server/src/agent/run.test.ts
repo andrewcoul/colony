@@ -171,6 +171,15 @@ describe("Bots", () => {
     expect(fs.existsSync(path.join(dataDir, "bots", bot.id))).toBe(true);
   });
 
+  test("editing one field of a Bot leaves the others alone", async () => {
+    script = scriptedModel([textTurn("Hi.")]);
+    const { store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Kenny", title: "Researcher", description: "Finds things.", computer: true });
+    await finished(store, bot.chatId, 1);
+    const { json: patched } = await call("PATCH", `/bots/${bot.id}`, { model: "other-model" });
+    expect(patched).toMatchObject({ model: "other-model", title: "Researcher", description: "Finds things.", computer: true });
+  });
+
   test("unknown models fall back to the default", async () => {
     script = scriptedModel([textTurn("Hi.")]);
     const { call } = setup();

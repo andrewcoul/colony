@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Plus, WifiOff, X } from "lucide-react";
 import { setFocusedChat, useLive } from "./lib/live";
+import { onOpenSettings } from "./lib/settings";
 import { ChatScreen } from "./components/ChatScreen";
 import { CreateBotDialog, NewGroupDialog } from "./components/Dialogs";
 import { LogoMark } from "./components/Logo";
@@ -48,6 +49,7 @@ export default function App() {
   const [creating, setCreating] = useState(false);
   const [grouping, setGrouping] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  useEffect(() => onOpenSettings(() => setSettingsOpen(true)), []);
   const [error, setError] = useState("");
   const chat = chatId ? chats[chatId] : undefined;
 

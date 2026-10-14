@@ -34,14 +34,24 @@ const routineInput = z.object({
 });
 const pushSubscription = z.object({ endpoint: z.string().url().max(2000), keys: z.object({ p256dh: z.string().max(200), auth: z.string().max(100) }) });
 
-const botInput = z.object({
+const botFields = {
   name: z.string().trim().min(1).max(40),
-  title: z.string().trim().max(60).default(""),
-  description: z.string().trim().max(4000).default(""),
-  faceSeed: z.string().trim().max(60).optional(),
-  model: z.string().max(200).optional(),
-  computer: z.boolean().default(false),
+  title: z.string().trim().max(60),
+  description: z.string().trim().max(4000),
+  faceSeed: z.string().trim().max(60),
+  model: z.string().max(200),
+  computer: z.boolean(),
+};
+const botInput = z.object({
+  ...botFields,
+  title: botFields.title.default(""),
+  description: botFields.description.default(""),
+  faceSeed: botFields.faceSeed.optional(),
+  model: botFields.model.optional(),
+  computer: botFields.computer.default(false),
 });
+// No defaults here: a patch must only change the fields it names.
+const botPatch = z.object(botFields).partial();
 
 const INTRO_PROMPT = "(System: you were just created. Greet the user in one or two short sentences, in your own voice: who you are and what you can take off their plate. Don't use tools.)";
 
@@ -90,7 +100,7 @@ export function createApi({ store, events, gate, runner, computer, browser, rout
   });
 
   api.patch("/bots/:id", async (c) => {
-    const patch = botInput.partial().parse(await c.req.json());
+    const patch = botPatch.parse(await c.req.json());
     const bot = store.updateBot(c.req.param("id"), { ...patch, ...(patch.model ? { model: resolveModel(patch.model) } : {}) });
     return bot ? c.json(bot) : c.json({ error: "Bot not found." }, 404);
   });

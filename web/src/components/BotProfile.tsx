@@ -2,10 +2,10 @@ import { useEffect, useState } from "react";
 import { BookOpen, Brain, ChevronLeft, Plus, Shuffle, Trash2, User, X } from "lucide-react";
 import type { Bot } from "@shared/types";
 import { api, type BotMemory } from "../lib/api";
-import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
+import { ModelPicker } from "./ModelPicker";
 import { SidePanel } from "./SidePanel";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
@@ -14,7 +14,6 @@ const fieldClass = "w-full rounded-lg border border-rule bg-ground px-3.5 text-s
 
 /** Who a Bot is and what it knows: persona, memory, what it knows about you, and its skills. */
 export function BotProfile({ bot, phone, onClose, onError }: { bot: Bot; phone: boolean; onClose: () => void; onError: (message: string) => void }) {
-  const models = useLive((s) => s.models);
   const [name, setName] = useState(bot.name);
   const [title, setTitle] = useState(bot.title);
   const [soul, setSoul] = useState<string | null>(null);
@@ -74,14 +73,7 @@ export function BotProfile({ bot, phone, onClose, onError }: { bot: Bot; phone: 
         </div>
 
         <div className="flex flex-col border-y border-rule">
-          {models.length > 1 && (
-            <label className="flex items-center justify-between gap-4 border-b border-rule py-3 text-sm">
-              Model
-              <select value={bot.model} onChange={(e) => update({ model: e.target.value })} className="max-w-[60%] truncate rounded-md bg-raised px-2 py-1 text-label text-ink outline-none">
-                {models.map((id) => <option key={id} value={id}>{id}</option>)}
-              </select>
-            </label>
-          )}
+          <ModelPicker value={bot.model} onChange={(model) => update({ model })} />
           <label className="flex cursor-pointer items-center justify-between gap-4 py-3">
             <span className="flex flex-col gap-0.5"><span className="text-sm">Own computer</span><span className="text-meta text-muted">Terminal, files and a browser in Docker</span></span>
             <input type="checkbox" checked={bot.computer} onChange={(e) => update({ computer: e.target.checked })} className="sr-only" />
