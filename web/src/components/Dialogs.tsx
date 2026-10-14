@@ -9,6 +9,30 @@ import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Field, Input } from "./ui/input";
 
+/** Starting points for common roles; everything stays editable before you create the Bot. */
+const TEMPLATES = [
+  {
+    role: "Chief of staff", name: "Morgan", computer: false,
+    description: "Runs the team for me. Turns what I ask into tasks, hands each one to the teammate whose role fits, follows up, and reports back with one short summary. Sends me a morning briefing of what's in flight and what needs me. Asks me only when a decision is truly mine.",
+  },
+  {
+    role: "Researcher", name: "Riley", computer: false,
+    description: "Answers questions by searching and reading the web, compares sources, and cites every claim with a link. Says plainly when the evidence is thin or conflicting.",
+  },
+  {
+    role: "Engineer", name: "Sam", computer: true,
+    description: "Writes, runs and tests code on their own computer. Keeps changes small, verifies they work before reporting, and explains what changed and why.",
+  },
+  {
+    role: "Writer", name: "Quinn", computer: false,
+    description: "Drafts and edits in my voice: emails, posts, docs. Keeps it short and plain, and offers one alternative when the tone could go either way. Never sends anything without asking.",
+  },
+  {
+    role: "Web operator", name: "Ava", computer: true,
+    description: "Gets things done on websites with their own browser: fills forms, checks dashboards, collects information. Hands the browser to me for logins and payments.",
+  },
+] as const;
+
 export function CreateBotDialog({ open, onOpenChange, onCreated }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -47,6 +71,16 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
   return (
     <Dialog open={open} onOpenChange={onOpenChange} title="New Bot">
       <form onSubmit={create} className="flex flex-col">
+        <div className="-mx-1 mb-4 flex gap-1.5 overflow-x-auto px-1 pb-1 [scrollbar-width:none]" role="group" aria-label="Start from a role">
+          {TEMPLATES.map((template) => (
+            <button key={template.role} type="button"
+              aria-pressed={title === template.role}
+              onClick={() => { setName(template.name); setTitle(template.role); setDescription(template.description); setComputer(template.computer); setFaceSeed(null); }}
+              className={cn("shrink-0 rounded-full border px-3 py-1.5 text-meta", title === template.role ? "border-transparent bg-ink text-on-ink" : "border-rule text-soft hover:bg-hover hover:text-ink")}>
+              {template.role}
+            </button>
+          ))}
+        </div>
         <div className="mb-5 flex items-center gap-4">
           <Face seed={seed} size={72} title="Face preview" />
           <div className="flex flex-col gap-2">
@@ -74,7 +108,7 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
             </label>
           )}
           <label className="flex cursor-pointer items-center justify-between gap-4 py-3">
-            <span className="flex flex-col gap-0.5"><span className="text-sm">Own computer</span><span className="text-meta text-muted">A Docker sandbox with a terminal and files</span></span>
+            <span className="flex flex-col gap-0.5"><span className="text-sm">Own computer</span><span className="text-meta text-muted">Terminal, files and a browser in Docker</span></span>
             <input type="checkbox" checked={computer} onChange={(e) => setComputer(e.target.checked)} className="peer sr-only" />
             <span className={cn("flex h-6 w-10 items-center rounded-full p-[3px] transition-colors", computer ? "justify-end bg-ink" : "justify-start bg-raised")}>
               <span className={cn("size-[18px] rounded-full", computer ? "bg-on-ink" : "bg-muted")} />
