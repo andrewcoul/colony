@@ -4,7 +4,7 @@ import { setFocusedChat, useLive } from "./lib/live";
 import { onOpenSettings, onOpenUpdates } from "./lib/settings";
 import { startUpdates } from "./lib/updates";
 import { ChatScreen } from "./components/ChatScreen";
-import { CreateBotDialog, NewGroupDialog } from "./components/Dialogs";
+import { CreateBotDialog, TopicDialog } from "./components/Dialogs";
 import { LogoMark } from "./components/Logo";
 import { Roster } from "./components/Roster";
 import { SettingsDialog } from "./components/SettingsDialog";
@@ -73,7 +73,7 @@ export default function App() {
   }
 
   const roster = (
-    <Roster activeChatId={chat?.id ?? null} onOpen={openChat} onNewBot={() => setCreating(true)} onNewGroup={() => setGrouping(true)} onSettings={() => setSettingsOpen(true)} phone={phone} />
+    <Roster activeChatId={chat?.id ?? null} onOpen={openChat} onNewBot={() => setCreating(true)} onNewTopic={() => setGrouping(true)} onSettings={() => setSettingsOpen(true)} phone={phone} />
   );
 
   return (
@@ -105,7 +105,7 @@ export default function App() {
       )}
 
       <CreateBotDialog open={creating} onOpenChange={setCreating} onCreated={(bot) => openChat(bot.chatId)} />
-      <NewGroupDialog open={grouping} onOpenChange={setGrouping} onCreated={openChat} />
+      <TopicDialog open={grouping} onOpenChange={setGrouping} onSaved={openChat} />
       <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
       <UpdatesDialog open={updatesOpen} onOpenChange={setUpdatesOpen} />
     </TooltipProvider>

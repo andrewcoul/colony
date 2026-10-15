@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Shuffle } from "lucide-react";
-import type { Bot } from "@shared/types";
+import { TOPIC_ICONS, type Bot, type Chat, type TopicIcon } from "@shared/types";
 import { api } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { DesktopToggle } from "./DesktopToggle";
 import { ModelPicker } from "./ModelPicker";
+import { TopicTile } from "./TopicIcon";
 import { Button } from "./ui/button";
 import { Dialog } from "./ui/dialog";
 import { Field, Input } from "./ui/input";
@@ -118,20 +119,39 @@ export function CreateBotDialog({ open, onOpenChange, onCreated }: {
   );
 }
 
-export function NewGroupDialog({ open, onOpenChange, onCreated }: {
+/** New topic, or edit one: name, icon, its Bots, what it's about, and where it's filed. */
+export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onCreated: (chatId: string) => void;
+  onSaved: (chatId: string) => void;
+  /** Editing this topic; otherwise a new one. */
+  topic?: Chat;
+  /** A new topic starts with this Bot in it (e.g. made from that Bot's chat). */
+  defaultBotId?: string;
 }) {
   const botMap = useLive((s) => s.bots);
+  const folderMap = useLive((s) => s.folders);
   const bots = Object.values(botMap).sort((a, b) => a.name.localeCompare(b.name));
+  const folders = Object.values(folderMap).sort((a, b) => a.position - b.position);
   const [title, setTitle] = useState("");
+  const [icon, setIcon] = useState<TopicIcon>("chat");
+  const [allIcons, setAllIcons] = useState(false);
   const [members, setMembers] = useState<string[]>([]);
   const [coordinatorId, setCoordinatorId] = useState("");
+  const [brief, setBrief] = useState("");
+  const [folderId, setFolderId] = useState<string>("");
+  const [newFolder, setNewFolder] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => { if (open) { setTitle(""); setMembers([]); setCoordinatorId(""); setError(""); } }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    setTitle(topic?.title ?? ""); setIcon(topic?.icon ?? "chat"); setBrief(topic?.brief ?? ""); setFolderId(topic?.folderId ?? "");
+    const start = topic?.memberIds ?? (defaultBotId ? [defaultBotId] : bots.length === 1 ? [bots[0].id] : []);
+    setMembers(start); setCoordinatorId(topic?.coordinatorId ?? start[0] ?? ""); setNewFolder(null); setAllIcons(false); setError("");
+    // Only when the dialog opens: later edits to the Bot list shouldn't reset what you've typed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, topic?.id]);
 
   const toggle = (id: string) => setMembers((current) => {
     const next = current.includes(id) ? current.filter((item) => item !== id) : [...current, id].slice(0, 6);
@@ -139,44 +159,88 @@ export function NewGroupDialog({ open, onOpenChange, onCreated }: {
     return next;
   });
 
-  async function create(event: React.FormEvent) {
+  async function save(event: React.FormEvent) {
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const chat = await api.createGroup({ title: title.trim(), memberIds: members, coordinatorId: coordinatorId || undefined });
+      const folder = newFolder?.trim() ? (await api.createFolder(newFolder.trim())).id : folderId || null;
+      const input = { title: title.trim(), icon, brief: brief.trim(), folderId: folder, memberIds: members, coordinatorId: coordinatorId || undefined };
+      const chat = topic ? await api.updateTopic(topic.id, input) : await api.createTopic(input);
       onOpenChange(false);
-      onCreated(chat.id);
-    } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't create the group."); }
+      onSaved(chat.id);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't save the topic."); }
     finally { setBusy(false); }
   }
 
+  const shown = allIcons ? TOPIC_ICONS : TOPIC_ICONS.slice(0, 11);
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title="New group" description="Bots in a group share one conversation and can hand work to each other.">
-      <form onSubmit={create} className="flex flex-col">
-        <Field label="Name" htmlFor="group-title"><Input id="group-title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={60} required placeholder="Website launch" /></Field>
-        <span className="mb-1.5 text-label text-muted">Members (2–6)</span>
-        <div className="mb-4 flex max-h-64 flex-col overflow-y-auto">
-          {bots.length < 2 && <p className="m-0 py-2 text-label text-muted">Create at least two Bots first.</p>}
+    <Dialog open={open} onOpenChange={onOpenChange} title={topic ? "Edit topic" : "New topic"}
+      description={topic ? undefined : "A topic is its own conversation for one ongoing thing: a trip, a renovation, a launch."}>
+      <form onSubmit={save} className="flex flex-col">
+        <Field label="Name" htmlFor="topic-title"><Input id="topic-title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={60} required autoFocus placeholder="Hallway renovation" /></Field>
+
+        <span className="mb-1.5 text-label text-muted">Icon</span>
+        <div className="mb-4 flex flex-wrap gap-1.5" role="radiogroup" aria-label="Icon">
+          {shown.map((key) => (
+            <button key={key} type="button" role="radio" aria-checked={icon === key} aria-label={key} onClick={() => setIcon(key)}
+              className={cn("rounded-[11px] outline-offset-1", icon === key && "ring-[1.5px] ring-ink")}>
+              <TopicTile icon={key} size={38} active={icon === key} />
+            </button>
+          ))}
+          {!allIcons && (
+            <button type="button" onClick={() => setAllIcons(true)} className="flex size-[38px] items-center justify-center rounded-[11px] bg-raised text-meta text-muted hover:text-ink">
+              +{TOPIC_ICONS.length - shown.length}
+            </button>
+          )}
+        </div>
+
+        <span className="mb-1.5 text-label text-muted">Bots</span>
+        <div className="mb-1.5 flex flex-wrap gap-2">
+          {bots.length === 0 && <p className="m-0 py-1 text-label text-muted">Create a Bot first.</p>}
           {bots.map((bot) => {
             const selected = members.includes(bot.id);
             return (
-              <div key={bot.id} className="flex items-center gap-3 rounded-lg px-1 py-2">
-                <button type="button" onClick={() => toggle(bot.id)} aria-pressed={selected} className="flex min-w-0 flex-1 items-center gap-3 text-left">
-                  <Face seed={bot.faceSeed} size={30} className={cn(!selected && "opacity-50")} />
-                  <span className={cn("truncate text-sm", selected ? "text-ink" : "text-muted")}>{bot.name}</span>
-                </button>
-                {selected && (
-                  <button type="button" onClick={() => setCoordinatorId(bot.id)}
-                    className={cn("rounded-full px-2.5 py-1 text-meta", coordinatorId === bot.id ? "bg-ink text-on-ink" : "text-muted hover:text-ink")}>
-                    {coordinatorId === bot.id ? "Coordinator" : "Make coordinator"}
-                  </button>
-                )}
-              </div>
+              <button key={bot.id} type="button" onClick={() => toggle(bot.id)} aria-pressed={selected}
+                className={cn("flex h-9 items-center gap-2 rounded-full border pr-3 pl-1.5 text-sm transition-colors",
+                  selected ? "border-muted/60 bg-raised text-ink" : "border-dashed border-rule text-muted hover:text-ink")}>
+                <Face seed={bot.faceSeed} size={24} title={bot.name} className={cn(!selected && "opacity-50")} />{bot.name}
+              </button>
             );
           })}
         </div>
+        <p className="m-0 mb-4 text-meta text-muted">
+          {members.length > 1 ? "Several Bots work on it together and can hand work to each other." : "Add more Bots and they work on it together."}
+        </p>
+        {members.length > 1 && (
+          <label className="mb-4 flex items-center justify-between gap-3 text-sm">
+            <span className="text-soft">Answers unless you @mention another</span>
+            <select value={coordinatorId} onChange={(e) => setCoordinatorId(e.target.value)} className="rounded-lg border border-rule bg-ground px-2.5 py-1.5 text-sm text-ink outline-none">
+              {members.map((id) => <option key={id} value={id}>{botMap[id]?.name}</option>)}
+            </select>
+          </label>
+        )}
+
+        <Field label="What's it about? Optional" htmlFor="topic-brief">
+          <textarea id="topic-brief" value={brief} onChange={(e) => setBrief(e.target.value)} maxLength={2000} rows={3}
+            placeholder="Repaint, new lights and a built-in wardrobe. Budget about 25,000 zł, done before Christmas."
+            className="w-full resize-y rounded-lg border border-rule bg-ground px-3.5 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-muted focus:border-muted" />
+        </Field>
+
+        <div className="mb-4 flex items-center justify-between gap-3 border-t border-rule pt-3 text-sm">
+          <span>Folder</span>
+          {newFolder === null ? (
+            <select value={folderId} onChange={(e) => (e.target.value === "+new" ? setNewFolder("") : setFolderId(e.target.value))}
+              className="rounded-lg border border-rule bg-ground px-2.5 py-1.5 text-sm text-ink outline-none">
+              <option value="">No folder</option>
+              {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.title}</option>)}
+              <option value="+new">New folder…</option>
+            </select>
+          ) : (
+            <Input value={newFolder} onChange={(e) => setNewFolder(e.target.value)} maxLength={40} autoFocus placeholder="Home" className="max-w-44" />
+          )}
+        </div>
         {error && <p role="alert" className="m-0 mb-3 text-label text-danger">{error}</p>}
-        <Button type="submit" variant="primary" disabled={busy || !title.trim() || members.length < 2}>Create group</Button>
+        <Button type="submit" variant="primary" disabled={busy || !title.trim() || members.length < 1}>{topic ? "Save" : "Create topic"}</Button>
       </form>
     </Dialog>
   );

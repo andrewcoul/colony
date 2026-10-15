@@ -1,4 +1,6 @@
-import type { Access, Account, AppState, Bot, Chat, Message, Routine, Schedule } from "@shared/types";
+import type { Access, Account, AppState, Bot, Chat, Folder, Message, Routine, Schedule, TopicIcon } from "@shared/types";
+
+export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
@@ -74,7 +76,13 @@ export const api = {
   createBot: (input: NewBot) => request<Bot>("POST", "/bots", input),
   updateBot: (id: string, patch: Partial<NewBot>) => request<Bot>("PATCH", `/bots/${id}`, patch),
   deleteBot: (id: string) => request<void>("DELETE", `/bots/${id}`),
-  createGroup: (input: { title: string; memberIds: string[]; coordinatorId?: string }) => request<Chat>("POST", "/groups", input),
+  createTopic: (input: TopicInput) => request<Chat>("POST", "/topics", input),
+  updateTopic: (id: string, patch: Partial<TopicInput> & { archived?: boolean }) => request<Chat>("PATCH", `/chats/${id}`, patch),
+  /** A topic a Bot suggested: accept creates it. */
+  answerTopic: (messageId: string, proposalId: string, accept: boolean) => request<Chat | void>("POST", `/messages/${messageId}/topics/${proposalId}`, { accept }),
+  createFolder: (title: string) => request<Folder>("POST", "/folders", { title }),
+  updateFolder: (id: string, patch: { title?: string; position?: number }) => request<Folder>("PATCH", `/folders/${id}`, patch),
+  deleteFolder: (id: string) => request<void>("DELETE", `/folders/${id}`),
   deleteChat: (id: string) => request<void>("DELETE", `/chats/${id}`),
   messages: (chatId: string, before?: number) => request<Message[]>("GET", `/chats/${chatId}/messages${before ? `?before=${before}` : ""}`),
   /** mode only matters while a Bot is working: steer joins its turn now, queue waits for it to finish. */

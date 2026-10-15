@@ -145,6 +145,23 @@ const MIGRATIONS = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // v8: topics and folders. Groups become topics with several Bots, filed in a "Groups" folder.
+  `
+  ALTER TABLE chats ADD COLUMN icon TEXT;
+  ALTER TABLE chats ADD COLUMN folder_id TEXT;
+  ALTER TABLE chats ADD COLUMN brief TEXT NOT NULL DEFAULT '';
+  ALTER TABLE chats ADD COLUMN archived_at INTEGER;
+  CREATE TABLE folders (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO folders (id, title, position, created_at)
+    SELECT 'groups', 'Groups', 0, CAST(strftime('%s', 'now') AS INTEGER) * 1000
+    WHERE EXISTS (SELECT 1 FROM chats WHERE kind = 'group');
+  UPDATE chats SET folder_id = 'groups', icon = 'users', kind = 'topic' WHERE kind = 'group';
+  `,
 ];
 
 export type Db = DatabaseSync;

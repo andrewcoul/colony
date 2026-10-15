@@ -11,6 +11,7 @@ import { cn } from "../lib/utils";
 import { useCopy } from "../hooks/useCopy";
 import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
+import { TopicTile } from "./TopicIcon";
 import { Button } from "./ui/button";
 
 type ItemProps = {
@@ -95,7 +96,7 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
       {!message.text && streaming && message.steps.length === 0 && <Typing />}
       {message.cards.map((card, index) => (
         <m.div key={index} className="flex flex-col" variants={pop} initial={index >= cardsAtMount.current ? "hidden" : false} animate="shown">
-          <CardView card={card} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />
+          <CardView card={card} messageId={message.id} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />
         </m.div>
       ))}
       {message.status === "failed" && message.error && (
@@ -209,8 +210,9 @@ function StepIcon({ status }: { status: Step["status"] }) {
   return <Check size={size} className="shrink-0 text-mint" strokeWidth={2.4} />;
 }
 
-function CardView({ card, author, onOpenRoutines, onOpenChat, onOpenBrowser }: {
+function CardView({ card, messageId, author, onOpenRoutines, onOpenChat, onOpenBrowser }: {
   card: Card;
+  messageId: string;
   author: Bot | undefined;
   onOpenRoutines?: () => void;
   onOpenChat?: (chatId: string) => void;
@@ -219,6 +221,7 @@ function CardView({ card, author, onOpenRoutines, onOpenChat, onOpenBrowser }: {
   if (card.type === "approval") return <ApprovalCard approvalId={card.approvalId} onOpenBrowser={onOpenBrowser} />;
   if (card.type === "routine" && card.action !== "ran") return <RoutineCard card={card} onOpen={onOpenRoutines} />;
   if (card.type === "handoff") return <HandoffCard card={card} author={author} onOpenChat={onOpenChat} />;
+  if (card.type === "topic") return <TopicCard card={card} messageId={messageId} onOpenChat={onOpenChat} />;
   return null;
 }
 
@@ -265,6 +268,46 @@ function HandoffCard({ card, author, onOpenChat }: { card: Extract<Card, { type:
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/** A topic the Bot suggested. Nothing exists until you tap Create; afterwards it links to the topic. */
+function TopicCard({ card, messageId, onOpenChat }: { card: Extract<Card, { type: "topic" }>; messageId: string; onOpenChat?: (chatId: string) => void }) {
+  const folder = useLive((s) => (card.proposal.folderId ? s.folders[card.proposal.folderId] : undefined));
+  const created = useLive((s) => (card.chatId ? s.chats[card.chatId] : undefined));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  async function answer(accept: boolean) {
+    setBusy(true); setError("");
+    try {
+      const chat = await api.answerTopic(messageId, card.proposalId, accept);
+      if (chat) onOpenChat?.(chat.id);
+    } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't do that."); }
+    finally { setBusy(false); }
+  }
+  if (card.dismissed) return <p className="m-0 text-meta text-muted">Suggested a topic, “{card.proposal.title}”. Not now.</p>;
+  return (
+    <div className="flex flex-col gap-3 self-start rounded-xl border border-rule bg-surface p-3.5 max-sm:self-stretch">
+      <div className="flex items-center gap-3">
+        <TopicTile icon={card.proposal.icon} size={36} active />
+        <span className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-meta text-muted">{created ? "New topic" : "Suggested topic"}{folder ? ` · ${folder.title}` : ""}</span>
+          <strong className="truncate text-sm">{created?.title ?? card.proposal.title}</strong>
+        </span>
+      </div>
+      {card.proposal.brief && !created && <p className="m-0 max-w-md text-label leading-relaxed text-soft">{card.proposal.brief}</p>}
+      {created ? (
+        <Button variant="outline" size="pill" className="self-start px-4" onClick={() => onOpenChat?.(created.id)}>Open topic<ChevronRight size={14} /></Button>
+      ) : card.chatId ? (
+        <span className="text-meta text-muted">That topic was deleted.</span>
+      ) : (
+        <div className="flex gap-2">
+          <Button variant="primary" size="pill" className="px-4" disabled={busy} onClick={() => void answer(true)}>Create</Button>
+          <Button variant="outline" size="pill" className="px-4" disabled={busy} onClick={() => void answer(false)}>Not now</Button>
+        </div>
+      )}
+      {error && <span className="text-meta text-danger">{error}</span>}
     </div>
   );
 }

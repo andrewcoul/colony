@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Delivery, Message, MessageStatus, Presence, Routine, Schedule, Step } from "./shared/types.js";
+import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Delivery, Folder, Message, MessageStatus, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
 
 type Row = Record<string, unknown>;
 
@@ -147,9 +147,11 @@ export class Store {
     this.deleteChat(bot.chatId);
     for (const row of this.db.prepare("SELECT chat_id FROM chat_members WHERE bot_id = ?").all(id) as Row[]) {
       const chat = this.getChat(row.chat_id as string);
-      // A thread can't outlive either Bot; groups just lose a member.
+      // A thread can't outlive either Bot; topics just lose a member, and one left with no Bots is archived.
       if (chat?.kind === "thread") { this.deleteChat(chat.id); continue; }
       this.db.prepare("DELETE FROM chat_members WHERE chat_id = ? AND bot_id = ?").run(row.chat_id as string, id);
+      if (chat && chat.memberIds.length <= 1) this.db.prepare("UPDATE chats SET archived_at = COALESCE(archived_at, ?) WHERE id = ?").run(Date.now(), chat.id);
+      if (chat?.coordinatorId === id) this.db.prepare("UPDATE chats SET coordinator_id = (SELECT bot_id FROM chat_members WHERE chat_id = ? LIMIT 1) WHERE id = ?").run(chat.id, chat.id);
       const updated = this.getChat(row.chat_id as string);
       if (updated) this.events.emit({ type: "chat.upserted", chat: updated });
     }
@@ -182,6 +184,10 @@ export class Store {
       title: row.title as string,
       memberIds: this.members(row.id as string),
       coordinatorId: (row.coordinator_id as string | null) ?? null,
+      icon: (row.icon as TopicIcon | null) ?? null,
+      folderId: (row.folder_id as string | null) ?? null,
+      brief: (row.brief as string | null) ?? "",
+      archivedAt: (row.archived_at as number | null) ?? null,
       lastPreview: (row.last_preview as string | null) ?? null,
       lastAuthor: (row.last_author as string | null) ?? null,
       updatedAt: row.updated_at as number,
@@ -198,10 +204,10 @@ export class Store {
     return row ? this.toChat(row) : null;
   }
 
-  createChat(input: { kind: Chat["kind"]; title: string; memberIds: string[]; coordinatorId: string | null }): Chat {
+  createChat(input: { kind: Chat["kind"]; title: string; memberIds: string[]; coordinatorId: string | null; icon?: TopicIcon; folderId?: string | null; brief?: string }): Chat {
     const id = newId();
-    this.db.prepare("INSERT INTO chats (id, kind, title, coordinator_id, updated_at) VALUES (?, ?, ?, ?, ?)")
-      .run(id, input.kind, input.title, input.coordinatorId, Date.now());
+    this.db.prepare("INSERT INTO chats (id, kind, title, coordinator_id, icon, folder_id, brief, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, input.kind, input.title, input.coordinatorId, input.icon ?? null, input.folderId ?? null, input.brief ?? "", Date.now());
     for (const botId of input.memberIds) this.db.prepare("INSERT INTO chat_members (chat_id, bot_id) VALUES (?, ?)").run(id, botId);
     const chat = this.getChat(id)!;
     this.events.emit({ type: "chat.upserted", chat });
@@ -223,10 +229,14 @@ export class Store {
     if (chat) this.events.emit({ type: "chat.upserted", chat });
   }
 
-  updateGroup(id: string, patch: { title?: string; memberIds?: string[]; coordinatorId?: string | null }) {
+  updateTopic(id: string, patch: { title?: string; icon?: TopicIcon; brief?: string; folderId?: string | null; archived?: boolean; memberIds?: string[]; coordinatorId?: string | null }) {
     const chat = this.getChat(id);
-    if (!chat || chat.kind !== "group") return null;
+    if (!chat || chat.kind !== "topic") return null;
     if (patch.title !== undefined) this.db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(patch.title, id);
+    if (patch.icon !== undefined) this.db.prepare("UPDATE chats SET icon = ? WHERE id = ?").run(patch.icon, id);
+    if (patch.brief !== undefined) this.db.prepare("UPDATE chats SET brief = ? WHERE id = ?").run(patch.brief, id);
+    if (patch.folderId !== undefined) this.db.prepare("UPDATE chats SET folder_id = ? WHERE id = ?").run(patch.folderId, id);
+    if (patch.archived !== undefined) this.db.prepare("UPDATE chats SET archived_at = ? WHERE id = ?").run(patch.archived ? Date.now() : null, id);
     if (patch.coordinatorId !== undefined) this.db.prepare("UPDATE chats SET coordinator_id = ? WHERE id = ?").run(patch.coordinatorId, id);
     if (patch.memberIds) {
       this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
@@ -237,8 +247,46 @@ export class Store {
     return updated;
   }
 
+  // ---------- Folders ----------
+  listFolders(): Folder[] {
+    return (this.db.prepare("SELECT * FROM folders ORDER BY position, created_at").all() as Row[]).map((row) => ({
+      id: row.id as string, title: row.title as string, position: row.position as number, createdAt: row.created_at as number,
+    }));
+  }
+
+  getFolder(id: string): Folder | null {
+    return this.listFolders().find((folder) => folder.id === id) ?? null;
+  }
+
+  createFolder(title: string): Folder {
+    const id = newId();
+    const position = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM folders").get() as { next: number }).next;
+    this.db.prepare("INSERT INTO folders (id, title, position, created_at) VALUES (?, ?, ?, ?)").run(id, title, position, Date.now());
+    const folder = this.getFolder(id)!;
+    this.events.emit({ type: "folder.upserted", folder });
+    return folder;
+  }
+
+  updateFolder(id: string, patch: { title?: string; position?: number }) {
+    if (!this.getFolder(id)) return null;
+    if (patch.title !== undefined) this.db.prepare("UPDATE folders SET title = ? WHERE id = ?").run(patch.title, id);
+    if (patch.position !== undefined) this.db.prepare("UPDATE folders SET position = ? WHERE id = ?").run(patch.position, id);
+    const folder = this.getFolder(id)!;
+    this.events.emit({ type: "folder.upserted", folder });
+    return folder;
+  }
+
+  /** Topics in a deleted folder stay; they just aren't filed any more. */
+  deleteFolder(id: string) {
+    const filed = this.db.prepare("SELECT id FROM chats WHERE folder_id = ?").all(id) as Row[];
+    this.db.prepare("UPDATE chats SET folder_id = NULL WHERE folder_id = ?").run(id);
+    this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
+    for (const row of filed) { const chat = this.getChat(row.id as string); if (chat) this.events.emit({ type: "chat.upserted", chat }); }
+    this.events.emit({ type: "folder.deleted", folderId: id });
+  }
+
   deleteChat(id: string) {
-    // Routines that posted to a deleted group fall back to their Bot's own chat.
+    // Routines that posted to a deleted topic fall back to their Bot's own chat.
     for (const row of this.db.prepare("SELECT id, bot_id FROM routines WHERE chat_id = ?").all(id) as Row[]) {
       const bot = this.getBot(row.bot_id as string);
       if (bot && bot.chatId !== id) this.updateRoutine(row.id as string, { chatId: bot.chatId });

@@ -249,15 +249,15 @@ describe("approval gate", () => {
   });
 });
 
-describe("groups and events", () => {
-  test("@mentions route a group message to that Bot; otherwise the coordinator answers", async () => {
+describe("topics and events", () => {
+  test("in a topic with several Bots, @mentions pick one; otherwise the coordinator answers", async () => {
     script = scriptedModel([textTurn("On it.")]);
     const { store, call } = setup();
     const { json: kenny } = await call("POST", "/bots", { name: "Kenny" });
     const { json: jenny } = await call("POST", "/bots", { name: "Jenny" });
     await finished(store, kenny.chatId, 1);
     await finished(store, jenny.chatId, 1);
-    const { json: group } = await call("POST", "/groups", { title: "Launch", memberIds: [kenny.id, jenny.id], coordinatorId: jenny.id });
+    const { json: group } = await call("POST", "/topics", { title: "Launch", memberIds: [kenny.id, jenny.id], coordinatorId: jenny.id });
     await call("POST", `/chats/${group.id}/messages`, { text: "Status, everyone?" });
     expect((await finished(store, group.id, 1)).map((m) => m.author)).toEqual([jenny.id]);
     await call("POST", `/chats/${group.id}/messages`, { text: "@Kenny can you check the build?" });
@@ -349,11 +349,11 @@ describe("routines and notifications", () => {
     expect((await finished(store, bot.chatId, 1))[0].text).toBe("Reminder: call Sarah.");
   });
 
-  test("routines move to the Bot's own chat when their group is deleted", () => {
+  test("routines move to the Bot's own chat when their topic is deleted", () => {
     const { store } = setup();
     const a = store.createBot({ name: "A", title: "", description: "", model: "mock-model", computer: false });
     const b = store.createBot({ name: "B", title: "", description: "", model: "mock-model", computer: false });
-    const group = store.createChat({ kind: "group", title: "G", memberIds: [a.id, b.id], coordinatorId: a.id });
+    const group = store.createChat({ kind: "topic", title: "G", memberIds: [a.id, b.id], coordinatorId: a.id });
     const routine = store.createRoutine({ botId: a.id, chatId: group.id, title: "R", prompt: "x", schedule: { type: "interval", minutes: 60 } });
     store.deleteChat(group.id);
     expect(store.getRoutine(routine.id)!.chatId).toBe(a.chatId);
@@ -599,5 +599,77 @@ describe("durable runs", () => {
     const { json: bot } = await call("POST", "/bots", { name: "Peng" });
     await finished(store, bot.chatId, 1);
     expect(store.listRuns()).toEqual([]);
+  });
+});
+
+describe("topics and folders", () => {
+  test("a one-Bot topic always reaches its Bot, keeps its own history, and tells the Bot what it's about", async () => {
+    script = scriptedModel([textTurn("Hi."), textTurn("Painter's booked for the 3rd.")]);
+    const { store, call } = setup();
+    const { json: luke } = await call("POST", "/bots", { name: "Luke" });
+    await finished(store, luke.chatId, 1);
+    const { json: folder } = await call("POST", "/folders", { title: "Home" });
+    const { status, json: topic } = await call("POST", "/topics", { title: "Hallway renovation", icon: "hammer", brief: "Repaint and new lights, before Christmas.", folderId: folder.id, memberIds: [luke.id] });
+    expect(status).toBe(201);
+    expect(topic).toMatchObject({ kind: "topic", icon: "hammer", folderId: folder.id, coordinatorId: luke.id, archivedAt: null });
+
+    await call("POST", `/chats/${topic.id}/messages`, { text: "Book the painter." });
+    expect((await finished(store, topic.id, 1))[0].text).toBe("Painter's booked for the 3rd.");
+    const prompt = JSON.stringify(script.prompts.at(-1));
+    expect(prompt).toContain('the topic \\"Hallway renovation\\"');
+    expect(prompt).toContain("Home");
+    expect(prompt).toContain("Repaint and new lights");
+    expect(prompt).not.toContain("Hi."); // the Bot's own chat stays separate
+  });
+
+  test("topics can be renamed, filed, archived; deleting a folder unfiles its topics", async () => {
+    script = scriptedModel([textTurn("Hi.")]);
+    const { store, call } = setup();
+    const { json: luke } = await call("POST", "/bots", { name: "Luke" });
+    const { json: folder } = await call("POST", "/folders", { title: "Trips" });
+    const { json: topic } = await call("POST", "/topics", { title: "Skopje", memberIds: [luke.id] });
+    expect(topic.icon).toBe("chat");
+    const { json: moved } = await call("PATCH", `/chats/${topic.id}`, { title: "Flights to Skopje", folderId: folder.id, icon: "plane", archived: true });
+    expect(moved).toMatchObject({ title: "Flights to Skopje", folderId: folder.id, icon: "plane" });
+    expect(moved.archivedAt).toBeGreaterThan(0);
+    expect((await call("PATCH", `/chats/${topic.id}`, { folderId: "nope" })).status).toBe(400);
+    expect((await call("PATCH", `/chats/${luke.chatId}`, { title: "x" })).status).toBe(400); // a Bot's own chat isn't a topic
+    await call("DELETE", `/folders/${folder.id}`);
+    expect(store.getChat(topic.id)!.folderId).toBeNull();
+    expect(store.listFolders()).toEqual([]);
+  });
+
+  test("a Bot suggests a topic; it only exists once you tap Create", async () => {
+    script = scriptedModel([textTurn("Hi."), toolTurn("topic_create", { title: "IKEA trip", icon: "cart", brief: "Saturday at IKEA Kraków.", folder: "home" }), textTurn("Want a topic for it?")]);
+    const { store, call } = setup();
+    const { json: luke } = await call("POST", "/bots", { name: "Luke" });
+    await finished(store, luke.chatId, 1);
+    const { json: folder } = await call("POST", "/folders", { title: "Home" });
+    await call("POST", `/chats/${luke.chatId}/messages`, { text: "We're going to IKEA on Saturday." });
+    const reply = (await finished(store, luke.chatId, 2)).at(-1)!;
+    const card = reply.cards.find((item) => item.type === "topic")!;
+    expect(card).toMatchObject({ type: "topic", chatId: null, dismissed: false, proposal: { title: "IKEA trip", icon: "cart", folderId: folder.id, memberIds: [luke.id] } });
+    expect(store.listChats().filter((chat) => chat.kind === "topic")).toEqual([]);
+
+    const proposalId = card.type === "topic" ? card.proposalId : "";
+    const { status, json: topic } = await call("POST", `/messages/${reply.id}/topics/${proposalId}`, { accept: true });
+    expect(status).toBe(201);
+    expect(topic).toMatchObject({ kind: "topic", title: "IKEA trip", folderId: folder.id, memberIds: [luke.id] });
+    expect(store.getMessage(reply.id)!.cards.find((item) => item.type === "topic")).toMatchObject({ chatId: topic.id });
+    expect((await call("POST", `/messages/${reply.id}/topics/${proposalId}`, { accept: true })).status).toBe(409);
+  });
+
+  test("groups from before topics become topics in a Groups folder", () => {
+    const { db } = setup();
+    db.exec("DELETE FROM folders");
+    db.prepare("INSERT INTO chats (id, kind, title, updated_at) VALUES ('g1', 'group', 'Launch', 1)").run();
+    // Re-run the topics migration against an old-style group.
+    db.exec(`
+      INSERT INTO folders (id, title, position, created_at)
+        SELECT 'groups', 'Groups', 0, 1 WHERE EXISTS (SELECT 1 FROM chats WHERE kind = 'group');
+      UPDATE chats SET folder_id = 'groups', icon = 'users', kind = 'topic' WHERE kind = 'group';`);
+    const store = new Store(db, new EventLog(db));
+    expect(store.getChat("g1")).toMatchObject({ kind: "topic", folderId: "groups", icon: "users" });
+    expect(store.listFolders().map((folder) => folder.title)).toEqual(["Groups"]);
   });
 });
