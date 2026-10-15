@@ -729,7 +729,7 @@ describe("a topic's Doc, files and questions", () => {
     form.append("file", new File(["Boot: 120 x 100 cm with the seats down"], "measurements.txt", { type: "text/plain" }));
     const upload = await (setupApi(store)).request(`/chats/${topic.id}/files`, { method: "POST", body: form });
     expect(upload.status).toBe(201);
-    const file = await upload.json();
+    const file = await upload.json() as { id: string; size: number };
     expect(file).toMatchObject({ name: "measurements.txt", mime: "text/plain", addedBy: "user" });
 
     const { json } = await call("POST", `/chats/${topic.id}/messages`, { text: "Will the KALLAX fit?", attachments: [file.id] });
