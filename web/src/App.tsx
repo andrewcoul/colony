@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { AnimatePresence } from "motion/react";
 import { Plus, WifiOff, X } from "lucide-react";
-import { setFocusedChat, useLive } from "./lib/live";
+import { setFocusedChat, useLive, type RingingCall } from "./lib/live";
+import { useCall } from "./lib/call";
+import { CallBar, CallScreen, IncomingCall } from "./components/CallView";
 import { onOpenSettings, onOpenUpdates } from "./lib/settings";
 import { startUpdates } from "./lib/updates";
 import { ChatScreen } from "./components/ChatScreen";
@@ -18,9 +21,15 @@ const usePhone = () => useSyncExternalStore(
   () => phoneQuery.matches,
 );
 
+/** "#/chat/<id>?call=<call id>": opened from a Bot's ringing notification. */
+const ringFromLink = (): RingingCall | null => {
+  const match = /^#\/chat\/([\w-]+)\?call=([\w-]+)$/.exec(location.hash);
+  return match ? { chatId: match[1], callId: match[2], botId: "", reason: "" } : null;
+};
+
 /** The open chat lives in the URL hash so the phone's back gesture works. */
 function useOpenChat() {
-  const read = () => /^#\/chat\/([\w-]+)(\/browser)?$/.exec(location.hash)?.[1] ?? null;
+  const read = () => /^#\/chat\/([\w-]+)(\/browser|\?call=[\w-]+)?$/.exec(location.hash)?.[1] ?? null;
   const [chatId, setChatId] = useState(read);
   useEffect(() => {
     const onHash = () => setChatId(read());
@@ -56,6 +65,23 @@ export default function App() {
   useEffect(() => { startUpdates(); return onOpenUpdates(() => setUpdatesOpen(true)); }, []);
   const [error, setError] = useState("");
   const chat = chatId ? chats[chatId] : undefined;
+  const call = useCall();
+  // Phone: the call fills the screen until you go to the chat.
+  const [callExpanded, setCallExpanded] = useState(true);
+  useEffect(() => { if (call?.chatId) setCallExpanded(true); }, [call?.chatId]);
+  const ringing = useLive((s) => s.ringing);
+  const bots = useLive((s) => s.bots);
+  // Opened from the notification: the Bot's still ringing until you answer here.
+  const [linked, setLinked] = useState(ringFromLink);
+  useEffect(() => {
+    if (!linked) return;
+    history.replaceState(null, "", `#/chat/${linked.chatId}`);
+  }, [linked]);
+  const dismissLinked = useCallback(() => setLinked(null), []);
+  const linkedRing = linked && chats[linked.chatId]
+    ? { ...linked, botId: ringing[linked.callId]?.botId ?? chats[linked.chatId].coordinatorId ?? chats[linked.chatId].memberIds[0] ?? "", reason: ringing[linked.callId]?.reason ?? "" }
+    : null;
+  const ring = call ? null : (Object.values(ringing).find((item) => bots[item.botId]) ?? linkedRing);
 
   useEffect(() => {
     if (ready && chatId && !chat) openChat(null); // Deleted or unknown chat.
@@ -81,7 +107,7 @@ export default function App() {
       <div className="flex h-dvh overflow-hidden">
         {phone ? (chat ? null : roster) : roster}
         {chat ? (
-          <ChatScreen key={chat.id} chat={chat} phone={phone} onBack={() => openChat(null)} onOpenChat={openChat} onError={setError} />
+          <ChatScreen key={chat.id} chat={chat} phone={phone} onBack={() => openChat(null)} onOpenChat={openChat} onError={setError} onExpandCall={() => setCallExpanded(true)} />
         ) : !phone && (
           <section className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
             <LogoMark size={56} mood="alive" />
@@ -91,6 +117,17 @@ export default function App() {
           </section>
         )}
       </div>
+
+      <AnimatePresence>
+        {phone && call && callExpanded && <CallScreen key="call" call={call} onMinimize={() => { setCallExpanded(false); openChat(call.chatId); }} />}
+        {ring && <IncomingCall key={ring.callId} ring={ring} onAnswered={(id) => { setLinked(null); setCallExpanded(true); openChat(id); }} onDeclined={dismissLinked} />}
+      </AnimatePresence>
+      {/* Elsewhere in the app, the call stays one tap away. */}
+      {call && chat?.id !== call.chatId && (!phone || !callExpanded) && (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t border-rule bg-surface pb-[env(safe-area-inset-bottom)] sm:inset-x-auto sm:right-5 sm:bottom-5 sm:w-[420px] sm:overflow-hidden sm:rounded-2xl sm:border sm:pb-0 sm:shadow-pop">
+          <CallBar call={call} here={false} onOpenChat={openChat} />
+        </div>
+      )}
 
       {showOffline && (
         <div className="fixed top-[max(env(safe-area-inset-top),8px)] left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-raised px-3.5 py-1.5 text-meta text-soft shadow-pop">

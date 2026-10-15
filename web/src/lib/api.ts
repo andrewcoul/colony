@@ -31,7 +31,18 @@ export type Protocol = "openai" | "anthropic";
 export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null };
 export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
 export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
-export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
+/** Voice calls (server/src/settings.ts VoiceSettings). */
+export type VoiceSettings = {
+  providerId: string | null;
+  transcribeModel: string;
+  speechModel: string;
+  voice: string;
+  botVoices: Record<string, string>;
+  allowCalls: boolean;
+  quietFrom: string;
+  quietTo: string;
+};
+export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings };
 
 /** The server's version and updates (server/src/updates.ts). */
 export type SystemInfo = {
@@ -118,6 +129,14 @@ export const api = {
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),
   setDefaultModel: (model: string) => request<Settings>("PUT", "/settings/default-model", { model }),
+  setVoice: (patch: Partial<VoiceSettings>) => request<Settings>("PUT", "/settings/voice", patch),
+  /** A sample line in a voice, as audio. */
+  tryVoice: async (voice: string) => {
+    const response = await fetch("/api/settings/voice/try", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
+    if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: string } | null)?.error ?? "Couldn't play that voice.");
+    return response.blob();
+  },
+  declineCall: (callId: string) => request<{ ok: true }>("POST", `/calls/${encodeURIComponent(callId)}/decline`),
   checkProvider: (input: { providerId?: string; baseURL: string; protocol: Protocol; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
   soul: (botId: string) => request<{ content: string }>("GET", `/bots/${botId}/soul`),
   saveSoul: (botId: string, content: string) => request<void>("PUT", `/bots/${botId}/soul`, { content }),

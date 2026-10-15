@@ -23,7 +23,27 @@ export type ModelTarget = { provider: Provider; model: string; ref: string };
 
 /** What devices see. Keys never leave the server. */
 export type ProviderView = Omit<Provider, "apiKey"> & { keySet: boolean; keyHint: string | null };
-export type SettingsView = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env" };
+/**
+ * Voice: one provider's OpenAI-compatible /audio endpoints transcribe what you say and speak
+ * replies (OpenAI itself, or local servers like faster-whisper-server and Kokoro).
+ * Quiet hours are local time; Bots never ring you inside them.
+ */
+export type VoiceSettings = {
+  providerId: string | null;
+  transcribeModel: string;
+  speechModel: string;
+  voice: string;
+  /** A voice per Bot (falls back to `voice`). */
+  botVoices: Record<string, string>;
+  allowCalls: boolean;
+  quietFrom: string;
+  quietTo: string;
+};
+const DEFAULT_VOICE: VoiceSettings = {
+  providerId: null, transcribeModel: "gpt-4o-mini-transcribe", speechModel: "gpt-4o-mini-tts", voice: "alloy",
+  botVoices: {}, allowCalls: true, quietFrom: "22:00", quietTo: "07:00",
+};
+export type SettingsView = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings };
 
 /**
  * Bots point at "<provider id>::<model id>". Model ids often contain "/" or ":"
@@ -34,6 +54,7 @@ export const modelRef = (providerId: string, model: string) => `${providerId}${S
 
 let providers: Provider[] = [];
 let defaultRef = "";
+let voice: VoiceSettings = { ...DEFAULT_VOICE };
 let source: "app" | "env" = "env";
 
 const settingsFile = () => path.join(config.dataDir, "settings.json");
@@ -54,7 +75,9 @@ export function loadSettings() {
       defaultModel?: string;
       /** The single-provider format from before multiple providers. */
       model?: { providerName: string; baseURL: string; apiKey: string; models: string[] };
+      voice?: Partial<VoiceSettings>;
     };
+    voice = { ...DEFAULT_VOICE, ...saved.voice, botVoices: { ...saved.voice?.botVoices } };
     if (saved.providers) {
       providers = saved.providers.map((provider) => {
         const protocol = provider.protocol ?? "openai";
@@ -79,7 +102,7 @@ function persist() {
   fs.mkdirSync(config.dataDir, { recursive: true });
   // Write then rename, so a crash never leaves half a file. Readable only by you.
   const temp = `${settingsFile()}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef, voice }, null, 2), { mode: 0o600 });
   fs.renameSync(temp, settingsFile());
   source = "app";
 }
@@ -135,6 +158,20 @@ export function setDesktopModels(providerId: string, verdicts: Record<string, bo
   persist();
 }
 
+export const voiceSettings = (): VoiceSettings => voice;
+
+export function setVoiceSettings(patch: Partial<VoiceSettings>) {
+  voice = { ...voice, ...patch, botVoices: { ...voice.botVoices, ...patch.botVoices } };
+  persist();
+  return voice;
+}
+
+/** The provider that does voice, if it's set and still exists (Anthropic's API has no audio endpoints). */
+export function voiceProvider(): Provider | null {
+  const provider = voice.providerId ? providerById(voice.providerId) : null;
+  return provider && provider.protocol === "openai" ? provider : null;
+}
+
 export function defaultModel() {
   return defaultRef;
 }
@@ -145,6 +182,7 @@ export function settingsView(): SettingsView {
     defaultModel: defaultRef,
     configured: modelConfigured(),
     source,
+    voice,
   };
 }
 

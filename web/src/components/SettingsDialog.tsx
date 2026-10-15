@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Monitor, Plus, Server, Trash2, X } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Monitor, Plus, Server, Trash2, X } from "lucide-react";
 import type { AccountKind } from "@shared/types";
 import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settings } from "../lib/api";
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
+import { VoiceSettingsEditor } from "./VoiceSettings";
 import { useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
 import { pending, useUpdates, WEB_VERSION } from "../lib/updates";
@@ -44,10 +45,11 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   /** Connecting an account: which kind (null = pick one), or undefined when not connecting. */
   const [connecting, setConnecting] = useState<AccountKind | null | undefined>(undefined);
   const [error, setError] = useState("");
+  const [voicing, setVoicing] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setEditing(null); setConnecting(undefined); setError("");
+    setEditing(null); setConnecting(undefined); setVoicing(false); setError("");
     void api.settings().then(setSettings).catch(() => setError("Couldn't load settings."));
   }, [open]);
 
@@ -60,10 +62,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : "Settings"}
-      description={editing || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : "Settings"}
+      description={editing || voicing || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
+      ) : voicing && settings ? (
+        <VoiceSettingsEditor settings={settings} onBack={() => setVoicing(false)} onSaved={setSettings} />
       ) : editing ? (
         <ProviderEditor
           provider={editing === "new" ? null : editing}
@@ -108,6 +112,18 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <Button variant="outline" onClick={() => setEditing("new")}><Plus size={15} />Add provider</Button>
           <p className="m-0 mt-4 text-meta leading-relaxed text-muted">Keys stay on this PC; devices only see their last four characters. A key is only ever sent to the address it was saved for.</p>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
+          <span className="mt-6 mb-1.5 text-label text-muted">Voice</span>
+          <button type="button" onClick={() => setVoicing(true)} disabled={!settings}
+            className="flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
+            <AudioLines size={16} className="shrink-0 text-muted" />
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <strong className="truncate text-sm font-medium">Calls</strong>
+              <span className="truncate text-meta text-muted">
+                {settings?.voice.providerId ? `${settings.providers.find((provider) => provider.id === settings.voice.providerId)?.name ?? "Provider removed"} · ${settings.voice.allowCalls ? `Bots can call you, quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Bots can't call you"}` : "Off · pick a provider to talk to your Bots"}
+              </span>
+            </span>
+            <ChevronRight size={16} className="shrink-0 text-muted" />
+          </button>
           <AccountsList onConnect={setConnecting} />
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">

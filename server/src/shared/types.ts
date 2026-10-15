@@ -140,6 +140,8 @@ export type Message = {
   steeredAt: number | null;
   /** Files sent with the message. */
   attachments: Attachment[];
+  /** "voice": said on a call (yours transcribed, a Bot's spoken). */
+  via: "voice" | null;
   createdAt: number;
 };
 
@@ -259,4 +261,7 @@ export type ServerEvent =
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
 export type EphemeralEvent =
   | { type: "message.delta"; messageId: string; chatId: string; text: string; reasoning?: string }
-  | { type: "computer.output"; botId: string; text: string };
+  | { type: "computer.output"; botId: string; text: string }
+  /** A Bot is calling you (see call_user); ringing stops with call.ended. */
+  | { type: "call.ringing"; callId: string; botId: string; chatId: string; reason: string }
+  | { type: "call.ended"; callId: string };

@@ -32,6 +32,7 @@ import { PushService } from "./push.js";
 import { RoutineScheduler } from "./routines.js";
 import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
 import { Store } from "./store.js";
+import { Calls, callTools } from "./voice.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -81,17 +82,21 @@ const toolsFor = (botId: string): ToolRegistry => {
     ...(hasComputer ? computerToolset : {}),
     ...mailToolsFor(accountTools, integrations, botId),
     ...(hasComputer ? vaultToolsFor(loginTools, integrations, botId) : {}),
+    ...ringTools,
   };
 };
 const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop, {
   integrations,
   guidance: (botId) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)),
 });
+const calls = new Calls(store, events, runner);
+const ringTools = callTools(calls);
 const routines = new RoutineScheduler(store, runner);
 routines.start();
 const poller = new MailPoller(store, integrations, routines);
 poller.start();
 const push = new PushService(db, store, events);
+calls.notify = (notification) => void push.notify(notification, { force: true });
 // Pick up the turns that were running when Colony stopped, in the replies they were writing.
 runner.resumeAll(resumable);
 accounts.onNeedsReauth = (account) => void push.notify({
@@ -111,7 +116,7 @@ const updater = new Updater({
   busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => bot.name),
 });
 updater.start();
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, integrations, signIns }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, integrations, signIns, calls }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -150,8 +155,14 @@ const idle = new IdleStopper({
 computer.onUse = (botId) => idle.touch(botId);
 idle.start();
 server.on("upgrade", (request, socket, head) => {
-  const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
+  // A voice call: /api/chats/<id>/call.
+  if (/^\/api\/chats\/[\w-]+\/call(\?|$)/.test(request.url ?? "")) {
+    if (allowed(header)) { socket.destroy(); return; }
+    calls.upgrade(request, socket, head);
+    return;
+  }
+  const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
   const bot = match ? store.getBot(match[1]) : null;
   if (!match || !bot?.computer || allowed(header)) { socket.destroy(); return; }
   void computer.runningDesktopPort(bot.id).then((port) => {
