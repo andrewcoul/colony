@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, CircleHelp, Clock, Copy, CornerDownRight, FileText, Globe, Hand, Loader2, Paperclip, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, CircleHelp, Clock, Copy, CornerDownRight, FileText, Globe, Hand, Loader2, Mic, Paperclip, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
@@ -77,6 +77,7 @@ function UserMessage({ message, recipient }: { message: Message; recipient: stri
           </m.span>
         )}
       </AnimatePresence>
+      {message.via === "voice" && <span className="flex items-center gap-1 pr-1.5 text-meta text-muted"><Mic size={12} />Said on a call</span>}
     </div>
   );
 }
@@ -108,6 +109,7 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
   const body = (
     <div className="group flex min-w-0 flex-1 flex-col gap-3">
       {showAuthor && bot && <span className="text-label font-semibold" style={{ color: "var(--soft)" }}>{bot.name}</span>}
+      {message.via === "voice" && <span className="-mb-1 flex items-center gap-1 text-meta text-muted"><Mic size={12} />Said on a call</span>}
       {ran?.type === "routine" && (
         <button type="button" onClick={onOpenRoutines} disabled={!onOpenRoutines}
           className="-mb-1 flex items-center gap-1.5 self-start text-meta text-sky enabled:hover:underline">

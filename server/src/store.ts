@@ -53,6 +53,7 @@ const toMessage = (row: Row): Message => ({
   delivery: (row.delivery as Delivery | null) ?? null,
   steeredAt: (row.steered_at as number | null) ?? null,
   attachments: JSON.parse((row.attachments as string | null) ?? "[]") as Attachment[],
+  via: (row.via as Message["via"]) ?? null,
   createdAt: row.created_at as number,
 });
 
@@ -402,13 +403,13 @@ export class Store {
     return row ? toMessage(row) : null;
   }
 
-  createMessage(input: { chatId: string; author: string; text?: string; status?: MessageStatus; cards?: Card[]; delivery?: Delivery; attachments?: Attachment[] }): Message {
+  createMessage(input: { chatId: string; author: string; text?: string; status?: MessageStatus; cards?: Card[]; delivery?: Delivery; attachments?: Attachment[]; via?: Message["via"] }): Message {
     const id = newId();
     // Strictly increasing timestamps keep ordering stable within the same millisecond.
     const last = this.db.prepare("SELECT MAX(created_at) AS t FROM messages WHERE chat_id = ?").get(input.chatId) as { t: number | null };
     const createdAt = Math.max(Date.now(), (last.t ?? 0) + 1);
-    this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, delivery, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", input.delivery ?? null, JSON.stringify(input.attachments ?? []), createdAt);
+    this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, delivery, attachments, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", input.delivery ?? null, JSON.stringify(input.attachments ?? []), input.via ?? null, createdAt);
     const message = this.getMessage(id)!;
     this.events.emit({ type: "message.upserted", message });
     if (message.status !== "streaming") this.touchChat(message);

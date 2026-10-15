@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Square, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Phone, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadArtifact, loadMessages, loadOlder, useLive } from "../lib/live";
+import { startCall, useCall } from "../lib/call";
+import { CallBar } from "./CallView";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { Composer, type ComposerHandle, type SendMode } from "./Composer";
 import { TopicPanel, type TopicTab } from "./TopicPanel";
@@ -23,13 +25,16 @@ import { cn } from "../lib/utils";
 
 const EMPTY: never[] = [];
 
-export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
+export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandCall }: {
   chat: Chat;
   phone: boolean;
   onBack: () => void;
   onOpenChat: (chatId: string) => void;
   onError: (message: string) => void;
+  /** Phone: back to the full-screen call. */
+  onExpandCall?: () => void;
 }) {
+  const call = useCall();
   const botMap = useLive((s) => s.bots);
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
@@ -134,6 +139,9 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
             <Monitor size={15} /><span className="max-sm:hidden">Computer</span>
           </Button>
         )}
+        {chat.kind !== "thread" && members.length > 0 && !chat.archivedAt && call?.chatId !== chat.id && (
+          <Button size="icon" aria-label={`Call ${solo?.name ?? "the topic"}`} onClick={() => startCall(chat.id)}><Phone size={17} /></Button>
+        )}
         <MenuRoot>
           <MenuTrigger><Button size="icon" aria-label="Chat options"><MoreHorizontal size={18} /></Button></MenuTrigger>
           <MenuContent>
@@ -156,6 +164,9 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
           </MenuContent>
         </MenuRoot>
       </header>
+      <AnimatePresence initial={false}>
+        {call?.chatId === chat.id && <CallBar key="call" call={call} here onExpand={phone ? onExpandCall : undefined} onOpenChat={onOpenChat} />}
+      </AnimatePresence>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
         <div ref={ref} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:thin]"

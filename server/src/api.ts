@@ -1,3 +1,5 @@
+import { speak, type Calls } from "./voice.js";
+import { sendUserMessage } from "./send.js";
 import fs from "node:fs";
 import { chatFilePath, isImage, isPdf, MAX_FILE_BYTES, removeChatFile, safeName, shareWithComputers, writeChatFile } from "./chatFiles.js";
 import { isPublicWebUrl } from "./shared/urlPolicy.js";
@@ -37,6 +39,8 @@ export type Services = {
   signIns?: SignIns;
   /** Signs in to 1Password (tests pass a fake). */
   connectVault?: VaultConnector;
+  /** Voice calls and Bots ringing you. */
+  calls?: Calls;
 };
 
 const schedule = z.discriminatedUnion("type", [
@@ -86,14 +90,6 @@ const botPatch = z.object(botFields).partial();
 
 const INTRO_PROMPT = "(System: you were just created. Greet the user in one or two short sentences, in your own voice: who you are and what you can take off their plate. Don't use tools.)";
 
-/** Bots named with @Name in a group message; falls back to the coordinator. */
-function addressedBots(text: string, memberIds: string[], store: Store, coordinatorId: string | null) {
-  const members = memberIds.map((id) => store.getBot(id)).filter((bot) => bot !== null);
-  const mentioned = members.filter((bot) => new RegExp(`@${bot.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text));
-  if (mentioned.length) return mentioned.map((bot) => bot.id);
-  return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
-}
-
 /** Images a Doc shows, fetched once and kept in memory (up to 200, each under 4 MB). */
 const imageCache = new Map<string, { type: string; bytes: ArrayBuffer }>();
 async function fetchImage(url: string) {
@@ -106,7 +102,7 @@ async function fetchImage(url: string) {
   return { type: type.startsWith("image/svg") ? "image/svg+xml" : type, bytes };
 }
 
-export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword, calls }: Services) {
   const api = new Hono();
 
   /** A mail-triggered routine must watch a mailbox its Bot can read. */
@@ -434,16 +430,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (attached.length !== attachmentIds.length) return c.json({ error: "One of those files isn't in this chat any more." }, 400);
     if (!text && !attached.length) return c.json({ error: "Write something, or attach a file." }, 400);
     const attachments = attached.map((file) => ({ id: file!.id, name: file!.name, mime: file!.mime, size: file!.size }));
-    const message = store.createMessage({ chatId: chat.id, author: "user", text, attachments });
-    // A Bot's own chat, or a topic with one Bot, always goes to that Bot; with several, @mentions pick.
-    const targets = chat.memberIds.length <= 1 ? chat.memberIds : addressedBots(text, chat.memberIds, store, chat.coordinatorId);
-    const started: string[] = [];
-    for (const botId of targets) {
-      if (runner.deliver(chat.id, botId, message.id, mode)) continue;
-      started.push(runner.start(chat.id, botId));
-    }
-    store.markRead(chat.id);
-    return c.json({ message: store.getMessage(message.id) ?? message, replies: started }, 201);
+    return c.json(sendUserMessage(store, runner, chat, { text, mode, attachments }), 201);
   });
 
   // ---------- A topic's Doc ----------
@@ -560,6 +547,42 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return view;
   };
   api.get("/settings", (c) => c.json(settings.settingsView()));
+
+  // ---------- Voice ----------
+  const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 22:00.");
+  const voicePatch = z.object({
+    providerId: z.string().max(80).nullable(),
+    transcribeModel: z.string().trim().min(1).max(120),
+    speechModel: z.string().trim().min(1).max(120),
+    voice: z.string().trim().min(1).max(60),
+    botVoices: z.record(z.string(), z.string().trim().max(60)),
+    allowCalls: z.boolean(),
+    quietFrom: hhmm,
+    quietTo: hhmm,
+  }).partial();
+  api.put("/settings/voice", async (c) => {
+    const patch = voicePatch.safeParse(await c.req.json());
+    if (!patch.success) return c.json({ error: patch.error.issues[0]?.message ?? "Check the voice settings." }, 400);
+    if (patch.data.providerId && settings.providerById(patch.data.providerId)?.protocol !== "openai") {
+      return c.json({ error: "Voice needs an OpenAI-compatible provider." }, 400);
+    }
+    settings.setVoiceSettings(patch.data);
+    return c.json(settings.settingsView());
+  });
+  /** Says a line in a voice, to try it out in Settings. */
+  api.post("/settings/voice/try", async (c) => {
+    const { voice } = z.object({ voice: z.string().trim().min(1).max(60) }).parse(await c.req.json());
+    try {
+      const audio = await speak("Hi! This is how I'll sound when we talk.", voice);
+      return c.body(audio, 200, { "Content-Type": "audio/mpeg", "Cache-Control": "no-store" });
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : "Couldn't speak." }, 400);
+    }
+  });
+  api.post("/calls/:id/decline", (c) => {
+    calls?.miss(c.req.param("id"));
+    return c.json({ ok: true });
+  });
   api.post("/settings/providers", async (c) => {
     settings.saveProvider(null, providerInput.parse(await c.req.json()));
     return c.json(settingsChanged(), 201);

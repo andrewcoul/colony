@@ -198,6 +198,8 @@ const MIGRATIONS = [
   CREATE INDEX chat_files_by_chat ON chat_files (chat_id, created_at);
   ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
   `,
+  // v10: messages said on a call.
+  `ALTER TABLE messages ADD COLUMN via TEXT;`,
 ];
 
 export type Db = DatabaseSync;

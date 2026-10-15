@@ -23,11 +23,14 @@ export type LiveState = {
   /** Connected mail, calendar and 1Password accounts, and what each Bot may do with them. */
   accounts: Account[];
   access: Access[];
+  /** Bots ringing you right now, by call id. */
+  ringing: Record<string, RingingCall>;
   error: string | null;
 };
+export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -96,6 +99,8 @@ export function onComputerOutput(listener: (event: ComputerOutput) => void) {
 
 function applyEphemeral(event: EphemeralEvent) {
   if (event.type === "computer.output") { for (const listener of outputListeners) listener(event); return; }
+  if (event.type === "call.ringing") { const { type: _, ...call } = event; set({ ringing: { ...state.ringing, [call.callId]: call } }); return; }
+  if (event.type === "call.ended") { set({ ringing: without(state.ringing, event.callId) }); return; }
   applyDelta(event);
 }
 
