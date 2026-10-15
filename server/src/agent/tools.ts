@@ -46,6 +46,8 @@ export type ColonyTool<I = any, O = any> = {
   summarize?: (output: O) => string | undefined;
   /** A ready-made AI SDK tool (e.g. a provider's computer toolset) used instead of `execute`. */
   sdkTool?: Tool;
+  /** How the result reads to the model, when it isn't plain JSON (e.g. a screenshot). */
+  toModelOutput?: (output: O) => unknown;
 };
 
 const define = <I, O>(spec: ColonyTool<I, O>) => spec;
@@ -296,5 +298,6 @@ export function toToolSet(registry: ToolRegistry, ctx: ToolContext): ToolSet {
         throw error instanceof Error ? Object.assign(new Error(ctx.secrets.text(error.message)), { name: error.name }) : error;
       }
     },
+    ...(spec.toModelOutput ? { toModelOutput: ({ output }: { output: unknown }) => spec.toModelOutput!(output) as never } : {}),
   })]));
 }

@@ -1,5 +1,5 @@
-import { ShieldCheck } from "lucide-react";
-import type { Access, Account, Bot, CalendarAccess, MailAccess, VaultAccess } from "@shared/types";
+import { Monitor, ShieldCheck } from "lucide-react";
+import type { Access, Account, Bot, CalendarAccess, MailAccess, PcLevel, PcNode, VaultAccess } from "@shared/types";
 import { api } from "../lib/api";
 import { useLive } from "../lib/live";
 import { openSettings } from "../lib/settings";
@@ -10,12 +10,20 @@ const MAIL: [MailAccess, string][] = [["none", "No mail"], ["read", "Read mail"]
 const CALENDAR: [CalendarAccess, string][] = [["none", "No calendar"], ["read", "Read calendar"], ["write", "Read and change"]];
 const VAULT: [VaultAccess, string][] = [["none", "No logins"], ["use", "Sign in to sites"], ["save", "Sign in and save new logins"]];
 
+const PC: [PcLevel, string][] = [[0, "Can't use it"], [1, "Browser windows and screen"], [2, "Also the terminal"], [3, "Also files"]];
+const SWITCHES: [PcNode["capabilities"][number], string][] = [["browser", "browser"], ["screen", "screen"], ["shell", "terminal"], ["files", "files"]];
+
 const selectClass = "h-9 min-w-0 flex-1 rounded-lg border border-rule bg-ground px-2.5 text-label text-ink outline-none disabled:opacity-50";
 
 /** What this Bot may do with each connected account. Nothing until you choose. */
 export function BotAccess({ bot, onError }: { bot: Bot; onError: (message: string) => void }) {
   const accounts = useLive((s) => s.accounts);
   const access = useLive((s) => s.access);
+  const nodes = useLive((s) => s.nodes);
+  const nodeAccess = useLive((s) => s.nodeAccess);
+  const pcLevel = (node: PcNode) => nodeAccess.find((grant) => grant.botId === bot.id && grant.nodeId === node.id)?.level ?? 0;
+  const setPc = (node: PcNode, level: PcLevel) =>
+    void api.setPcLevel(bot.id, node.id, level).catch((failure) => onError(failure instanceof Error ? failure.message : "Couldn't change access."));
 
   const current = (account: Account): Access =>
     access.find((item) => item.botId === bot.id && item.accountId === account.id) ?? { botId: bot.id, accountId: account.id, mail: "none", calendar: "none", vault: "none" };
@@ -61,6 +69,28 @@ export function BotAccess({ bot, onError }: { bot: Bot; onError: (message: strin
               </div>
             )}
             {account.status === "needs_reauth" && <span className="text-meta text-coral">Needs reconnecting in Settings.</span>}
+          </div>
+        );
+      })}
+      {/* PCs lent through the desktop app (Settings › This PC there). */}
+      {nodes.map((node) => {
+        const on = SWITCHES.filter(([key]) => node.capabilities.includes(key)).map(([, label]) => label);
+        return (
+          <div key={node.id} className="flex flex-col gap-2 rounded-xl border border-rule px-3.5 py-3">
+            <span className="flex min-w-0 items-center gap-2 text-sm">
+              <Monitor size={14} className="shrink-0 text-muted" />
+              <span className="truncate">{node.name}</span>
+              <span className={cn("ml-auto flex shrink-0 items-center gap-1.5 text-meta", node.online ? "text-mint" : "text-muted")}>
+                <span className={cn("size-1.5 rounded-full", node.online ? "bg-mint" : "bg-muted")} />{node.online ? "Online" : "Offline"}
+              </span>
+            </span>
+            <select aria-label={`${bot.name}'s use of ${node.name}`} value={pcLevel(node)} className={cn(selectClass, "w-full flex-none")}
+              onChange={(e) => setPc(node, Number(e.target.value) as PcLevel)}>
+              {PC.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+            </select>
+            <span className="text-meta text-muted">
+              {on.length ? `Switched on there: ${on.join(", ")}.` : "Nothing is switched on there yet."} Anything that acts on the PC asks you first.
+            </span>
           </div>
         );
       })}

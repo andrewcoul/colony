@@ -6,6 +6,20 @@ export type DesktopUpdate = {
   error: string | null;
 };
 
+/** This PC, lent to Bots (desktop/src/node.ts). */
+export type NodeSettings = {
+  enabled: boolean;
+  id: string;
+  name: string;
+  browser: boolean;
+  screen: boolean;
+  shell: boolean;
+  files: boolean;
+  fullDisk: boolean;
+  shellFolder: string | null;
+};
+export type NodeView = { settings: NodeSettings; status: "off" | "connecting" | "connected" | "offline"; home: string };
+
 /** What Colony's desktop app adds to the page (desktop/src/preload.ts). */
 export type ColonyDesktop = {
   version: string;
@@ -15,6 +29,13 @@ export type ColonyDesktop = {
   checkForUpdates: () => Promise<DesktopUpdate>;
   installUpdate: () => Promise<void>;
   changeServer: () => Promise<void>;
+  /** Missing in desktop apps from before This PC. */
+  node?: {
+    get: () => Promise<NodeView | null>;
+    set: (patch: Partial<NodeSettings>) => Promise<NodeView | null>;
+    pickFolder: () => Promise<NodeView | null>;
+    onChange: (listener: (view: NodeView | null) => void) => () => void;
+  };
 };
 
 /** Set when Colony runs inside its desktop app. */

@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Routine, Schedule, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, NodeAccess, PcLevel, Routine, Schedule, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -136,6 +136,8 @@ export const api = {
     if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: string } | null)?.error ?? "Couldn't play that voice.");
     return response.blob();
   },
+  setPcLevel: (botId: string, nodeId: string, level: PcLevel) => request<{ nodeAccess: NodeAccess[] }>("PUT", `/bots/${encodeURIComponent(botId)}/pc/${encodeURIComponent(nodeId)}`, { level }),
+  forgetNode: (nodeId: string) => request<{ ok: true }>("DELETE", `/nodes/${encodeURIComponent(nodeId)}`),
   declineCall: (callId: string) => request<{ ok: true }>("POST", `/calls/${encodeURIComponent(callId)}/decline`),
   checkProvider: (input: { providerId?: string; baseURL: string; protocol: Protocol; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
   soul: (botId: string) => request<{ content: string }>("GET", `/bots/${botId}/soul`),

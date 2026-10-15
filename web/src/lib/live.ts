@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, NodeAccess, PcNode, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -23,6 +23,9 @@ export type LiveState = {
   /** Connected mail, calendar and 1Password accounts, and what each Bot may do with them. */
   accounts: Account[];
   access: Access[];
+  /** PCs lent through the desktop app, and which Bots may use them. */
+  nodes: PcNode[];
+  nodeAccess: NodeAccess[];
   /** Bots ringing you right now, by call id. */
   ringing: Record<string, RingingCall>;
   error: string | null;
@@ -30,7 +33,7 @@ export type LiveState = {
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], ringing: {}, error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], nodeAccess: [], ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -85,6 +88,7 @@ function apply(event: ServerEvent) {
     case "routine.deleted": return set({ routines: without(state.routines, event.routineId) });
     case "settings.updated": return set({ models: event.models, defaultModel: event.defaultModel, configured: event.configured });
     case "accounts.updated": return set({ accounts: event.accounts, access: event.access });
+    case "nodes.updated": return set({ nodes: event.nodes, nodeAccess: event.nodeAccess });
   }
 }
 
@@ -119,7 +123,7 @@ async function loadState() {
     ready: true, error: null,
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
-    accounts: snapshot.accounts ?? [], access: snapshot.access ?? [],
+    accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [], nodeAccess: snapshot.nodeAccess ?? [],
   });
 }
 

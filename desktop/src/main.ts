@@ -1,19 +1,23 @@
 // Colony's desktop app: a window onto your Colony server (on this PC, or another one over
 // Tailscale), with updates from GitHub Releases. The app itself is served by the server, so it
 // always matches the server's version; this shell only handles connecting and updating.
-import { app, BrowserWindow, ipcMain, Menu, net, session, shell, type IpcMainEvent, type IpcMainInvokeEvent, type Rectangle } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, session, shell, type IpcMainEvent, type IpcMainInvokeEvent, type Rectangle } from "electron";
 import { autoUpdater } from "electron-updater";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { defaultNodeSettings, PcNode, type NodeSettings } from "./node.js";
 
-type Config = { server: string | null; bounds?: Rectangle; maximized?: boolean };
+type Config = { server: string | null; bounds?: Rectangle; maximized?: boolean; node?: NodeSettings };
 type UpdateState = {
   status: "unsupported" | "idle" | "checking" | "downloading" | "ready" | "current" | "error";
   version: string | null;
   progress: number | null;
   error: string | null;
 };
+
+// A dev copy (e.g. against a test server) keeps its settings apart from the real app's.
+if (process.env.COLONY_DESKTOP_DATA) app.setPath("userData", path.resolve(process.env.COLONY_DESKTOP_DATA));
 
 /** Where a Colony on this PC listens by default. */
 const LOCAL = "http://127.0.0.1:8787";
@@ -23,6 +27,9 @@ const CHECK_EVERY = 60 * 60_000;
 let config: Config = { server: null };
 let win: BrowserWindow | null = null;
 let update: UpdateState = { status: app.isPackaged ? "idle" : "unsupported", version: null, progress: null, error: null };
+/** This PC, lent to Bots (Settings › This PC). */
+let node: PcNode | null = null;
+const nodeView = () => (node ? { settings: node.settings, status: node.status, home: app.getPath("home") } : null);
 
 const configFile = () => path.join(app.getPath("userData"), "config.json");
 function loadConfig(): Config {
@@ -104,7 +111,7 @@ function createWindow() {
     if (isMainFrame && code !== -3 && sameOrigin(url, config.server)) showConnect(`Couldn't reach Colony at ${config.server} (${description}).`);
   });
   // Pass update news to the page whenever it (re)loads.
-  contents.on("did-finish-load", () => contents.send("colony:update", update));
+  contents.on("did-finish-load", () => { contents.send("colony:update", update); contents.send("colony:node", nodeView()); });
 
   win.on("close", () => {
     if (!win) return;
@@ -112,7 +119,8 @@ function createWindow() {
     if (!config.maximized) config.bounds = win.getBounds();
     saveConfig();
   });
-  win.on("closed", () => { win = null; });
+  // Closing Colony closes the windows Bots opened on this PC too.
+  win.on("closed", () => { win = null; app.quit(); });
 }
 
 // ---------- Updates (electron-updater reads latest.yml from the latest GitHub release) ----------
@@ -151,6 +159,24 @@ ipcMain.handle("colony:update:check", (event) => {
 ipcMain.handle("colony:update:install", (event) => {
   if (trusted(event) && update.status === "ready") setImmediate(() => autoUpdater.quitAndInstall(true, true));
 });
+ipcMain.handle("colony:node:get", (event) => (trusted(event) ? nodeView() : null));
+ipcMain.handle("colony:node:set", (event, patch: unknown) => {
+  if (!trusted(event) || !node || !patch || typeof patch !== "object") return nodeView();
+  const input = patch as Partial<NodeSettings>;
+  const next: Partial<NodeSettings> = {};
+  for (const key of ["enabled", "browser", "screen", "shell", "files", "fullDisk"] as const) if (typeof input[key] === "boolean") next[key] = input[key];
+  if (typeof input.name === "string" && input.name.trim()) next.name = input.name.trim().slice(0, 60);
+  if (input.shellFolder === null) next.shellFolder = null;
+  node.update(next);
+  return nodeView();
+});
+/** Picks the folder terminal commands run in (a native dialog, so the page never names a path). */
+ipcMain.handle("colony:node:folder", async (event) => {
+  if (!trusted(event) || !node || !win) return nodeView();
+  const picked = await dialog.showOpenDialog(win, { title: "Folder for Bots' terminal commands", properties: ["openDirectory", "createDirectory"], defaultPath: node.settings.shellFolder ?? app.getPath("home") });
+  if (!picked.canceled && picked.filePaths[0]) node.update({ shellFolder: picked.filePaths[0] });
+  return nodeView();
+});
 ipcMain.handle("colony:server:change", (event) => {
   if (trusted(event)) showConnect();
 });
@@ -163,6 +189,7 @@ ipcMain.handle("colony:connect", async (event, input: unknown) => {
   config.server = origin;
   saveConfig();
   openServer();
+  node?.restart();
   return {};
 });
 
@@ -198,6 +225,14 @@ if (!app.requestSingleInstanceLock()) {
     if (config.server) openServer();
     else showConnect();
     setupUpdates();
+    config.node = { ...defaultNodeSettings(), ...config.node };
+    saveConfig();
+    node = new PcNode(() => config.server, config.node, (settings) => {
+      config.node = settings;
+      saveConfig();
+      win?.webContents.send("colony:node", nodeView());
+    });
+    node.sync();
   });
 
   app.on("window-all-closed", () => app.quit());

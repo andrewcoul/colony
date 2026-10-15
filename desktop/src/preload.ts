@@ -19,5 +19,16 @@ if (info) {
     installUpdate: () => ipcRenderer.invoke("colony:update:install"),
     changeServer: () => ipcRenderer.invoke("colony:server:change"),
     connect: (address: string) => ipcRenderer.invoke("colony:connect", address) as Promise<{ error?: string }>,
+    /** This PC, lent to Bots: its switches live here and are enforced by the app. */
+    node: {
+      get: () => ipcRenderer.invoke("colony:node:get"),
+      set: (patch: unknown) => ipcRenderer.invoke("colony:node:set", patch),
+      pickFolder: () => ipcRenderer.invoke("colony:node:folder"),
+      onChange: (listener: (view: unknown) => void) => {
+        const handler = (_event: IpcRendererEvent, view: unknown) => listener(view);
+        ipcRenderer.on("colony:node", handler);
+        return () => { ipcRenderer.removeListener("colony:node", handler); };
+      },
+    },
   });
 }
