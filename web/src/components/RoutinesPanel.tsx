@@ -13,9 +13,21 @@ import { MenuContent, MenuItem, MenuRoot, MenuTrigger } from "./ui/menu";
 
 /** A Bot's routines: standing work it does on a schedule. */
 export function RoutinesPanel({ bot, phone, onClose, onError }: { bot: Bot; phone: boolean; onClose: () => void; onError: (message: string) => void }) {
+  return (
+    <SidePanel label={`${bot.name}'s routines`} phone={phone}>
+      <Routines bot={bot} onClose={onClose} onError={onError} />
+    </SidePanel>
+  );
+}
+
+/**
+ * The routines list and editor. In a Bot's panel it lists all of that Bot's routines; in a topic's
+ * Schedule tab (`chatId`) it lists the routines that post to the topic, and new ones post there.
+ */
+export function Routines({ bot, chatId, onClose, onError }: { bot: Bot; chatId?: string; onClose?: () => void; onError: (message: string) => void }) {
   const all = useLive((s) => s.routines);
   const chats = useLive((s) => s.chats);
-  const routines = Object.values(all).filter((routine) => routine.botId === bot.id).sort((a, b) => a.createdAt - b.createdAt);
+  const routines = Object.values(all).filter((routine) => (chatId ? routine.chatId === chatId : routine.botId === bot.id)).sort((a, b) => a.createdAt - b.createdAt);
   const [editing, setEditing] = useState<Routine | "new" | null>(null);
   const current = editing && editing !== "new" ? all[editing.id] : null;
 
@@ -25,23 +37,24 @@ export function RoutinesPanel({ bot, phone, onClose, onError }: { bot: Bot; phon
   const run = (routine: Routine) => void api.runRoutine(routine.id).catch((failure) => onError(failure instanceof Error ? failure.message : "Couldn't run it."));
 
   return (
-    <SidePanel label={`${bot.name}'s routines`} phone={phone}>
+    <>
       <div className="flex items-center gap-2.5">
         {editing ? (
           <Button size="icon-sm" aria-label="Back to routines" className="-ml-1" onClick={() => setEditing(null)}><ChevronLeft size={17} /></Button>
         ) : <CalendarClock size={16} className="text-sky" />}
-        <strong className="min-w-0 flex-1 truncate text-sm">{editing === "new" ? "New routine" : current ? current.title : `${bot.name}'s routines`}</strong>
+        <strong className="min-w-0 flex-1 truncate text-sm">{editing === "new" ? "New routine" : current ? current.title : chatId ? "Routines in this topic" : `${bot.name}'s routines`}</strong>
         {!editing && <Button variant="outline" size="pill" onClick={() => setEditing("new")}><Plus size={14} />New</Button>}
-        <Button size="icon-sm" aria-label="Close" onClick={onClose}><X size={16} /></Button>
+        {onClose && <Button size="icon-sm" aria-label="Close" onClick={onClose}><X size={16} /></Button>}
       </div>
 
       {editing ? (
-        <RoutineEditor key={current?.id ?? "new"} bot={bot} routine={current} onDone={() => setEditing(null)} />
+        <RoutineEditor key={current?.id ?? "new"} owner={current ? undefined : bot} routine={current} chatId={chatId} onDone={() => setEditing(null)} />
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
           {routines.length === 0 && (
             <p className="m-0 rounded-xl border border-dashed border-rule p-4 text-label leading-relaxed text-muted">
-              No routines yet. Ask {bot.name} in chat ("every weekday at 8, brief me on…") or add one here. Results post to the chat and ping your phone.
+              {chatId ? `Nothing scheduled here yet. Ask ${bot.name} ("remind us the morning of", "check prices every day") or add one. Results post in this topic.`
+                : `No routines yet. Ask ${bot.name} in chat ("every weekday at 8, brief me on…") or add one here. Results post to the chat and ping your phone.`}
             </p>
           )}
           {routines.map((routine) => (
@@ -75,7 +88,7 @@ export function RoutinesPanel({ bot, phone, onClose, onError }: { bot: Bot; phon
         </div>
       )}
       <span className="text-meta text-muted">Runs on your PC while Colony is running · local time</span>
-    </SidePanel>
+    </>
   );
 }
 
@@ -94,7 +107,9 @@ const INTERVALS = [30, 60, 120, 180, 240, 360, 480, 720];
 const pad = (value: number) => String(value).padStart(2, "0");
 const localInput = (time: number) => { const d = new Date(time); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 
-function RoutineEditor({ bot, routine, onDone }: { bot: Bot; routine: Routine | null; onDone: () => void }) {
+function RoutineEditor({ owner, routine, chatId, onDone }: { owner?: Bot; routine: Routine | null; chatId?: string; onDone: () => void }) {
+  const bots = useLive((s) => s.bots);
+  const bot = (routine ? bots[routine.botId] : owner) ?? owner!;
   const initial: Schedule = routine?.schedule ?? { type: "daily", time: "08:00", days: [] };
   const [title, setTitle] = useState(routine?.title ?? "");
   const [prompt, setPrompt] = useState(routine?.prompt ?? "");
@@ -132,7 +147,7 @@ function RoutineEditor({ bot, routine, onDone }: { bot: Bot; routine: Routine | 
     try {
       const input = { title: title.trim(), prompt: prompt.trim(), schedule };
       if (routine) await api.updateRoutine(routine.id, input);
-      else await api.createRoutine(bot.id, input);
+      else await api.createRoutine(bot.id, input, chatId);
       onDone();
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't save the routine."); }
     finally { setBusy(false); }

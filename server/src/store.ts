@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Delivery, Folder, Message, MessageStatus, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import type { Approval, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import { removeChatFolder } from "./chatFiles.js";
 
 type Row = Record<string, unknown>;
 
@@ -51,7 +52,18 @@ const toMessage = (row: Row): Message => ({
   error: (row.error as string | null) ?? null,
   delivery: (row.delivery as Delivery | null) ?? null,
   steeredAt: (row.steered_at as number | null) ?? null,
+  attachments: JSON.parse((row.attachments as string | null) ?? "[]") as Attachment[],
   createdAt: row.created_at as number,
+});
+
+const toArtifact = (row: Row): Artifact => ({
+  id: row.id as string, chatId: row.chat_id as string, title: row.title as string, status: row.status as string, body: row.body as string,
+  version: row.version as number, note: row.note as string, updatedBy: row.updated_by as string, updatedAt: row.updated_at as number,
+});
+
+const toFile = (row: Row): ChatFile => ({
+  id: row.id as string, chatId: row.chat_id as string, name: row.name as string, mime: row.mime as string, size: row.size as number,
+  addedBy: row.added_by as string, createdAt: row.created_at as number,
 });
 
 const toApproval = (row: Row): Approval => ({
@@ -247,6 +259,65 @@ export class Store {
     return updated;
   }
 
+  // ---------- A chat's Doc ----------
+  getArtifact(chatId: string): Artifact | null {
+    const row = this.db.prepare("SELECT * FROM artifacts WHERE chat_id = ?").get(chatId) as Row | undefined;
+    return row ? toArtifact(row) : null;
+  }
+
+  /** Writes a new version of the chat's Doc (creating it on first write) and keeps the old one in its history. */
+  saveArtifact(chatId: string, input: { title?: string; status?: string; body: string; note: string; by: string }): Artifact {
+    const current = this.getArtifact(chatId);
+    const now = Date.now();
+    const next: Artifact = {
+      id: current?.id ?? newId(), chatId,
+      title: input.title ?? current?.title ?? "Doc", status: input.status ?? current?.status ?? "",
+      body: input.body, version: (current?.version ?? 0) + 1, note: input.note, updatedBy: input.by, updatedAt: now,
+    };
+    this.db.prepare(`INSERT INTO artifacts (id, chat_id, title, status, body, version, note, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (chat_id) DO UPDATE SET title = excluded.title, status = excluded.status, body = excluded.body, version = excluded.version,
+        note = excluded.note, updated_by = excluded.updated_by, updated_at = excluded.updated_at`)
+      .run(next.id, chatId, next.title, next.status, next.body, next.version, next.note, next.updatedBy, now);
+    this.db.prepare(`INSERT INTO artifact_versions (artifact_id, version, title, status, body, note, updated_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(next.id, next.version, next.title, next.status, next.body, next.note, next.updatedBy, now);
+    this.events.emit({ type: "artifact.upserted", artifact: next });
+    return next;
+  }
+
+  /** Every version of a Doc, newest first. */
+  listArtifactVersions(artifactId: string): ArtifactVersion[] {
+    return (this.db.prepare("SELECT * FROM artifact_versions WHERE artifact_id = ? ORDER BY version DESC").all(artifactId) as Row[]).map((row) => ({
+      title: row.title as string, status: row.status as string, body: row.body as string, version: row.version as number,
+      note: row.note as string, updatedBy: row.updated_by as string, createdAt: row.created_at as number,
+    }));
+  }
+
+  // ---------- Chat files ----------
+  addFile(input: Omit<ChatFile, "id" | "createdAt">): ChatFile {
+    const file: ChatFile = { ...input, id: newId(), createdAt: Date.now() };
+    this.db.prepare("INSERT INTO chat_files (id, chat_id, name, mime, size, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(file.id, file.chatId, file.name, file.mime, file.size, file.addedBy, file.createdAt);
+    this.events.emit({ type: "file.upserted", file });
+    return file;
+  }
+
+  listFiles(chatId: string): ChatFile[] {
+    return (this.db.prepare("SELECT * FROM chat_files WHERE chat_id = ? ORDER BY created_at DESC").all(chatId) as Row[]).map(toFile);
+  }
+
+  getFile(id: string): ChatFile | null {
+    const row = this.db.prepare("SELECT * FROM chat_files WHERE id = ?").get(id) as Row | undefined;
+    return row ? toFile(row) : null;
+  }
+
+  deleteFile(id: string) {
+    const file = this.getFile(id);
+    if (!file) return null;
+    this.db.prepare("DELETE FROM chat_files WHERE id = ?").run(id);
+    this.events.emit({ type: "file.deleted", chatId: file.chatId, fileId: id });
+    return file;
+  }
+
   // ---------- Folders ----------
   listFolders(): Folder[] {
     return (this.db.prepare("SELECT * FROM folders ORDER BY position, created_at").all() as Row[]).map((row) => ({
@@ -293,6 +364,10 @@ export class Store {
       else this.deleteRoutine(row.id as string);
     }
     this.db.prepare("DELETE FROM messages WHERE chat_id = ?").run(id);
+    this.db.prepare("DELETE FROM artifact_versions WHERE artifact_id IN (SELECT id FROM artifacts WHERE chat_id = ?)").run(id);
+    this.db.prepare("DELETE FROM artifacts WHERE chat_id = ?").run(id);
+    this.db.prepare("DELETE FROM chat_files WHERE chat_id = ?").run(id);
+    removeChatFolder(id);
     this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chats WHERE id = ?").run(id);
     this.events.emit({ type: "chat.deleted", chatId: id });
@@ -327,13 +402,13 @@ export class Store {
     return row ? toMessage(row) : null;
   }
 
-  createMessage(input: { chatId: string; author: string; text?: string; status?: MessageStatus; cards?: Card[]; delivery?: Delivery }): Message {
+  createMessage(input: { chatId: string; author: string; text?: string; status?: MessageStatus; cards?: Card[]; delivery?: Delivery; attachments?: Attachment[] }): Message {
     const id = newId();
     // Strictly increasing timestamps keep ordering stable within the same millisecond.
     const last = this.db.prepare("SELECT MAX(created_at) AS t FROM messages WHERE chat_id = ?").get(input.chatId) as { t: number | null };
     const createdAt = Math.max(Date.now(), (last.t ?? 0) + 1);
-    this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, delivery, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", input.delivery ?? null, createdAt);
+    this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, delivery, attachments, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", input.delivery ?? null, JSON.stringify(input.attachments ?? []), createdAt);
     const message = this.getMessage(id)!;
     this.events.emit({ type: "message.upserted", message });
     if (message.status !== "streaming") this.touchChat(message);

@@ -1,7 +1,9 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { restoreToolsetNames } from "./anthropicCompat.js";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { APICallError, stepCountIs, streamText, type LanguageModel, type ModelMessage } from "ai";
+import fs from "node:fs";
+import { APICallError, stepCountIs, streamText, type ImagePart, type LanguageModel, type ModelMessage } from "ai";
+import { chatFilePath, isImage } from "../chatFiles.js";
 import { config } from "../config.js";
 import type { DesktopService, DesktopShot } from "../computer/desktop.js";
 import { canDriveDesktop, resolveModel, type ModelTarget } from "../settings.js";
@@ -298,7 +300,10 @@ export class AgentRunner {
       } else {
         const recent = this.store.listMessages(chatId, { limit: config.limits.historyMessages });
         for (const item of recent) run.seen.add(item.id);
-        history = historyFor(bot, recent, names);
+        // Photos you attached go to models that can see, for your last few messages.
+        const seeing = canDriveDesktop(target) || (target.provider.protocol === "anthropic" && /claude/i.test(target.model));
+        const recentPhotos = new Set(recent.filter((item) => item.author === "user" && item.attachments.length).slice(-4).map((item) => item.id));
+        history = historyFor(bot, recent, names, seeing ? (message) => recentPhotos.has(message.id) ? photosOf(message, this.store) : [] : undefined);
         if (options.hiddenPrompt) history.push({ role: "user", content: options.hiddenPrompt });
         if (!history.length) throw new Error("Nothing to reply to.");
       }
@@ -501,6 +506,15 @@ export class AgentRunner {
     const note = `[System note: Colony restarted while you were working on this, and you're picking up where you left off.${notes.length ? ` ${notes.join(" ")}` : ""} Carry on with the task.]`;
     return [...snapshot.conversation, { role: "user", content: note } as ModelMessage];
   }
+}
+
+/** A message's attached photos as image parts (skipping any that are gone or huge). */
+function photosOf(message: Message, store: Store): ImagePart[] {
+  return message.attachments.flatMap((attachment) => {
+    const file = store.getFile(attachment.id);
+    if (!file || !isImage(file) || file.size > 8 * 1024 * 1024) return [];
+    try { return [{ type: "image" as const, image: fs.readFileSync(chatFilePath(file)), mediaType: file.mime }]; } catch { return []; }
+  });
 }
 
 function safe<T>(fn: () => T, fallback: T): T {

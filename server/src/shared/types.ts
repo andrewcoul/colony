@@ -78,8 +78,38 @@ export type Folder = { id: string; title: string; position: number; createdAt: n
 /** A topic a Bot suggested starting; nothing exists until you tap Create. */
 export type TopicProposal = { title: string; icon: TopicIcon; brief: string; memberIds: string[]; folderId: string | null };
 
+/**
+ * A topic's living document (shown as "Doc"): Markdown the Bot keeps up to date, versioned.
+ * Special fenced blocks render as stats, item cards and notes (see the web app's DocView).
+ */
+export type Artifact = {
+  id: string;
+  chatId: string;
+  title: string;
+  /** Free text the Bot sets, e.g. "Draft", "Almost final", "Booked". */
+  status: string;
+  body: string;
+  version: number;
+  /** What changed in this version, in a few words. */
+  note: string;
+  /** "user" or a Bot id. */
+  updatedBy: string;
+  updatedAt: number;
+};
+export type ArtifactVersion = Omit<Artifact, "id" | "chatId" | "updatedAt"> & { createdAt: number };
+
+/** A file added to a chat: uploaded by you, or written there by a Bot. */
+export type ChatFile = { id: string; chatId: string; name: string; mime: string; size: number; addedBy: string; createdAt: number };
+/** A file sent with a message. */
+export type Attachment = { id: string; name: string; mime: string; size: number };
+
+/** A question a Bot asks with tappable answers. Questions without options are answered by typing. */
+export type AskQuestion = { label: string; options: string[] };
+
 export type Card =
   | { type: "approval"; approvalId: string }
+  | { type: "artifact"; title: string; version: number; note: string }
+  | { type: "ask"; questions: AskQuestion[] }
   | { type: "topic"; proposalId: string; proposal: TopicProposal; chatId: string | null; dismissed: boolean }
   | { type: "routine"; routineId: string; action: "created" | "updated" | "ran"; title: string }
   /** Messages this reply exchanged with other Bots, one thread per Bot. */
@@ -108,6 +138,8 @@ export type Message = {
   delivery: Delivery | null;
   /** For a steer: how many steps the Bot had taken when it picked the message up. */
   steeredAt: number | null;
+  /** Files sent with the message. */
+  attachments: Attachment[];
   createdAt: number;
 };
 
@@ -211,6 +243,9 @@ export type ServerEvent =
   | { type: "bot.presence"; botId: string; presence: Presence; activity: string | null }
   | { type: "chat.upserted"; chat: Chat }
   | { type: "chat.deleted"; chatId: string }
+  | { type: "artifact.upserted"; artifact: Artifact }
+  | { type: "file.upserted"; file: ChatFile }
+  | { type: "file.deleted"; chatId: string; fileId: string }
   | { type: "folder.upserted"; folder: Folder }
   | { type: "folder.deleted"; folderId: string }
   | { type: "message.upserted"; message: Message }

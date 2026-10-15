@@ -1,10 +1,10 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, Clock, Copy, CornerDownRight, Globe, Hand, Loader2, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, CircleHelp, Clock, Copy, CornerDownRight, FileText, Globe, Hand, Loader2, Paperclip, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
-import { api } from "../lib/api";
+import { api, fileUrl } from "../lib/api";
 import { useLive } from "../lib/live";
 import { pop, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
@@ -20,17 +20,21 @@ type ItemProps = {
   showAuthor: boolean;
   /** Who a message of yours goes to, for "Queued · sends when Kenny finishes". */
   recipient?: string;
+  /** Opens the topic's Doc (from an "Updated the Doc" card). */
+  onOpenDoc?: () => void;
+  /** Answers a question chip: send it now, or put it in the composer to finish typing. */
+  onAnswer?: (text: string, send: boolean) => void;
   onOpenRoutines?: () => void;
   onOpenChat?: (chatId: string) => void;
   onOpenBrowser?: (botId: string) => void;
 };
 
-export function MessageItem({ message, bot, showAuthor, recipient, onOpenRoutines, onOpenChat, onOpenBrowser }: ItemProps) {
+export function MessageItem({ message, bot, showAuthor, recipient, onOpenRoutines, onOpenChat, onOpenBrowser, onOpenDoc, onAnswer }: ItemProps) {
   if (message.author === "user") return <UserMessage message={message} recipient={recipient ?? "the Bot"} />;
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
-  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />;
+  return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} onOpenDoc={onOpenDoc} onAnswer={onAnswer} />;
 }
 
 /** Your message. One sent while a Bot worked shows whether it steered the turn or is waiting for it. */
@@ -42,7 +46,8 @@ function UserMessage({ message, recipient }: { message: Message; recipient: stri
   const act = (action: () => Promise<void>) => { setBusy(true); void action().catch(() => {}).finally(() => setBusy(false)); };
   return (
     <div className="flex flex-col items-end gap-1.5">
-      <m.div
+      {message.attachments.length > 0 && <Attachments attachments={message.attachments} />}
+      {message.text && <m.div
         className={cn("max-w-[80%] rounded-[22px] border px-[18px] py-3 text-body leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap max-sm:max-w-[88%]",
           queued ? "border-dashed border-muted/50 bg-transparent text-soft" : "bg-raised",
           steered || steering ? "border-mint/45" : !queued && "border-transparent")}
@@ -52,7 +57,7 @@ function UserMessage({ message, recipient }: { message: Message; recipient: stri
         transition={{ duration: 0.7, ease: "easeOut" }}
       >
         {message.text}
-      </m.div>
+      </m.div>}
       <AnimatePresence mode="wait" initial={false}>
         {queued && (
           <m.span key="queued" className="flex flex-wrap items-center justify-end gap-x-1.5 pr-1.5 text-meta text-muted"
@@ -76,7 +81,25 @@ function UserMessage({ message, recipient }: { message: Message; recipient: stri
   );
 }
 
-function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser }: Omit<ItemProps, "recipient">) {
+/** Files you sent with a message: photos as thumbnails, everything else as a row. */
+function Attachments({ attachments }: { attachments: Message["attachments"] }) {
+  return (
+    <div className="flex max-w-[80%] flex-wrap justify-end gap-2 max-sm:max-w-[88%]">
+      {attachments.map((file) => file.mime.startsWith("image/") ? (
+        <a key={file.id} href={fileUrl(file.id)} target="_blank" rel="noopener noreferrer" className="overflow-hidden rounded-2xl border border-rule">
+          <img src={fileUrl(file.id)} alt={file.name} loading="lazy" className="max-h-56 max-w-64 object-cover" />
+        </a>
+      ) : (
+        <a key={file.id} href={fileUrl(file.id)} target="_blank" rel="noopener noreferrer"
+          className="flex items-center gap-2.5 rounded-2xl border border-rule bg-raised py-2 pr-3.5 pl-2.5 text-label hover:bg-hover">
+          <Paperclip size={14} className="text-muted" /><span className="max-w-52 truncate">{file.name}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser, onOpenDoc, onAnswer }: Omit<ItemProps, "recipient">) {
   const streaming = message.status === "streaming";
   const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();
@@ -96,7 +119,8 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
       {!message.text && streaming && message.steps.length === 0 && <Typing />}
       {message.cards.map((card, index) => (
         <m.div key={index} className="flex flex-col" variants={pop} initial={index >= cardsAtMount.current ? "hidden" : false} animate="shown">
-          <CardView card={card} messageId={message.id} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />
+          <CardView card={card} messageId={message.id} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser}
+            onOpenDoc={onOpenDoc} onAnswer={streaming ? undefined : onAnswer} />
         </m.div>
       ))}
       {message.status === "failed" && message.error && (
@@ -210,9 +234,11 @@ function StepIcon({ status }: { status: Step["status"] }) {
   return <Check size={size} className="shrink-0 text-mint" strokeWidth={2.4} />;
 }
 
-function CardView({ card, messageId, author, onOpenRoutines, onOpenChat, onOpenBrowser }: {
+function CardView({ card, messageId, author, onOpenRoutines, onOpenChat, onOpenBrowser, onOpenDoc, onAnswer }: {
   card: Card;
   messageId: string;
+  onOpenDoc?: () => void;
+  onAnswer?: (text: string, send: boolean) => void;
   author: Bot | undefined;
   onOpenRoutines?: () => void;
   onOpenChat?: (chatId: string) => void;
@@ -222,6 +248,8 @@ function CardView({ card, messageId, author, onOpenRoutines, onOpenChat, onOpenB
   if (card.type === "routine" && card.action !== "ran") return <RoutineCard card={card} onOpen={onOpenRoutines} />;
   if (card.type === "handoff") return <HandoffCard card={card} author={author} onOpenChat={onOpenChat} />;
   if (card.type === "topic") return <TopicCard card={card} messageId={messageId} onOpenChat={onOpenChat} />;
+  if (card.type === "artifact") return <ArtifactCard card={card} onOpen={onOpenDoc} />;
+  if (card.type === "ask") return <AskCard card={card} onAnswer={onAnswer} />;
   return null;
 }
 
@@ -268,6 +296,45 @@ function HandoffCard({ card, author, onOpenChat }: { card: Extract<Card, { type:
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/** "Updated IKEA trip · v6 · added photos": a new version of the topic's Doc, one tap from the panel. */
+function ArtifactCard({ card, onOpen }: { card: Extract<Card, { type: "artifact" }>; onOpen?: () => void }) {
+  return (
+    <button type="button" onClick={onOpen} disabled={!onOpen}
+      className="flex items-center gap-3 self-start rounded-xl border border-rule bg-surface py-3 pr-4 pl-3.5 text-left enabled:hover:bg-hover max-sm:self-stretch">
+      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-peach/14 text-peach"><FileText size={17} /></span>
+      <span className="flex min-w-0 flex-col gap-0.5">
+        <strong className="truncate text-sm">Updated {card.title} · v{card.version}</strong>
+        <span className="truncate text-meta text-soft">{card.note}</span>
+      </span>
+      {onOpen && <span className="ml-2 shrink-0 rounded-full border border-rule px-3 py-1 text-meta">Open</span>}
+    </button>
+  );
+}
+
+/**
+ * Questions the Bot needs answered, as chips. A question with options shows each option, which
+ * sends straight away; an open question puts it in the composer for you to finish.
+ */
+function AskCard({ card, onAnswer }: { card: Extract<Card, { type: "ask" }>; onAnswer?: (text: string, send: boolean) => void }) {
+  const single = card.questions.length === 1;
+  return (
+    <div className="flex flex-wrap gap-2">
+      {card.questions.flatMap((question, index) => {
+        const chips = question.options.length
+          ? question.options.map((option) => ({ key: `${index}-${option}`, label: single ? option : `${question.label} ${option}`, text: single ? option : `${question.label} ${option}`, send: true }))
+          : [{ key: `${index}`, label: question.label, text: `${question.label} `, send: false }];
+        return chips.map((chip, chipIndex) => (
+          <m.button key={chip.key} type="button" disabled={!onAnswer} onClick={() => onAnswer?.(chip.text, chip.send)}
+            initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ ...soft, delay: 0.05 * (index + chipIndex) }}
+            className="flex h-8 items-center gap-1.5 rounded-full border border-[#3a3a3a] bg-surface px-3 text-label enabled:hover:border-muted enabled:hover:bg-hover disabled:opacity-60">
+            {!chip.send && <CircleHelp size={13} className="text-lemon" />}{chip.label}
+          </m.button>
+        ));
+      })}
     </div>
   );
 }
