@@ -55,7 +55,18 @@ export type Chat = {
   lastAuthor: string | null;
   updatedAt: number;
   unread: number;
+  /** Topics: the people (besides the owner) who can see and post in it, or everyone. */
+  peopleIds: string[];
+  everyone: boolean;
 };
+
+/**
+ * Someone in the household, known by their Tailscale login (no Colony accounts).
+ * The owner runs Colony and sees everything; members see the topics shared with them;
+ * a login Colony hasn't been told about waits ("pending") until the owner adds or ignores it.
+ */
+export type PersonRole = "owner" | "member" | "pending" | "ignored";
+export type Person = { id: string; login: string | null; name: string; color: string; role: PersonRole; createdAt: number };
 
 /** interrupted: Colony restarted while the step was running (see the run's restart marker). */
 export type StepStatus = "running" | "done" | "error" | "waiting" | "denied" | "interrupted";
@@ -249,6 +260,9 @@ export type AppState = {
   /** PCs lent through the desktop app, and which Bots may use them. */
   nodes: PcNode[];
   nodeAccess: NodeAccess[];
+  /** The household, and who's asking. */
+  people: Person[];
+  me: Person;
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };
@@ -271,7 +285,8 @@ export type ServerEvent =
   | { type: "routine.upserted"; routine: Routine }
   | { type: "routine.deleted"; routineId: string }
   | { type: "accounts.updated"; accounts: Account[]; access: Access[] }
-  | { type: "nodes.updated"; nodes: PcNode[]; nodeAccess: NodeAccess[] };
+  | { type: "nodes.updated"; nodes: PcNode[]; nodeAccess: NodeAccess[] }
+  | { type: "people.updated"; people: Person[] };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
 export type EphemeralEvent =

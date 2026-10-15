@@ -3,7 +3,8 @@ import { AnimatePresence, m } from "motion/react";
 import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Phone, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
-import { loadArtifact, loadMessages, loadOlder, useLive } from "../lib/live";
+import { loadArtifact, loadMessages, loadOlder, myAuthor, useIsOwner, useLive } from "../lib/live";
+import { PersonAvatar } from "./People";
 import { startCall, useCall } from "../lib/call";
 import { CallBar } from "./CallView";
 import { useStickToBottom } from "../hooks/useStickToBottom";
@@ -35,6 +36,12 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
   onExpandCall?: () => void;
 }) {
   const call = useCall();
+  const owner = useIsOwner();
+  const me = useLive((s) => s.me);
+  const mine = myAuthor(me);
+  // Others in the household who can see this topic.
+  const peopleMap = useLive((s) => s.people);
+  const sharedWith = useMemo(() => chat.kind !== "topic" ? [] : peopleMap.filter((person) => person.id !== me?.id && (person.role === "owner" || (person.role === "member" && (chat.everyone || chat.peopleIds.includes(person.id))))), [peopleMap, chat, me?.id]);
   const botMap = useLive((s) => s.bots);
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
@@ -86,7 +93,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
   const subtitle = bot
     ? [bot.title, bot.activity && bot.presence !== "idle" && bot.presence !== "done" ? bot.activity : null].filter(Boolean).join(" · ")
     : thread ? "Private thread between Bots"
-    : [chat.archivedAt ? "Archived" : null, folder?.title, members.length ? `with ${members.map((member) => member.name).join(", ")}` : "No Bots yet"].filter(Boolean).join(" · ");
+    : [chat.archivedAt ? "Archived" : null, folder?.title, members.length ? `with ${[...members.map((member) => member.name), ...sharedWith.map((person) => person.name)].join(", ")}` : "No Bots yet"].filter(Boolean).join(" · ");
 
   return (
     <div className="flex min-w-0 flex-1">
@@ -107,7 +114,10 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
           <>
             {topic ? <TopicTile icon={chat.icon} size={32} active /> : <GroupFaces bots={members} size={22} />}
             <div className="flex min-w-0 flex-1 flex-col">
-              <strong className="truncate text-[15px]">{title}</strong>
+              <strong className="flex min-w-0 items-center gap-2 text-[15px]">
+                <span className="truncate">{title}</span>
+                {sharedWith.length > 0 && <span className="flex shrink-0 -space-x-1.5">{sharedWith.slice(0, 4).map((person) => <PersonAvatar key={person.id} person={person} size={18} className="ring-2 ring-ground rounded-full" />)}</span>}
+              </strong>
               <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
             </div>
           </>
@@ -139,10 +149,10 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
             <Monitor size={15} /><span className="max-sm:hidden">Computer</span>
           </Button>
         )}
-        {chat.kind !== "thread" && members.length > 0 && !chat.archivedAt && call?.chatId !== chat.id && (
+        {owner && chat.kind !== "thread" && members.length > 0 && !chat.archivedAt && call?.chatId !== chat.id && (
           <Button size="icon" aria-label={`Call ${solo?.name ?? "the topic"}`} onClick={() => startCall(chat.id)}><Phone size={17} /></Button>
         )}
-        <MenuRoot>
+        {owner && <MenuRoot>
           <MenuTrigger><Button size="icon" aria-label="Chat options"><MoreHorizontal size={18} /></Button></MenuTrigger>
           <MenuContent>
             {bot && <MenuItem onClick={() => setPanel("profile")}><IdCard size={15} />Profile, memory & skills</MenuItem>}
@@ -162,7 +172,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
               </MenuItem>
             )}
           </MenuContent>
-        </MenuRoot>
+        </MenuRoot>}
       </header>
       <AnimatePresence initial={false}>
         {call?.chatId === chat.id && <CallBar key="call" call={call} here onExpand={phone ? onExpandCall : undefined} onOpenChat={onOpenChat} />}
@@ -184,8 +194,8 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
               </p>
             )}
             {messages.map((message) => (
-              <m.div key={message.id} variants={message.author === "user" ? sent : rise} initial={fresh(message.createdAt) ? "hidden" : false} animate="shown"
-                style={message.author === "user" ? { originX: 1, originY: 1 } : undefined}>
+              <m.div key={message.id} variants={message.author === mine ? sent : rise} initial={fresh(message.createdAt) ? "hidden" : false} animate="shown"
+                style={message.author === mine ? { originX: 1, originY: 1 } : undefined}>
                 <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"} recipient={solo?.name}
                   onOpenRoutines={bot ? () => setPanel("routines") : topic ? () => setTopicTab("schedule") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser}
                   onOpenDoc={topic ? () => setTopicTab("doc") : undefined}

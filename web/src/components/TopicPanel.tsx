@@ -5,7 +5,7 @@ import type { ArtifactVersion, Bot, Chat, ChatFile } from "@shared/types";
 import { api, fileUrl } from "../lib/api";
 import { shortTime } from "../lib/dates";
 import { changesOnly, diffLines } from "../lib/diff";
-import { loadArtifact, loadFiles, useLive } from "../lib/live";
+import { loadArtifact, loadFiles, useLive, useIsOwner } from "../lib/live";
 import { fade, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { DocBody, VersionNumber } from "./DocView";
@@ -30,10 +30,12 @@ export function TopicPanel({ chat, bots, tab, onTab, phone, onClose, onError }: 
   const routineCount = useLive((s) => Object.values(s.routines).filter((routine) => routine.chatId === chat.id).length);
   useEffect(() => { if (!files) void loadFiles(chat.id).catch(() => {}); }, [chat.id, files]);
   const lead = bots.find((bot) => bot.id === chat.coordinatorId) ?? bots[0];
+  // Routines are the owner's to set up.
+  const owner = useIsOwner();
   const tabs: { id: TopicTab; label: string; count?: number }[] = [
     { id: "doc", label: "Doc" },
     { id: "files", label: "Files", count: files?.length },
-    { id: "schedule", label: "Schedule", count: routineCount },
+    ...(owner ? [{ id: "schedule" as const, label: "Schedule", count: routineCount }] : []),
   ];
   return (
     <SidePanel label={`${chat.title}: ${tab}`} phone={phone}>

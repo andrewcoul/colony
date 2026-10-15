@@ -216,6 +216,25 @@ const MIGRATIONS = [
     PRIMARY KEY (bot_id, node_id)
   );
   `,
+  // v12: people in the household (the owner exists from the start), and topics shared with them.
+  `
+  CREATE TABLE people (
+    id TEXT PRIMARY KEY,
+    login TEXT UNIQUE,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  INSERT INTO people (id, login, name, color, role, created_at) VALUES ('owner', NULL, 'You', '#FFE07A', 'owner', 0);
+  CREATE TABLE chat_people (
+    chat_id TEXT NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    person_id TEXT NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    PRIMARY KEY (chat_id, person_id)
+  );
+  ALTER TABLE chats ADD COLUMN everyone INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE push_subscriptions ADD COLUMN person_id TEXT;
+  `,
 ];
 
 export type Db = DatabaseSync;

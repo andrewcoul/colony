@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, NodeAccess, PcNode, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, NodeAccess, PcNode, Person, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -26,6 +26,11 @@ export type LiveState = {
   /** PCs lent through the desktop app, and which Bots may use them. */
   nodes: PcNode[];
   nodeAccess: NodeAccess[];
+  /** The household, and who you are in it (null until loaded). */
+  people: Person[];
+  me: Person | null;
+  /** This login is waiting for the owner to add it (or was turned away): who to ask. */
+  waiting: { owner: string; ignored: boolean } | null;
   /** Bots ringing you right now, by call id. */
   ringing: Record<string, RingingCall>;
   error: string | null;
@@ -33,7 +38,7 @@ export type LiveState = {
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], nodeAccess: [], ringing: {}, error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], nodeAccess: [], people: [], me: null, waiting: null, ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -89,6 +94,7 @@ function apply(event: ServerEvent) {
     case "settings.updated": return set({ models: event.models, defaultModel: event.defaultModel, configured: event.configured });
     case "accounts.updated": return set({ accounts: event.accounts, access: event.access });
     case "nodes.updated": return set({ nodes: event.nodes, nodeAccess: event.nodeAccess });
+    case "people.updated": return set({ people: event.people, me: event.people.find((person) => person.id === state.me?.id) ?? state.me });
   }
 }
 
@@ -124,6 +130,7 @@ async function loadState() {
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
     accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [], nodeAccess: snapshot.nodeAccess ?? [],
+    people: snapshot.people ?? [], me: snapshot.me ?? null, waiting: null,
   });
 }
 
@@ -186,10 +193,18 @@ export async function startLive() {
     });
     setInterval(() => { if (Date.now() - lastBeat > STALE_MS) connect(); }, 5000);
   } catch (error) {
-    set({ error: error instanceof Error ? error.message : "Couldn't reach the Colony server." });
-    setTimeout(startLive, 3000);
+    // A login the owner hasn't added yet: say so, and keep checking until they do.
+    const who = await api.me().catch(() => null);
+    if (who && (who.me.role === "pending" || who.me.role === "ignored")) set({ waiting: { owner: who.owner, ignored: who.me.role === "ignored" }, me: who.me, error: null });
+    else set({ error: error instanceof Error ? error.message : "Couldn't reach the Colony server." });
+    setTimeout(startLive, who ? 5000 : 3000);
   }
 }
+
+/** How your own messages are signed: the owner as "user", others as "person:<id>". */
+export const myAuthor = (me: Person | null) => (!me || me.role === "owner" ? "user" : `person:${me.id}`);
+/** Members see shared topics only; anything about Bots, settings or approvals is the owner's. */
+export const useIsOwner = () => useLive((s) => !s.me || s.me.role === "owner");
 
 /** Identifies this window to the server, which skips notifications for the chat on screen. */
 const clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);

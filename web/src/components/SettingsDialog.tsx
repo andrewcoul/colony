@@ -5,6 +5,7 @@ import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settin
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
 import { VoiceSettingsEditor } from "./VoiceSettings";
 import { ThisPcSettings } from "./ThisPcSettings";
+import { PeopleSettings, PersonAvatar } from "./People";
 import { desktopApp } from "../lib/desktop";
 import { useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
@@ -49,10 +50,13 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [error, setError] = useState("");
   const [voicing, setVoicing] = useState(false);
   const [lending, setLending] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const people = useLive((s) => s.people);
+  const waitingCount = people.filter((person) => person.role === "pending").length;
 
   useEffect(() => {
     if (!open) return;
-    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setError("");
+    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setPeopleOpen(false); setError("");
     void api.settings().then(setSettings).catch(() => setError("Couldn't load settings."));
   }, [open]);
 
@@ -65,10 +69,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : "Settings"}
-      description={editing || voicing || lending || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "People" : "Settings"}
+      description={editing || voicing || lending || peopleOpen || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
+      ) : peopleOpen ? (
+        <PeopleSettings onBack={() => setPeopleOpen(false)} />
       ) : lending ? (
         <ThisPcSettings onBack={() => setLending(false)} />
       ) : voicing && settings ? (
@@ -117,7 +123,21 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <Button variant="outline" onClick={() => setEditing("new")}><Plus size={15} />Add provider</Button>
           <p className="m-0 mt-4 text-meta leading-relaxed text-muted">Keys stay on this PC; devices only see their last four characters. A key is only ever sent to the address it was saved for.</p>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
-          <span className="mt-6 mb-1.5 text-label text-muted">Voice</span>
+          <span className="mt-6 mb-1.5 text-label text-muted">Household</span>
+          <button type="button" onClick={() => setPeopleOpen(true)}
+            className={cn("mb-2 flex items-center gap-3 rounded-xl border px-3.5 py-3 text-left hover:bg-hover", waitingCount ? "border-lemon/30 bg-lemon/8" : "border-rule")}>
+            <span className="flex shrink-0 -space-x-2">
+              {people.filter((person) => person.role === "owner" || person.role === "member").slice(0, 3).map((person) => <PersonAvatar key={person.id} person={person} size={22} className="rounded-full ring-2 ring-raised" />)}
+            </span>
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+              <strong className="truncate text-sm font-medium">People</strong>
+              <span className="truncate text-meta text-muted">
+                {waitingCount ? `${waitingCount} waiting to be added` : `${people.filter((person) => person.role === "member").length || "No"} other ${people.filter((person) => person.role === "member").length === 1 ? "person" : "people"} · share topics with your household`}
+              </span>
+            </span>
+            <ChevronRight size={16} className="shrink-0 text-muted" />
+          </button>
+          <span className="mt-4 mb-1.5 text-label text-muted">Voice</span>
           <button type="button" onClick={() => setVoicing(true)} disabled={!settings}
             className="flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
             <AudioLines size={16} className="shrink-0 text-muted" />
