@@ -1,5 +1,6 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
+import { LazyMotion, MotionConfig, domMax } from "motion/react";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { startLive } from "./lib/live";
@@ -11,6 +12,11 @@ registerServiceWorker();
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
-    <ErrorBoundary><App /></ErrorBoundary>
+    {/* One motion setup for the app: lazy features keep the bundle small; reducedMotion follows the OS setting. */}
+    <LazyMotion features={domMax} strict>
+      <MotionConfig reducedMotion="user">
+        <ErrorBoundary><App /></ErrorBoundary>
+      </MotionConfig>
+    </LazyMotion>
   </React.StrictMode>,
 );

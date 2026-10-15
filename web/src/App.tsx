@@ -66,7 +66,7 @@ export default function App() {
   if (!ready) {
     return (
       <main className="flex h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
-        <LogoMark size={40} strokeWidth={1.6} />
+        <LogoMark size={48} mood="connecting" />
         <p className="m-0 text-label text-muted">{loadError ? `${loadError} Retrying…` : "Connecting to Colony…"}</p>
       </main>
     );
@@ -84,7 +84,7 @@ export default function App() {
           <ChatScreen key={chat.id} chat={chat} phone={phone} onBack={() => openChat(null)} onOpenChat={openChat} onError={setError} />
         ) : !phone && (
           <section className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-            <LogoMark size={44} strokeWidth={1.6} />
+            <LogoMark size={56} mood="alive" />
             <h1 className="m-0 text-2xl font-semibold tracking-tight">Your colony</h1>
             <p className="m-0 max-w-sm text-label leading-relaxed text-muted">Bots are teammates that remember, work on their own computers, and ask before anything leaves your PC.</p>
             <Button variant="primary" size="pill" className="px-4" onClick={() => setCreating(true)}><Plus size={14} />New Bot</Button>
