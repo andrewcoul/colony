@@ -40,7 +40,8 @@ export type Chat = {
   unread: number;
 };
 
-export type StepStatus = "running" | "done" | "error" | "waiting" | "denied";
+/** interrupted: Colony restarted while the step was running (see the run's restart marker). */
+export type StepStatus = "running" | "done" | "error" | "waiting" | "denied" | "interrupted";
 
 export type Step = {
   id: string;

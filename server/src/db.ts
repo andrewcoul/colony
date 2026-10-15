@@ -125,6 +125,26 @@ const MIGRATIONS = [
   ALTER TABLE messages ADD COLUMN delivery TEXT;
   ALTER TABLE messages ADD COLUMN steered_at INTEGER;
   `,
+  // v7: durable runs. A checkpoint before every model step, so a restart can pick a turn back up;
+  // and mail that matched a routine but hasn't run it yet.
+  `
+  CREATE TABLE runs (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    steps_before INTEGER NOT NULL DEFAULT 0,
+    messages TEXT NOT NULL,
+    options TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE pending_triggers (
+    routine_id TEXT PRIMARY KEY,
+    mail TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

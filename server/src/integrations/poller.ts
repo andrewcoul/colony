@@ -23,11 +23,20 @@ export const matches = (schedule: MailSchedule, message: MailSummary) => include
  * matching mail arrives. Mail arriving close together goes into one run.
  */
 export class MailPoller {
-  private waiting = new Map<string, MailSummary[]>();
+  /** Mail that matched a routine and is waiting for it to run. Kept in the database so a restart doesn't drop it. */
+  private waiting: Map<string, MailSummary[]>;
   private timer: ReturnType<typeof setInterval> | undefined;
   private busy = false;
 
-  constructor(private store: Store, private services: Integrations, private routines: RoutineScheduler) {}
+  constructor(private store: Store, private services: Integrations, private routines: RoutineScheduler) {
+    this.waiting = store.pendingTriggers() as Map<string, MailSummary[]>;
+  }
+
+  private setWaiting(routineId: string, mail: MailSummary[] | null) {
+    if (mail?.length) this.waiting.set(routineId, mail);
+    else this.waiting.delete(routineId);
+    this.store.setPendingTrigger(routineId, mail);
+  }
 
   start(intervalMs = POLL_MS) {
     this.timer = setInterval(() => void this.tick(), intervalMs);
@@ -70,7 +79,7 @@ export class MailPoller {
         accounts.setCursor(accountId, "mail", cursor);
         for (const routine of routines) {
           const matching = added.filter((message) => matches(routine.schedule, message));
-          if (matching.length) this.waiting.set(routine.id, [...(this.waiting.get(routine.id) ?? []), ...matching].slice(-20));
+          if (matching.length) this.setWaiting(routine.id, [...(this.waiting.get(routine.id) ?? []), ...matching].slice(-20));
         }
       } catch (error) {
         console.warn(`[colony] Couldn't check ${account.label} (${account.email}) for new mail:`, error instanceof Error ? error.message : error);
@@ -81,13 +90,13 @@ export class MailPoller {
   private fire(now: number) {
     for (const [routineId, messages] of this.waiting) {
       const routine = this.store.getRoutine(routineId);
-      if (!routine?.enabled || routine.schedule.type !== "mail") { this.waiting.delete(routineId); continue; }
+      if (!routine?.enabled || routine.schedule.type !== "mail") { this.setWaiting(routineId, null); continue; }
       if (routine.lastRunAt && now - routine.lastRunAt < MIN_GAP_MS) continue;
       if (this.routines.busy(routine)) continue;
       const account = this.services.accounts.get(routine.schedule.accountId);
       const list = messages.map((message) => `- id ${message.id} · from ${message.from} · “${message.subject}” · ${when(message.date)}`).join("\n");
       const context = `New mail${account ? ` in ${account.email}` : ""} (read it with mail_read before acting on it):\n${fence(list)}`;
-      if (this.routines.run(routine.id, { now, context })) this.waiting.delete(routineId);
+      if (this.routines.run(routine.id, { now, context })) this.setWaiting(routineId, null);
     }
   }
 }
