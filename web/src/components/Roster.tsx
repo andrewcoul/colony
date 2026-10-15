@@ -1,15 +1,21 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { AnimatePresence, m } from "motion/react";
 import { Download, KeyRound, Plus, Search, Settings, Users } from "lucide-react";
 import { openUpdates } from "../lib/settings";
 import { pending, useUpdates } from "../lib/updates";
 import type { Bot, Chat, Presence } from "@shared/types";
 import { shortTime } from "../lib/dates";
 import { useLive } from "../lib/live";
+import { snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
-import { LogoMark } from "./Logo";
+import { LogoMark, type LogoMood } from "./Logo";
 import { NotificationsMenu } from "./NotificationsMenu";
 import { Button } from "./ui/button";
+
+/** The crown lands once per page load; after that the mark just blinks now and then. */
+let landed = false;
+const brandMood = (): LogoMood => (landed ? "alive" : "landing");
 
 const LABEL: Partial<Record<Presence, { text: string; className: string }>> = {
   thinking: { text: "thinking", className: "text-mint" },
@@ -33,6 +39,8 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings,
   // A Bot waiting on you may be waiting in a group or a thread, not its own chat.
   const chatFor = (bot: Bot) => Object.values(approvals).find((item) => item.botId === bot.id && item.status === "pending")?.chatId ?? bot.chatId;
   const [query, setQuery] = useState("");
+  const [logoMood] = useState(brandMood);
+  useEffect(() => { landed = true; }, []);
   const updates = useUpdates();
   const news = pending(updates);
 
@@ -62,7 +70,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings,
         </div>
       ) : (
         <div className="flex items-center justify-between px-3.5 pt-4 pb-3.5">
-          <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><LogoMark />Colony</span>
+          <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><LogoMark size={26} mood={logoMood} />Colony</span>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="icon" aria-label="Settings" onClick={onSettings}><Settings size={17} /></Button>
             <NotificationsMenu className="border-transparent" />
@@ -114,15 +122,18 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings,
           <section className="mb-4">
             <h2 className="m-0 px-2.5 pb-2 text-label font-normal text-muted">Needs you · {needsYou.length}</h2>
             <div className="flex gap-2.5 overflow-x-auto px-1 pb-1 [scrollbar-width:none]">
+              <AnimatePresence initial={false}>
               {needsYou.map((bot) => (
-                <button key={bot.id} type="button" onClick={() => onOpen(chatFor(bot))}
+                <m.button key={bot.id} type="button" onClick={() => onOpen(chatFor(bot))} layout transition={soft}
+                  initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 0.9 }}
                   className={cn("flex w-40 shrink-0 flex-col items-start gap-2 rounded-2xl border p-3 text-left",
                     bot.presence === "waiting" ? "border-lemon/30 bg-lemon/8" : "border-coral/30 bg-coral/8")}>
                   <Face seed={bot.faceSeed} state={bot.presence} size={34} title={bot.name} />
                   <strong className="text-sm">{bot.name}</strong>
                   <span className="line-clamp-2 text-meta leading-snug text-soft">{bot.activity || (bot.presence === "waiting" ? "Waiting for you" : "Needs help")}</span>
-                </button>
+                </m.button>
               ))}
+              </AnimatePresence>
             </div>
           </section>
         )}
@@ -150,12 +161,24 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewGroup, onSettings,
   );
 }
 
+/** A roster row. Rows glide to their new place when activity reorders the list. */
 function RowShell({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <button type="button" onClick={onClick} aria-current={active ? "page" : undefined}
+    <m.button type="button" layout="position" transition={soft} onClick={onClick} aria-current={active ? "page" : undefined}
       className={cn("flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left hover:bg-hover", active && "bg-raised hover:bg-raised")}>
       {children}
-    </button>
+    </m.button>
+  );
+}
+
+/** Text that crossfades when it changes ("working" → "needs you"), and not on first render. */
+function Fading({ id, className, children }: { id: string; className?: string; children: React.ReactNode }) {
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <m.span key={id} className={className} initial={{ opacity: 0, y: 3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -3 }} transition={{ duration: 0.14 }}>
+        {children}
+      </m.span>
+    </AnimatePresence>
   );
 }
 
@@ -169,12 +192,15 @@ function BotRow({ bot, chat, active, onOpen }: { bot: Bot; chat: Chat | undefine
         <span className="flex items-baseline justify-between gap-2">
           <strong className="truncate text-sm">{bot.name}</strong>
           {label
-            ? <span className={cn("shrink-0 text-meta", label.className)}>{label.text}</span>
-            : chat?.lastPreview && <span className="shrink-0 text-meta text-muted">{shortTime(chat.updatedAt)}</span>}
+            ? <Fading id={label.text} className={cn("shrink-0 text-meta", label.className)}>{label.text}</Fading>
+            : chat?.lastPreview && <Fading id="time" className="shrink-0 text-meta text-muted">{shortTime(chat.updatedAt)}</Fading>}
         </span>
         <span className={cn("flex items-center gap-2 text-label", unread || label ? "text-soft" : "text-muted")}>
           <span className="truncate">{(label && bot.activity) || chat?.lastPreview || bot.title || "New teammate"}</span>
-          {unread && <span className="ml-auto size-2 shrink-0 rounded-full bg-ink" aria-label="Unread" />}
+          <AnimatePresence initial={false}>
+            {unread && <m.span key="unread" className="ml-auto size-2 shrink-0 rounded-full bg-ink" aria-label="Unread"
+              initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0 }} transition={snappy} />}
+          </AnimatePresence>
         </span>
       </span>
     </RowShell>

@@ -1,11 +1,19 @@
 import { memo } from "react";
+import { AnimatePresence, m } from "motion/react";
 import type { Presence } from "@shared/types";
+import { bouncy, snappy } from "../lib/motion";
 import { cn } from "../lib/utils";
 
 /*
  * Deterministic Bot faces: the same seed always draws the same face. Parts are separate
  * SVG groups so CSS can animate them per presence state (see .face rules in globals.css).
+ * CSS runs the loops (blink, spin, bob); Motion runs the changes between states (the ring
+ * springing in when work starts, a badge popping in, eyes crossfading). Motion only touches the
+ * wrapper groups, so it never fights the CSS transforms underneath.
  */
+
+const CENTRE = { transformBox: "fill-box", transformOrigin: "center" } as const;
+const eyesKind = (state: Presence) => (state === "working" || state === "done" || state === "blocked" ? state : "open");
 
 export const HUES = ["#7CC4FA", "#7EE2B8", "#FFB38A", "#C5A6FF", "#FFE07A", "#FF8A9A"] as const;
 const SHAPES = ["round", "boxy", "organic", "arch", "circle", "nub"] as const;
@@ -94,19 +102,37 @@ export const Face = memo(function Face({ seed, state = "idle", size = 40, classN
       data-state={state} className={cn("face shrink-0 overflow-visible", className)}
       style={{ "--blink-delay": `${traits.blinkDelay}ms` } as React.CSSProperties}
     >
-      {state === "working" && <circle className="face-ring" cx="22" cy="23" r="20.5" stroke="#7EE2B8" strokeWidth="2" strokeDasharray="22 8" fill="none" />}
+      <AnimatePresence initial={false}>
+        {state === "working" && (
+          <m.g key="ring" style={CENTRE} initial={{ scale: 0.6, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} exit={{ scale: 0.85, opacity: 0 }} transition={snappy}>
+            <circle className="face-ring" cx="22" cy="23" r="20.5" stroke="#7EE2B8" strokeWidth="2" strokeDasharray="22 8" fill="none" />
+          </m.g>
+        )}
+      </AnimatePresence>
       <g className="face-body">
         <Accessory kind={traits.accessory} top={top} hue={traits.hue} />
         <Body shape={traits.shape} hue={traits.hue} />
-        <Eyes state={state} y={EYE_Y[traits.shape]} />
+        <AnimatePresence initial={false}>
+          <m.g key={eyesKind(state)} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.12 }}>
+            <Eyes state={state} y={EYE_Y[traits.shape]} />
+          </m.g>
+        </AnimatePresence>
       </g>
-      {state === "thinking" && <g className="face-dots" fill="#fff"><circle cx="37" cy="7" r="1.7" /><circle cx="41" cy="3.5" r="1.1" opacity="0.6" /></g>}
-      {(state === "waiting" || state === "blocked") && (
-        <g className="face-badge">
-          <circle cx="37" cy="10" r="6" fill={state === "waiting" ? "#FFE07A" : "#FF8A9A"} stroke="var(--ground)" strokeWidth="2.5" />
-          {state === "blocked" && <><path d="M37 7.5v3" stroke="#141414" strokeWidth="1.8" strokeLinecap="round" /><circle cx="37" cy="12.6" r="0.9" fill="#141414" /></>}
-        </g>
-      )}
+      <AnimatePresence initial={false}>
+        {state === "thinking" && (
+          <m.g key="dots" className="face-dots" fill="#fff" initial={{ opacity: 0, y: 2 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={snappy}>
+            <circle cx="37" cy="7" r="1.7" /><circle cx="41" cy="3.5" r="1.1" opacity="0.6" />
+          </m.g>
+        )}
+        {(state === "waiting" || state === "blocked") && (
+          <m.g key={`badge-${state}`} style={CENTRE} initial={{ scale: 0 }} animate={{ scale: 1 }} exit={{ scale: 0, transition: { duration: 0.12 } }} transition={bouncy}>
+            <g className="face-badge">
+              <circle cx="37" cy="10" r="6" fill={state === "waiting" ? "#FFE07A" : "#FF8A9A"} stroke="var(--ground)" strokeWidth="2.5" />
+              {state === "blocked" && <><path d="M37 7.5v3" stroke="#141414" strokeWidth="1.8" strokeLinecap="round" /><circle cx="37" cy="12.6" r="0.9" fill="#141414" /></>}
+            </g>
+          </m.g>
+        )}
+      </AnimatePresence>
     </svg>
   );
 });

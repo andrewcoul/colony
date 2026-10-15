@@ -12,7 +12,7 @@ self.addEventListener("push", (event) => {
     tag: data.tag,
     renotify: Boolean(data.tag),
     icon: "/icon-512.png",
-    badge: "/icon-512.png",
+    badge: "/badge-96.png", // Android draws badges from alpha only: the crown on its own.
     data: { url: data.url || "/" },
   }));
 });

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, m } from "motion/react";
 import { ArrowDown, CalendarClock, ChevronLeft, IdCard, Lock, Monitor, MoreHorizontal, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
@@ -10,9 +11,11 @@ import { ComputerPanel, type ComputerTab } from "./ComputerPanel";
 import { Face } from "./Face";
 import { GroupFaces } from "./Roster";
 import { RoutinesPanel } from "./RoutinesPanel";
+import { PanelDock } from "./SidePanel";
 import { MessageItem } from "./Transcript";
 import { Button } from "./ui/button";
 import { MenuContent, MenuItem, MenuRoot, MenuTrigger } from "./ui/menu";
+import { fade, rise, sent, snappy } from "../lib/motion";
 import { cn } from "../lib/utils";
 
 const EMPTY: never[] = [];
@@ -41,6 +44,11 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
     else if (botMap[botId]) onOpenChat(`${botMap[botId].chatId}/browser`);
   };
   const last = messages.at(-1);
+  // Messages already here when the chat loaded stay still; anything newer animates in.
+  // ("Load earlier" adds older messages, which are before the line and so don't animate.)
+  const settled = useRef<number | null>(null);
+  if (loaded && settled.current === null) settled.current = messages.at(-1)?.createdAt ?? 0;
+  const fresh = (createdAt: number) => settled.current !== null && createdAt > settled.current;
   const { ref, onScroll, atBottom, scrollToBottom, unpin } = useStickToBottom(`${messages.length}:${last?.text.length}:${last?.steps.length}:${last?.cards.length}`);
 
   useEffect(() => {
@@ -131,16 +139,24 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
               <p className="py-10 text-center text-label text-muted">{bot ? `Say hello to ${bot.name}.` : thread ? "No messages yet." : "Message the group, or @mention one Bot."}</p>
             )}
             {messages.map((message) => (
-              <MessageItem key={message.id} message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"}
-                onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser} />
+              <m.div key={message.id} variants={message.author === "user" ? sent : rise} initial={fresh(message.createdAt) ? "hidden" : false} animate="shown"
+                style={message.author === "user" ? { originX: 1, originY: 1 } : undefined}>
+                <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"}
+                  onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser} />
+              </m.div>
             ))}
           </div>
         </div>
-        {!atBottom && (
-          <Button variant="outline" size="icon" aria-label="Jump to latest" className="absolute bottom-3 left-1/2 -translate-x-1/2 bg-ground shadow-pop" onClick={() => scrollToBottom()}>
-            <ArrowDown size={17} />
-          </Button>
-        )}
+        <AnimatePresence>
+          {!atBottom && (
+            <m.div key="jump" className="absolute bottom-3 left-1/2 -translate-x-1/2"
+              initial={{ opacity: 0, y: 8, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 8, scale: 0.9 }} transition={snappy}>
+              <Button variant="outline" size="icon" aria-label="Jump to latest" className="bg-ground shadow-pop" onClick={() => scrollToBottom()}>
+                <ArrowDown size={17} />
+              </Button>
+            </m.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {thread ? (
@@ -160,9 +176,20 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       </div>
       )}
     </section>
-    {bot && panel === "computer" && <ComputerPanel bot={bot} phone={phone} tab={computerTab} onTab={setComputerTab} onClose={() => setPanel(null)} />}
-    {bot && panel === "routines" && <RoutinesPanel bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
-    {bot && panel === "profile" && <BotProfile bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
+    <AnimatePresence initial={false}>
+      {bot && panel && (
+        <PanelDock key="dock" phone={phone}>
+          {/* Switching panels crossfades inside the open dock instead of closing and reopening it. */}
+          <AnimatePresence mode="wait" initial={false}>
+            <m.div key={panel} className="h-full" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} transition={fade}>
+              {panel === "computer" && <ComputerPanel bot={bot} phone={phone} tab={computerTab} onTab={setComputerTab} onClose={() => setPanel(null)} />}
+              {panel === "routines" && <RoutinesPanel bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
+              {panel === "profile" && <BotProfile bot={bot} phone={phone} onClose={() => setPanel(null)} onError={onError} />}
+            </m.div>
+          </AnimatePresence>
+        </PanelDock>
+      )}
+    </AnimatePresence>
     </div>
   );
 }

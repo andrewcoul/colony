@@ -111,3 +111,7 @@
 @keyframes face-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.15); } }
 @keyframes face-wobble { 0%, 90%, 100% { transform: rotate(0); } 93% { transform: rotate(-4deg); } 96% { transform: rotate(4deg); } }
 @keyframes face-pop { 0% { transform: scale(1); } 40% { transform: scale(1.08); } 100% { transform: scale(1); } }
+
+/* ---------- The King Bot logo: blinks now and then unless it's asked to stay still ---------- */
+.logo .logo-eyes { transform-box: fill-box; transform-origin: center; }
+.logo:not([data-mood="still"]) .logo-eyes { animation: face-blink 6.4s ease-in-out 1.8s infinite; }

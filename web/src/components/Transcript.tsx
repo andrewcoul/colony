@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { AnimatePresence, m } from "motion/react";
 import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, Globe, Hand, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
 import { api } from "../lib/api";
 import { useLive } from "../lib/live";
+import { pop, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { useCopy } from "../hooks/useCopy";
 import { Face } from "./Face";
@@ -40,6 +42,8 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
   const streaming = message.status === "streaming";
   const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();
+  // Cards already on the reply when it appeared don't animate; ones added while it runs pop in.
+  const cardsAtMount = useRef(message.cards.length);
   const body = (
     <div className="group flex min-w-0 flex-1 flex-col gap-3">
       {showAuthor && bot && <span className="text-label font-semibold" style={{ color: "var(--soft)" }}>{bot.name}</span>}
@@ -52,7 +56,11 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
       {message.steps.length > 0 && <StepLog steps={message.steps} live={streaming} />}
       {message.text && <MarkdownView text={message.text} />}
       {!message.text && streaming && message.steps.length === 0 && <Typing />}
-      {message.cards.map((card, index) => <CardView key={index} card={card} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />)}
+      {message.cards.map((card, index) => (
+        <m.div key={index} className="flex flex-col" variants={pop} initial={index >= cardsAtMount.current ? "hidden" : false} animate="shown">
+          <CardView card={card} author={bot} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />
+        </m.div>
+      ))}
       {message.status === "failed" && message.error && (
         <p className="m-0 flex items-center gap-2 rounded-xl bg-danger-wash px-3.5 py-2.5 text-label text-danger"><CircleAlert size={15} />{message.error}</p>
       )}
@@ -92,6 +100,8 @@ const elapsed = (steps: Step[]) => {
 function StepLog({ steps, live }: { steps: Step[]; live: boolean }) {
   const [open, setOpen] = useState<boolean | null>(null);
   const expanded = open ?? live;
+  // Steps that were already done when the log appeared don't animate; new ones rise in as they start.
+  const stepsAtMount = useRef(new Set(steps.map((step) => step.id)));
   const failed = steps.filter((step) => step.status === "error").length;
   const denied = steps.filter((step) => step.status === "denied").length;
   const problems = [failed && `${failed} didn't work`, denied && `${denied} denied`].filter(Boolean).join(" · ");
@@ -102,24 +112,43 @@ function StepLog({ steps, live }: { steps: Step[]; live: boolean }) {
     <div className="rounded-xl border border-rule bg-surface">
       <button type="button" onClick={() => setOpen(!expanded)} aria-expanded={expanded}
         className="flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-label">
-        {live ? <Loader2 size={15} className="animate-spin text-mint" />
-          : problems ? <CircleAlert size={15} className={denied && !failed ? "text-lemon" : "text-coral"} />
-          : <Check size={15} className="text-mint" strokeWidth={2.4} />}
+        <Swap id={live ? "live" : problems ? "problems" : "done"}>
+          {live ? <Loader2 size={15} className="animate-spin text-mint" />
+            : problems ? <CircleAlert size={15} className={denied && !failed ? "text-lemon" : "text-coral"} />
+            : <Check size={15} className="text-mint" strokeWidth={2.4} />}
+        </Swap>
         <span className={cn("flex-1", live ? "font-medium text-ink" : "text-soft")}>{summary}</span>
         <ChevronDown size={15} className={cn("text-muted transition-transform", expanded && "rotate-180")} />
       </button>
-      {expanded && (
-        <ol className="m-0 flex list-none flex-col gap-1.5 px-3.5 pb-3 pl-3.5 text-label">
-          {steps.map((step) => (
-            <li key={step.id} className="flex items-center gap-2.5">
-              <StepIcon status={step.status} />
-              <span className={cn("min-w-0 flex-1 truncate", step.status === "running" ? "text-ink" : "text-soft")}>{step.title}</span>
-              {step.detail && <span className="shrink-0 truncate text-meta text-muted max-sm:max-w-28">{step.detail}</span>}
-            </li>
-          ))}
-        </ol>
-      )}
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <m.div key="steps" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0, transition: { duration: 0.16 } }} transition={soft}>
+            <ol className="m-0 flex list-none flex-col gap-1.5 px-3.5 pb-3 pl-3.5 text-label">
+              {steps.map((step) => (
+                <m.li key={step.id} className="flex items-center gap-2.5" transition={soft}
+                  initial={stepsAtMount.current.has(step.id) ? false : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
+                  <Swap id={step.status}><StepIcon status={step.status} /></Swap>
+                  <span className={cn("min-w-0 flex-1 truncate", step.status === "running" ? "text-ink" : "text-soft")}>{step.title}</span>
+                  {step.detail && <span className="shrink-0 truncate text-meta text-muted max-sm:max-w-28">{step.detail}</span>}
+                </m.li>
+              ))}
+            </ol>
+          </m.div>
+        )}
+      </AnimatePresence>
     </div>
+  );
+}
+
+/** An icon that pops when it changes (a spinner turning into a check), but not when it first appears. */
+function Swap({ id, children }: { id: string; children: React.ReactNode }) {
+  return (
+    <AnimatePresence initial={false}>
+      <m.span key={id} className="flex shrink-0" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={snappy}>
+        {children}
+      </m.span>
+    </AnimatePresence>
   );
 }
 
@@ -215,6 +244,7 @@ function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpe
   const approval: Approval | undefined = useLive((s) => s.approvals[approvalId]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [showDetail, setShowDetail] = useState(false);
   if (!approval) return <p className="m-0 text-meta text-muted">Approval resolved.</p>;
   const pending = approval.status === "pending";
   const takeover = approval.tool === "browser_takeover";
@@ -225,27 +255,50 @@ function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpe
     finally { setBusy(false); }
   }
 
+  const words = takeover ? { approved: "Handed back", denied: "Cancelled", expired: "Expired" } : { approved: "Approved", denied: "Denied", expired: "Expired" };
+
+  // While it's waiting, the full card; once decided it shrinks to a one-line chip so finished
+  // approvals don't crowd the transcript. Tap the chip to see what was asked.
   return (
-    <div className={cn("flex flex-col gap-3 rounded-xl border p-4", pending ? "border-lemon/35 bg-lemon/7" : "border-rule bg-surface")}>
-      <span className={cn("flex items-center gap-2 text-label font-semibold", pending ? "text-lemon" : "text-soft")}>
-        {takeover ? <Hand size={16} /> : <ShieldCheck size={16} />}{approval.summary}
-      </span>
-      {takeover
-        ? <p className="m-0 text-label leading-relaxed whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{approval.detail}</p>
-        : <pre className="m-0 overflow-x-auto rounded-lg bg-surface px-3 py-2.5 font-mono text-[13px] leading-5 whitespace-pre-wrap text-ink">{approval.detail}</pre>}
+    <AnimatePresence mode="wait" initial={false}>
       {pending ? (
-        <div className="flex flex-wrap items-center gap-2">
-          {takeover && onOpenBrowser && (
-            <Button variant="primary" size="pill" className="px-4" onClick={() => onOpenBrowser(approval.botId)}><Globe size={14} />Open browser</Button>
-          )}
-          <Button variant={takeover ? "outline" : "primary"} size="pill" className="px-4" disabled={busy} onClick={() => void decide(true)}>{takeover ? "I'm done" : "Approve"}</Button>
-          <Button variant="outline" size="pill" className="px-4" disabled={busy} onClick={() => void decide(false)}>{takeover ? "Cancel" : "Deny"}</Button>
-          {approval.reason && <span className="ml-auto text-meta text-muted">{approval.reason}</span>}
-        </div>
+        <m.div key="card" className="flex flex-col gap-3 rounded-xl border border-lemon/35 bg-lemon/7 p-4"
+          exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.14 } }} style={{ originX: 0 }}>
+          <span className="flex items-center gap-2 text-label font-semibold text-lemon">
+            {takeover ? <Hand size={16} /> : <ShieldCheck size={16} />}{approval.summary}
+          </span>
+          {takeover
+            ? <p className="m-0 text-label leading-relaxed whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{approval.detail}</p>
+            : <pre className="m-0 overflow-x-auto rounded-lg bg-surface px-3 py-2.5 font-mono text-[13px] leading-5 whitespace-pre-wrap text-ink">{approval.detail}</pre>}
+          <div className="flex flex-wrap items-center gap-2">
+            {takeover && onOpenBrowser && (
+              <Button variant="primary" size="pill" className="px-4" onClick={() => onOpenBrowser(approval.botId)}><Globe size={14} />Open browser</Button>
+            )}
+            <Button variant={takeover ? "outline" : "primary"} size="pill" className="px-4" disabled={busy} onClick={() => void decide(true)}>{takeover ? "I'm done" : "Approve"}</Button>
+            <Button variant="outline" size="pill" className="px-4" disabled={busy} onClick={() => void decide(false)}>{takeover ? "Cancel" : "Deny"}</Button>
+            {approval.reason && <span className="ml-auto text-meta text-muted">{approval.reason}</span>}
+          </div>
+          {error && <span className="text-meta text-danger">{error}</span>}
+        </m.div>
       ) : (
-        <span className="text-meta text-muted">{(takeover ? { approved: "Handed back", denied: "Cancelled", expired: "Expired" } : { approved: "Approved", denied: "Denied", expired: "Expired" })[approval.status as "approved"]}</span>
+        <m.div key="chip" className="flex flex-col items-start gap-2" initial={{ opacity: 0, scale: 0.85 }} animate={{ opacity: 1, scale: 1 }}
+          transition={snappy} style={{ originX: 0 }}>
+          <button type="button" onClick={() => setShowDetail(!showDetail)} aria-expanded={showDetail}
+            className={cn("flex max-w-full items-center gap-1.5 rounded-full border px-3 py-1.5 text-meta",
+              approval.status === "approved" ? "border-mint/25 bg-mint/8 text-mint" : approval.status === "denied" ? "border-coral/25 bg-coral/8 text-coral" : "border-rule text-muted")}>
+            {approval.status === "approved" ? <Check size={13} strokeWidth={2.4} /> : approval.status === "denied" ? <X size={13} /> : <Clock size={13} />}
+            <span className="truncate">{words[approval.status as "approved"]} · {approval.summary}</span>
+          </button>
+          <AnimatePresence initial={false}>
+            {showDetail && (
+              <m.pre key="detail" className="m-0 max-w-full overflow-hidden rounded-lg bg-surface px-3 py-2.5 font-mono text-[13px] leading-5 whitespace-pre-wrap text-soft"
+                initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={soft}>
+                {approval.detail}
+              </m.pre>
+            )}
+          </AnimatePresence>
+        </m.div>
       )}
-      {error && <span className="text-meta text-danger">{error}</span>}
-    </div>
+    </AnimatePresence>
   );
 }
