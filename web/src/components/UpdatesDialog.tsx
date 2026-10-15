@@ -83,7 +83,7 @@ function ServerStatus({ system, waitingFor }: { system: SystemInfo; waitingFor: 
               <div className="flex flex-col gap-2 rounded-lg border border-lemon/30 bg-lemon/8 p-3">
                 <span className="text-label text-soft">{busy.message}</span>
                 <div className="flex gap-2">
-                  <Button variant="primary" size="pill" disabled={starting} onClick={() => void start(true)}>Update anyway</Button>
+                  <Button variant="primary" size="pill" disabled={starting} onClick={() => void start(true)}>Update now</Button>
                   <Button variant="ghost" size="pill" onClick={() => setBusy(null)}>Not now</Button>
                 </div>
               </div>

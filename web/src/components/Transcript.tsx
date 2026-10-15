@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, CornerDownRight, Globe, Hand, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, Clock, Copy, CornerDownRight, Globe, Hand, Loader2, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
@@ -137,14 +137,16 @@ const elapsed = (steps: Step[]) => {
 function StepLog({ steps, live }: { steps: Step[]; live: boolean }) {
   const [open, setOpen] = useState<boolean | null>(null);
   const expanded = open ?? live;
+  const RESTART = "colony.restart";
+  const work = steps.filter((step) => step.tool !== RESTART);
   // Steps that were already done when the log appeared don't animate; new ones rise in as they start.
   const stepsAtMount = useRef(new Set(steps.map((step) => step.id)));
-  const failed = steps.filter((step) => step.status === "error").length;
-  const denied = steps.filter((step) => step.status === "denied").length;
+  const failed = work.filter((step) => step.status === "error").length;
+  const denied = work.filter((step) => step.status === "denied").length;
   const problems = [failed && `${failed} didn't work`, denied && `${denied} denied`].filter(Boolean).join(" · ");
   const summary = live
-    ? `Working · ${steps.length} step${steps.length === 1 ? "" : "s"}`
-    : `${steps.length} step${steps.length === 1 ? "" : "s"}${problems ? ` · ${problems}` : " done"} · ${elapsed(steps)}`;
+    ? `Working · ${work.length} step${work.length === 1 ? "" : "s"}`
+    : `${work.length} step${work.length === 1 ? "" : "s"}${problems ? ` · ${problems}` : " done"} · ${elapsed(work.length ? work : steps)}`;
   return (
     <div className="rounded-xl border border-rule bg-surface">
       <button type="button" onClick={() => setOpen(!expanded)} aria-expanded={expanded}
@@ -162,7 +164,15 @@ function StepLog({ steps, live }: { steps: Step[]; live: boolean }) {
           <m.div key="steps" className="overflow-hidden" initial={{ height: 0, opacity: 0 }} animate={{ height: "auto", opacity: 1 }}
             exit={{ height: 0, opacity: 0, transition: { duration: 0.16 } }} transition={soft}>
             <ol className="m-0 flex list-none flex-col gap-1.5 px-3.5 pb-3 pl-3.5 text-label">
-              {steps.map((step) => (
+              {steps.map((step) => step.tool === RESTART ? (
+                // Where Colony restarted and the turn picked back up.
+                <m.li key={step.id} className="flex items-center gap-2.5 py-0.5 text-sky" transition={soft}
+                  initial={stepsAtMount.current.has(step.id) ? false : { opacity: 0, x: -8 }} animate={{ opacity: 1, x: 0 }}>
+                  <RotateCcw size={14} className="shrink-0" />
+                  <span className="shrink-0">{step.title}</span>
+                  <m.span className="h-px flex-1 origin-left bg-rule" initial={stepsAtMount.current.has(step.id) ? false : { scaleX: 0 }} animate={{ scaleX: 1 }} transition={{ ...soft, delay: 0.1 }} />
+                </m.li>
+              ) : (
                 <m.li key={step.id} className="flex items-center gap-2.5" transition={soft}
                   initial={stepsAtMount.current.has(step.id) ? false : { opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}>
                   <Swap id={step.status}><StepIcon status={step.status} /></Swap>
@@ -195,6 +205,7 @@ function StepIcon({ status }: { status: Step["status"] }) {
   if (status === "waiting") return <Clock size={size} className="shrink-0 text-lemon" />;
   if (status === "error") return <CircleAlert size={size} className="shrink-0 text-coral" />;
   if (status === "denied") return <X size={size} className="shrink-0 text-coral" />;
+  if (status === "interrupted") return <CircleDashed size={size} className="shrink-0 text-sky" />;
   return <Check size={size} className="shrink-0 text-mint" strokeWidth={2.4} />;
 }
 

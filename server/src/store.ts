@@ -22,6 +22,23 @@ const toBot = (row: Row): Bot => ({
   createdAt: row.created_at as number,
 });
 
+/** A turn's checkpoint: what the model will be sent at its next step, so a restart can resume it. */
+export type RunCheckpoint = {
+  /** The turn's first reply message. */
+  id: string;
+  chatId: string;
+  botId: string;
+  /** The reply being written now (a steered turn moves to a new one). */
+  messageId: string;
+  /** Steps in earlier parts of a steered reply. */
+  stepsBefore: number;
+  /** JSON ModelMessage[]: the conversation as of the next model step. */
+  messages: string;
+  options: { hiddenPrompt?: string; depth?: number };
+  startedAt: number;
+  updatedAt: number;
+};
+
 const toMessage = (row: Row): Message => ({
   id: row.id as string,
   chatId: row.chat_id as string,
@@ -390,12 +407,61 @@ export class Store {
     return resolved;
   }
 
-  /** On startup nothing is running, so leftover pending/streaming state is stale. */
-  recoverAfterRestart() {
-    for (const approval of this.listApprovals("pending")) this.resolveApproval(approval.id, "expired");
+  /**
+   * On startup nothing is running yet. Turns with a recent checkpoint are kept to be resumed
+   * (with their pending approvals); every other leftover streaming reply, approval and checkpoint
+   * is stale. Returns the runs to resume.
+   */
+  recoverAfterRestart(maxAgeMs: number, now = Date.now()): RunCheckpoint[] {
+    const resumable = this.listRuns().filter((run) => {
+      const message = this.getMessage(run.messageId);
+      return now - run.updatedAt < maxAgeMs && message?.status === "streaming" && this.getBot(run.botId) && this.getChat(run.chatId);
+    });
+    const keep = new Set(resumable.map((run) => run.messageId));
+    for (const run of this.listRuns()) if (!resumable.includes(run)) this.deleteRun(run.id);
+    for (const approval of this.listApprovals("pending")) if (!keep.has(approval.messageId)) this.resolveApproval(approval.id, "expired");
     for (const row of this.db.prepare("SELECT id FROM messages WHERE status = 'streaming'").all() as Row[]) {
-      this.updateMessage(row.id as string, { status: "stopped", error: "Colony restarted while this reply was running." });
+      if (!keep.has(row.id as string)) this.updateMessage(row.id as string, { status: "stopped", error: "Colony restarted while this reply was running." });
     }
     for (const bot of this.listBots()) this.setPresence(bot.id, "idle");
+    return resumable;
+  }
+
+  // ---------- Run checkpoints (durable runs) ----------
+  saveRun(run: RunCheckpoint) {
+    this.db.prepare(`INSERT INTO runs (id, chat_id, bot_id, message_id, steps_before, messages, options, started_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET message_id = excluded.message_id, steps_before = excluded.steps_before, messages = excluded.messages, updated_at = excluded.updated_at`)
+      .run(run.id, run.chatId, run.botId, run.messageId, run.stepsBefore, run.messages, JSON.stringify(run.options), run.startedAt, run.updatedAt);
+  }
+
+  listRuns(): RunCheckpoint[] {
+    return (this.db.prepare("SELECT * FROM runs ORDER BY started_at").all() as Row[]).map((row) => ({
+      id: row.id as string,
+      chatId: row.chat_id as string,
+      botId: row.bot_id as string,
+      messageId: row.message_id as string,
+      stepsBefore: row.steps_before as number,
+      messages: row.messages as string,
+      options: JSON.parse(row.options as string) as RunCheckpoint["options"],
+      startedAt: row.started_at as number,
+      updatedAt: row.updated_at as number,
+    }));
+  }
+
+  deleteRun(id: string) {
+    this.db.prepare("DELETE FROM runs WHERE id = ?").run(id);
+  }
+
+  // ---------- Mail waiting to trigger a routine ----------
+  pendingTriggers(): Map<string, unknown[]> {
+    const rows = this.db.prepare("SELECT routine_id, mail FROM pending_triggers").all() as Row[];
+    return new Map(rows.map((row) => [row.routine_id as string, JSON.parse(row.mail as string) as unknown[]]));
+  }
+
+  setPendingTrigger(routineId: string, mail: unknown[] | null) {
+    if (!mail?.length) this.db.prepare("DELETE FROM pending_triggers WHERE routine_id = ?").run(routineId);
+    else this.db.prepare(`INSERT INTO pending_triggers (routine_id, mail, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT (routine_id) DO UPDATE SET mail = excluded.mail, updated_at = excluded.updated_at`).run(routineId, JSON.stringify(mail), Date.now());
   }
 }

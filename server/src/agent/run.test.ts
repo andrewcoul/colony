@@ -86,7 +86,16 @@ function setup() {
     const json = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
     return { status: response.status, json: json as any };
   };
-  return { store, events, runner, routines, push, pushed, call };
+  return { db, store, events, runner, routines, push, pushed, call };
+}
+
+/** Colony coming back up on the same database: a fresh store, gate and runner, as after a restart. */
+function restarted(db: ReturnType<typeof openDb>) {
+  const events = new EventLog(db);
+  const store = new Store(db, events);
+  const gate = new ApprovalGate(store);
+  const runner = new AgentRunner(store, events, gate, () => ({ ...coreTools, send_email: sendEmail }), () => script.model);
+  return { store, gate, runner };
 }
 
 async function until<T>(read: () => T | undefined | null | false, timeoutMs = 3000): Promise<T> {
@@ -267,12 +276,12 @@ describe("groups and events", () => {
     expect(replay.every((item, index) => index === 0 || item.seq > replay[index - 1].seq)).toBe(true);
   });
 
-  test("after a restart, streaming replies are stopped and pending approvals expire", () => {
+  test("after a restart, replies with no checkpoint are stopped and their approvals expire", () => {
     const { store } = setup();
     const bot = store.createBot({ name: "Ghost", title: "", description: "", model: "mock-model", computer: false });
     const message = store.createMessage({ chatId: bot.chatId, author: bot.id, status: "streaming" });
     const approval = store.createApproval({ botId: bot.id, chatId: bot.chatId, messageId: message.id, tool: "x", summary: "s", detail: "d", reason: "" });
-    store.recoverAfterRestart();
+    expect(store.recoverAfterRestart(15 * 60_000)).toEqual([]);
     expect(store.getMessage(message.id)!.status).toBe("stopped");
     expect(store.getApproval(approval.id)!.status).toBe("expired");
   });
@@ -507,5 +516,88 @@ describe("steering while a Bot works", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(store.listMessages(bot.chatId).filter((m) => m.author === bot.id)).toHaveLength(2);
     expect(store.getMessage(json.message.id)!.delivery).toBeNull();
+  });
+});
+
+describe("durable runs", () => {
+  test("a turn that was running picks up from its checkpoint in the same reply, and keeps its approval", async () => {
+    script = scriptedModel([textTurn("Hi."), toolTurn("send_email", { to: "sarah@acme.com", body: "Draft" }), textTurn("…")]);
+    const { db, store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Peng" });
+    await finished(store, bot.chatId, 1);
+    await call("POST", `/chats/${bot.chatId}/messages`, { text: "Email Sarah the draft." });
+    const approval = await until(() => store.listApprovals("pending")[0]);
+    expect(store.listRuns()).toHaveLength(1);
+
+    // Colony stops here (the old runner just never continues) and starts again.
+    const after = restarted(db);
+    const resumable = after.store.recoverAfterRestart(15 * 60_000);
+    expect(resumable).toHaveLength(1);
+    expect(after.store.getApproval(approval.id)!.status).toBe("pending");
+    expect(after.store.getMessage(approval.messageId)!.status).toBe("streaming");
+
+    script = scriptedModel([toolTurn("send_email", { to: "sarah@acme.com", body: "Draft" }), textTurn("Sent after the restart.")]);
+    after.runner.resumeAll(resumable, 0);
+    await until(() => script.prompts.length >= 1);
+    expect(JSON.stringify(script.prompts[0])).toContain("Colony restarted while you were working");
+    expect(JSON.stringify(script.prompts[0])).toContain("was waiting for the user's approval and did not run");
+    // Asking again for the same email re-attaches to the waiting approval instead of asking twice.
+    await until(() => after.store.getBot(bot.id)!.presence === "waiting");
+    expect(after.store.listApprovals("pending").map((item) => item.id)).toEqual([approval.id]);
+
+    expect(after.gate.resolve(approval.id, true)).toBe(true);
+    const reply = await until(() => { const message = after.store.getMessage(approval.messageId)!; return message.status === "done" && message; });
+    expect(reply.text).toBe("Sent after the restart.");
+    expect(reply.steps.map((step) => [step.tool, step.status])).toEqual([
+      ["send_email", "interrupted"], ["colony.restart", "done"], ["send_email", "done"],
+    ]);
+    expect(reply.steps[1].title).toBe("Colony restarted · picked up from the start");
+    expect(sent).toEqual(["sarah@acme.com"]);
+    expect(after.store.listRuns()).toEqual([]);
+  });
+
+  test("a step that finished just before the restart is reported to the model, not repeated", async () => {
+    script = scriptedModel([textTurn("Hi.")]);
+    const { db, store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Peng" });
+    await finished(store, bot.chatId, 1);
+    const reply = store.createMessage({ chatId: bot.chatId, author: bot.id, status: "streaming" });
+    store.updateMessage(reply.id, { text: "Emailing", steps: [{ id: "a", tool: "send_email", title: "Emailed tom@acme.com", status: "done", startedAt: 1, endedAt: 2 }] });
+    const conversation = [{ role: "user", content: "Email Tom." }];
+    store.saveRun({ id: reply.id, chatId: bot.chatId, botId: bot.id, messageId: reply.id, stepsBefore: 0, startedAt: Date.now(), updatedAt: Date.now(),
+      messages: JSON.stringify({ conversation, text: "", reasoning: "", steps: 0 }), options: {} });
+
+    const after = restarted(db);
+    script = scriptedModel([textTurn("Done: Tom has the email.")]);
+    after.runner.resumeAll(after.store.recoverAfterRestart(15 * 60_000), 0);
+    const done = await until(() => { const message = after.store.getMessage(reply.id)!; return message.status === "done" && message; });
+    expect(JSON.stringify(script.prompts[0])).toContain("finished just before the restart");
+    expect(JSON.stringify(script.prompts[0])).toContain("don't do it again");
+    // The half-written text from before the restart is replaced by the resumed reply.
+    expect(done.text).toBe("Done: Tom has the email.");
+    expect(done.steps[0]).toMatchObject({ tool: "send_email", status: "done" });
+    expect(done.steps[1].title).toBe("Colony restarted · picked up from the start");
+  });
+
+  test("checkpoints older than a turn can last are not resumed", async () => {
+    script = scriptedModel([textTurn("Hi.")]);
+    const { db, store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Peng" });
+    await finished(store, bot.chatId, 1);
+    const reply = store.createMessage({ chatId: bot.chatId, author: bot.id, status: "streaming" });
+    store.saveRun({ id: reply.id, chatId: bot.chatId, botId: bot.id, messageId: reply.id, stepsBefore: 0, startedAt: 0, updatedAt: 0,
+      messages: JSON.stringify({ conversation: [], text: "", reasoning: "", steps: 0 }), options: {} });
+    const after = restarted(db);
+    expect(after.store.recoverAfterRestart(15 * 60_000)).toEqual([]);
+    expect(after.store.getMessage(reply.id)!.status).toBe("stopped");
+    expect(after.store.listRuns()).toEqual([]);
+  });
+
+  test("a finished turn removes its checkpoint", async () => {
+    script = scriptedModel([textTurn("Hi.")]);
+    const { store, call } = setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Peng" });
+    await finished(store, bot.chatId, 1);
+    expect(store.listRuns()).toEqual([]);
   });
 });

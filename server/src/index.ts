@@ -52,7 +52,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => pr
 const db = openDb(path.join(config.dataDir, "colony.db"));
 const events = new EventLog(db);
 const store = new Store(db, events);
-store.recoverAfterRestart();
+// Turns that were running when Colony stopped are resumed once the runner exists (below).
+const resumable = store.recoverAfterRestart(config.limits.turnTimeoutMs);
 loadSettings();
 // Bots from before multiple providers stored a plain model id; point them at its provider.
 for (const bot of store.listBots()) {
@@ -91,6 +92,8 @@ routines.start();
 const poller = new MailPoller(store, integrations, routines);
 poller.start();
 const push = new PushService(db, store, events);
+// Pick up the turns that were running when Colony stopped, in the replies they were writing.
+runner.resumeAll(resumable);
 accounts.onNeedsReauth = (account) => void push.notify({
   title: `Reconnect ${account.label}`,
   body: `${account.email} stopped working for your Bots. Reconnect it in Settings → Accounts.`,

@@ -7,7 +7,7 @@ import type { DesktopService, DesktopShot } from "../computer/desktop.js";
 import { canDriveDesktop, resolveModel, type ModelTarget } from "../settings.js";
 import { claudeComputer, genericDesktopTools, prepareDesktopMessages, type DesktopMode } from "./desktopTools.js";
 import type { EventLog } from "../events.js";
-import type { Store } from "../store.js";
+import type { RunCheckpoint, Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
 import { historyFor, steerNote, stripNotes, systemPrompt } from "./prompt.js";
@@ -45,12 +45,30 @@ type StartOptions = {
   depth?: number;
   /** Called with the finished reply (used by groups and routines). */
   onFinish?: (message: Message) => void;
+  /** Pick the turn back up from this checkpoint (after a restart) instead of starting fresh. */
+  resume?: RunCheckpoint;
 };
+
+/** Tools that only read: if a restart cuts one off, running it again is harmless. */
+const SAFE_TO_REPEAT = new Set([
+  "web_search", "web_read", "skill_read", "read_file", "list_files", "browser_read",
+  "mail_search", "mail_read", "calendar_list", "vault_list", "desktop_screenshot",
+]);
+
+/** What a checkpoint holds: the conversation for the next model step, and the reply as it stood then. */
+type Snapshot = { conversation: ModelMessage[]; text: string; reasoning: string; steps: number };
+
+/** Checkpoints leave out screenshots and files: they're big, and stale by the time a run resumes. */
+const BINARY = new Set(["image", "file", "media", "image-data", "file-data", "image-url", "file-url"]);
+const snapshotJSON = (snapshot: Snapshot) => JSON.stringify(snapshot, (_key, value) =>
+  value && typeof value === "object" && !Array.isArray(value) && BINARY.has(value.type) ? { type: "text", text: "[screenshot omitted]" } : value);
 
 /** Connected accounts, when Colony has them: what each Bot can use, for its prompt and tools. */
 export type RunnerExtras = { integrations?: Integrations; guidance?: (botId: string) => string };
 
 type ActiveRun = {
+  /** The turn's first reply message: its checkpoint's id. */
+  id: string;
   controller: AbortController;
   botId: string;
   chatId: string;
@@ -175,7 +193,7 @@ export class AgentRunner {
 
     const message = this.store.createMessage({ chatId, author: botId, status: "streaming", cards: options.cards });
     const controller = new AbortController();
-    const run: ActiveRun = { controller, botId, chatId, messageId: message.id, inbox: [], queued: [], seen: new Set() };
+    const run: ActiveRun = { id: message.id, controller, botId, chatId, messageId: message.id, inbox: [], queued: [], seen: new Set() };
     this.active.set(key, run);
     clearTimeout(this.idleTimers.get(botId));
     const asker = options.depth ? this.store.listBots().find((item) => item.id !== botId && chat.memberIds.includes(item.id)) : undefined;
@@ -186,6 +204,39 @@ export class AgentRunner {
       this.followUp(run);
     });
     return message.id;
+  }
+
+  /**
+   * Picks a turn back up after a restart, from its last checkpoint, in the same reply.
+   * Messages sent before the restart that hadn't reached the turn yet go back in its inbox.
+   */
+  resume(checkpoint: RunCheckpoint) {
+    const { chatId, botId } = checkpoint;
+    const key = `${chatId}:${botId}`;
+    if (this.active.has(key) || !this.store.getBot(botId) || !this.store.getChat(chatId)) return false;
+    const controller = new AbortController();
+    const run: ActiveRun = { id: checkpoint.id, controller, botId, chatId, messageId: checkpoint.messageId, inbox: [], queued: [], seen: new Set() };
+    for (const message of this.store.listMessages(chatId, { limit: 200 })) {
+      if (message.author === "user" && message.createdAt > checkpoint.startedAt && message.delivery === "queued") run.queued.push(message.id);
+      else if (message.author === "user" && message.createdAt > checkpoint.startedAt && message.delivery === "steer" && message.steeredAt === null) run.inbox.push(message.id);
+      else run.seen.add(message.id);
+    }
+    this.active.set(key, run);
+    this.store.setPresence(botId, "working", "Picking up where it left off");
+    const options: StartOptions = { hiddenPrompt: checkpoint.options.hiddenPrompt, depth: checkpoint.options.depth, resume: checkpoint };
+    void this.execute(checkpoint.messageId, chatId, botId, controller, options, run).finally(() => {
+      this.active.delete(key);
+      this.followUp(run);
+    });
+    return true;
+  }
+
+  /** Resumes turns after a restart, one at a time, so a restart doesn't hit every provider at once. */
+  resumeAll(checkpoints: RunCheckpoint[], gapMs = 2000) {
+    checkpoints.forEach((checkpoint, index) => {
+      const timer = setTimeout(() => this.resume(checkpoint), index * gapMs);
+      timer.unref?.();
+    });
   }
 
   /**
@@ -224,17 +275,34 @@ export class AgentRunner {
     };
     const emitSteps = () => this.store.updateMessage(messageId, { text, reasoning, steps });
 
+    // Durable runs: before every model step the conversation is checkpointed, so a restart can
+    // carry on from there (see resume). The checkpoint goes when the turn ends, however it ends.
+    const startedAt = options.resume?.startedAt ?? Date.now();
+    const messageIds = [firstMessageId];
+    const checkpoint = (conversation: ModelMessage[]) => this.store.saveRun({
+      id: run.id, chatId, botId, messageId, stepsBefore, startedAt, updatedAt: Date.now(),
+      messages: snapshotJSON({ conversation, text, reasoning, steps: steps.length }),
+      options: { hiddenPrompt: options.hiddenPrompt, depth: options.depth },
+    });
+
     const target = resolveModel(bot.model);
     try {
       if (!target) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
       const bots = this.store.listBots();
       const names = new Map(bots.map((item) => [item.id, item.name]));
       const others = bots.filter((item) => chat.memberIds.includes(item.id) && item.id !== botId);
-      const recent = this.store.listMessages(chatId, { limit: config.limits.historyMessages });
-      for (const item of recent) run.seen.add(item.id);
-      const history: ModelMessage[] = historyFor(bot, recent, names);
-      if (options.hiddenPrompt) history.push({ role: "user", content: options.hiddenPrompt });
-      if (!history.length) throw new Error("Nothing to reply to.");
+      let history: ModelMessage[];
+      if (options.resume) {
+        history = this.restore(options.resume, (restored) => { ({ text, reasoning, steps, stepsBefore } = restored); });
+        emitSteps();
+      } else {
+        const recent = this.store.listMessages(chatId, { limit: config.limits.historyMessages });
+        for (const item of recent) run.seen.add(item.id);
+        history = historyFor(bot, recent, names);
+        if (options.hiddenPrompt) history.push({ role: "user", content: options.hiddenPrompt });
+        if (!history.length) throw new Error("Nothing to reply to.");
+      }
+      checkpoint(history);
 
       // A Bot answering another Bot can't pass the work on again.
       const { message_bot: _, ...withoutMessaging } = this.tools(botId);
@@ -265,12 +333,15 @@ export class AgentRunner {
           stepsBefore += steps.length;
           const next = this.store.createMessage({ chatId, author: botId, status: "streaming" });
           messageId = next.id;
+          messageIds.push(next.id);
           ctx.messageId = next.id;
           run.messageId = next.id;
           text = ""; reasoning = ""; steps = []; afterTool = false;
         }
         return added;
       };
+      // Tool call ids can repeat (a resumed turn may reuse one), so results go to the latest running step with that id.
+      const stepFor = (id: string) => steps.findLast((item) => item.id === id && item.status === "running") ?? steps.findLast((item) => item.id === id);
       const desktopMode = this.desktopMode(bot, target);
       if (desktopMode === "claude") registry.computer = claudeComputer(this.desktop!, ctx);
       if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
@@ -283,9 +354,10 @@ export class AgentRunner {
         // on the desktop prune old screenshots so the many small steps stay affordable.
         prepareStep: ({ messages }: { messages: ModelMessage[] }) => {
           const added = pickUp();
-          const next = added.length ? [...messages, ...added] : messages;
-          if (desktopMode) return { messages: prepareDesktopMessages(next, latestShot) };
-          return added.length ? { messages: next } : {};
+          let next = added.length ? [...messages, ...added] : messages;
+          if (desktopMode) next = prepareDesktopMessages(next, latestShot);
+          checkpoint(next);
+          return next !== messages ? { messages: next } : {};
         },
         stopWhen: stepCountIs(desktopMode ? config.limits.maxDesktopSteps : config.limits.maxSteps),
         maxOutputTokens: config.limits.maxOutputTokens,
@@ -325,7 +397,7 @@ export class AgentRunner {
             break;
           }
           case "tool-result": {
-            const step = steps.find((item) => item.id === part.toolCallId);
+            const step = stepFor(part.toolCallId);
             if (step) {
               const spec = registry[part.toolName];
               step.status = "done";
@@ -337,7 +409,7 @@ export class AgentRunner {
             break;
           }
           case "tool-error": {
-            const step = steps.find((item) => item.id === part.toolCallId);
+            const step = stepFor(part.toolCallId);
             if (step) {
               const message = part.error instanceof Error ? part.error.message : String(part.error);
               step.status = /denied/i.test(message) ? "denied" : "error";
@@ -366,6 +438,9 @@ export class AgentRunner {
       }
     } finally {
       clearTimeout(timeout);
+      this.store.deleteRun(run.id);
+      // An approval left waiting from before a restart that this turn never asked for again.
+      this.gate.expireUnclaimed(messageIds);
     }
 
     for (const step of steps) if (step.status === "running" || step.status === "waiting") { step.status = "error"; step.endedAt = Date.now(); }
@@ -385,6 +460,46 @@ export class AgentRunner {
       }, 4000));
     }
     if (final) options.onFinish?.(final);
+  }
+
+  /**
+   * Rebuilds a turn from its checkpoint. The reply goes back to how it stood at the checkpoint;
+   * anything after that the model never saw, so each later step is marked and explained to it:
+   * read-only steps can simply run again, but a step that changes things may already have
+   * happened and must not be repeated blindly.
+   */
+  private restore(checkpoint: RunCheckpoint, apply: (state: { text: string; reasoning: string; steps: Step[]; stepsBefore: number }) => void) {
+    const snapshot = JSON.parse(checkpoint.messages) as Snapshot;
+    const reply = this.store.getMessage(checkpoint.messageId);
+    const steps = (reply?.steps ?? []).map((step) => ({ ...step }));
+    const notes: string[] = [];
+    // A step held at an approval shows as running; the approval still waiting says which it was.
+    const askedFor = new Set(this.store.listApprovals("pending").filter((approval) => approval.messageId === checkpoint.messageId).map((approval) => approval.tool));
+    for (const step of steps.slice(snapshot.steps)) {
+      const wasDone = step.status === "done";
+      const asked = step.status === "waiting" || (step.status === "running" && askedFor.has(step.tool));
+      step.endedAt ??= Date.now();
+      if (asked) {
+        step.status = "interrupted";
+        step.detail = "Asking again";
+        notes.push(`"${step.title}" was waiting for the user's approval and did not run. If it's still needed, call the tool again; the user will be asked again.`);
+      } else if (SAFE_TO_REPEAT.has(step.tool)) {
+        if (!wasDone) { step.status = "interrupted"; step.detail = "Running again"; }
+        notes.push(`"${step.title}" only reads; you never saw its result, so run it again if you still need it.`);
+      } else if (wasDone) {
+        notes.push(`"${step.title}" finished just before the restart${step.detail ? ` (${step.detail})` : ""}, but you never saw its result. It happened: don't do it again.`);
+      } else if (step.status === "running") {
+        step.status = "interrupted";
+        step.detail = "May not have finished";
+        notes.push(`"${step.title}" was cut off and may or may not have happened. Check before trying it again.`);
+      }
+    }
+    const pickedUp = checkpoint.stepsBefore + snapshot.steps;
+    const now = Date.now();
+    steps.push({ id: `restart-${now}`, tool: "colony.restart", title: `Colony restarted · picked up ${pickedUp ? `after step ${pickedUp}` : "from the start"}`, status: "done", startedAt: now, endedAt: now });
+    apply({ text: snapshot.text, reasoning: snapshot.reasoning, steps, stepsBefore: checkpoint.stepsBefore });
+    const note = `[System note: Colony restarted while you were working on this, and you're picking up where you left off.${notes.length ? ` ${notes.join(" ")}` : ""} Carry on with the task.]`;
+    return [...snapshot.conversation, { role: "user", content: note } as ModelMessage];
   }
 }
 

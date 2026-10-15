@@ -49,7 +49,7 @@ export type SystemInfo = {
 
 export class BusyError extends Error {
   constructor(public names: string[]) {
-    super(`${names.join(" and ")} ${names.length === 1 ? "is" : "are"} working. Updating restarts Colony and stops ${names.length === 1 ? "that reply" : "those replies"}.`);
+    super(`${names.join(" and ")} ${names.length === 1 ? "is" : "are"} working. Updating restarts Colony; ${names.length === 1 ? "that reply picks" : "those replies pick"} up where ${names.length === 1 ? "it" : "they"} left off.`);
   }
 }
 
