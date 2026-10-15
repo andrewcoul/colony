@@ -25,15 +25,32 @@ export type Bot = {
   createdAt: number;
 };
 
+/** Icons a topic can wear (the web app maps each to a drawing). */
+export const TOPIC_ICONS = [
+  "chat", "cart", "home", "hammer", "receipt", "plane", "heart", "calendar", "briefcase", "book", "sparkles", "users",
+  "globe", "wallet", "car", "gift", "utensils", "dumbbell", "baby", "graduation", "music", "camera", "code", "leaf", "paw",
+] as const;
+export type TopicIcon = (typeof TOPIC_ICONS)[number];
+
 export type Chat = {
   id: string;
-  /** "thread" is a private conversation between two Bots, opened from a handoff card. */
-  kind: "bot" | "group" | "thread";
+  /**
+   * "bot" is a Bot's own chat. A "topic" is an ongoing piece of life or work (a trip, a renovation,
+   * a launch) with its own history, filed in a folder, with one Bot or several.
+   * "thread" is a private conversation between two Bots, opened from a handoff card.
+   */
+  kind: "bot" | "topic" | "thread";
   title: string;
   /** Bot ids; a bot chat has exactly one. */
   memberIds: string[];
-  /** In a group, the Bot that answers messages with no @mention. */
+  /** In a topic with several Bots, the one that answers messages with no @mention. */
   coordinatorId: string | null;
+  /** Topics: what it wears in the sidebar, where it's filed, and what it's about (given to its Bots). */
+  icon: TopicIcon | null;
+  folderId: string | null;
+  brief: string;
+  /** Archived topics drop to the bottom of the list. */
+  archivedAt: number | null;
   lastPreview: string | null;
   lastAuthor: string | null;
   updatedAt: number;
@@ -55,8 +72,15 @@ export type Step = {
   endedAt?: number;
 };
 
+/** A folder topics are filed in. */
+export type Folder = { id: string; title: string; position: number; createdAt: number };
+
+/** A topic a Bot suggested starting; nothing exists until you tap Create. */
+export type TopicProposal = { title: string; icon: TopicIcon; brief: string; memberIds: string[]; folderId: string | null };
+
 export type Card =
   | { type: "approval"; approvalId: string }
+  | { type: "topic"; proposalId: string; proposal: TopicProposal; chatId: string | null; dismissed: boolean }
   | { type: "routine"; routineId: string; action: "created" | "updated" | "ran"; title: string }
   /** Messages this reply exchanged with other Bots, one thread per Bot. */
   | { type: "handoff"; threads: { botId: string; chatId: string; count: number }[] };
@@ -165,6 +189,7 @@ export type Approval = {
 export type AppState = {
   bots: Bot[];
   chats: Chat[];
+  folders: Folder[];
   /** Pending approvals plus the most recent resolved ones. */
   approvals: Approval[];
   routines: Routine[];
@@ -186,6 +211,8 @@ export type ServerEvent =
   | { type: "bot.presence"; botId: string; presence: Presence; activity: string | null }
   | { type: "chat.upserted"; chat: Chat }
   | { type: "chat.deleted"; chatId: string }
+  | { type: "folder.upserted"; folder: Folder }
+  | { type: "folder.deleted"; folderId: string }
   | { type: "message.upserted"; message: Message }
   | { type: "message.deleted"; chatId: string; messageId: string }
   | { type: "approval.upserted"; approval: Approval }

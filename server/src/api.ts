@@ -17,7 +17,8 @@ import { MIN_INTERVAL_MINUTES, parseTime } from "./shared/schedule.js";
 import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
-import type { AppState } from "./shared/types.js";
+import type { AppState, Chat, TopicIcon } from "./shared/types.js";
+import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
 import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
@@ -111,6 +112,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.get("/state", (c) => c.json<AppState>({
     bots: store.listBots(),
     chats: store.listChats(),
+    folders: store.listFolders(),
     // Recent approvals of every status, so old cards can show "Approved"/"Denied".
     approvals: store.listApprovals(),
     routines: store.listRoutines(),
@@ -315,16 +317,77 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.body(null, 204);
   });
 
-  // ---------- Chats ----------
-  api.post("/groups", async (c) => {
-    const input = z.object({
-      title: z.string().trim().min(1).max(60),
-      memberIds: z.array(z.string()).min(2).max(6),
-      coordinatorId: z.string().optional(),
-    }).parse(await c.req.json());
-    if (input.memberIds.some((id) => !store.getBot(id))) return c.json({ error: "Unknown Bot in group." }, 400);
+  // ---------- Chats, topics and folders ----------
+  const topicFields = {
+    title: z.string().trim().min(1).max(60),
+    icon: z.enum(TOPIC_ICONS),
+    brief: z.string().trim().max(2000),
+    folderId: z.string().max(80).nullable(),
+    memberIds: z.array(z.string()).min(1).max(6),
+    coordinatorId: z.string().optional(),
+  };
+  /** Checks a topic's Bots and folder; returns an error message, or null when they're fine. */
+  const topicProblem = (input: { memberIds?: string[]; folderId?: string | null }) => {
+    if (input.memberIds?.some((id) => !store.getBot(id))) return "Unknown Bot in this topic.";
+    if (input.folderId && !store.getFolder(input.folderId)) return "That folder doesn't exist.";
+    return null;
+  };
+  const createTopic = (input: { title: string; icon?: TopicIcon; brief?: string; folderId?: string | null; memberIds: string[]; coordinatorId?: string }) => {
     const coordinatorId = input.coordinatorId && input.memberIds.includes(input.coordinatorId) ? input.coordinatorId : input.memberIds[0];
-    return c.json(store.createChat({ kind: "group", title: input.title, memberIds: input.memberIds, coordinatorId }), 201);
+    return store.createChat({ kind: "topic", title: input.title, icon: input.icon ?? "chat", brief: input.brief ?? "", folderId: input.folderId ?? null, memberIds: input.memberIds, coordinatorId });
+  };
+
+  api.post("/topics", async (c) => {
+    const input = z.object({ ...topicFields, icon: topicFields.icon.default("chat"), brief: topicFields.brief.default(""), folderId: topicFields.folderId.default(null) }).parse(await c.req.json());
+    const problem = topicProblem(input);
+    if (problem) return c.json({ error: problem }, 400);
+    return c.json(createTopic(input), 201);
+  });
+
+  api.patch("/chats/:id", async (c) => {
+    const chat = store.getChat(c.req.param("id"));
+    if (!chat) return c.json({ error: "Chat not found." }, 404);
+    if (chat.kind !== "topic") return c.json({ error: "Only topics can be renamed, filed or archived." }, 400);
+    const patch = z.object({ ...topicFields, archived: z.boolean(), coordinatorId: z.string().nullable() }).partial().parse(await c.req.json());
+    const problem = topicProblem(patch);
+    if (problem) return c.json({ error: problem }, 400);
+    const members = patch.memberIds ?? chat.memberIds;
+    const coordinatorId = patch.coordinatorId !== undefined || patch.memberIds
+      ? (patch.coordinatorId && members.includes(patch.coordinatorId) ? patch.coordinatorId : members.includes(chat.coordinatorId ?? "") ? chat.coordinatorId : members[0])
+      : undefined;
+    return c.json(store.updateTopic(chat.id, { ...patch, coordinatorId }));
+  });
+
+  api.post("/folders", async (c) => {
+    const { title } = z.object({ title: z.string().trim().min(1).max(40) }).parse(await c.req.json());
+    return c.json(store.createFolder(title), 201);
+  });
+  api.patch("/folders/:id", async (c) => {
+    const patch = z.object({ title: z.string().trim().min(1).max(40), position: z.number().int().min(0).max(10_000) }).partial().parse(await c.req.json());
+    const folder = store.updateFolder(c.req.param("id"), patch);
+    return folder ? c.json(folder) : c.json({ error: "Folder not found." }, 404);
+  });
+  api.delete("/folders/:id", (c) => {
+    store.deleteFolder(c.req.param("id"));
+    return c.body(null, 204);
+  });
+
+  /** A topic a Bot suggested: Create makes it, Not now just closes the card. */
+  api.post("/messages/:id/topics/:proposalId", async (c) => {
+    const { accept } = z.object({ accept: z.boolean() }).parse(await c.req.json());
+    const message = store.getMessage(c.req.param("id"));
+    const card = message?.cards.find((item) => item.type === "topic" && item.proposalId === c.req.param("proposalId"));
+    if (!message || card?.type !== "topic") return c.json({ error: "That suggestion is gone." }, 404);
+    if (card.chatId || card.dismissed) return c.json({ error: "That suggestion was already answered." }, 409);
+    let chat: Chat | null = null;
+    if (accept) {
+      const proposal = { ...card.proposal, memberIds: card.proposal.memberIds.filter((id) => store.getBot(id)) };
+      if (!proposal.memberIds.length) return c.json({ error: "The Bots in that suggestion are gone." }, 400);
+      if (proposal.folderId && !store.getFolder(proposal.folderId)) proposal.folderId = null;
+      chat = createTopic(proposal);
+    }
+    store.updateMessage(message.id, { cards: message.cards.map((item) => item === card ? { ...card, chatId: chat?.id ?? null, dismissed: !accept } : item) });
+    return chat ? c.json(chat, 201) : c.body(null, 204);
   });
 
   api.delete("/chats/:id", (c) => {
@@ -351,7 +414,8 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       mode: z.enum(["steer", "queue"]).default("steer"),
     }).parse(await c.req.json());
     const message = store.createMessage({ chatId: chat.id, author: "user", text });
-    const targets = chat.kind === "bot" ? chat.memberIds : addressedBots(text, chat.memberIds, store, chat.coordinatorId);
+    // A Bot's own chat, or a topic with one Bot, always goes to that Bot; with several, @mentions pick.
+    const targets = chat.memberIds.length <= 1 ? chat.memberIds : addressedBots(text, chat.memberIds, store, chat.coordinatorId);
     const started: string[] = [];
     for (const botId of targets) {
       if (runner.deliver(chat.id, botId, message.id, mode)) continue;

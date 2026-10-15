@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Bot, Chat, EphemeralEvent, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Bot, Chat, EphemeralEvent, Folder, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -7,6 +7,7 @@ export type LiveState = {
   connected: boolean;
   bots: Record<string, Bot>;
   chats: Record<string, Chat>;
+  folders: Record<string, Folder>;
   /** Pending approvals from the snapshot, plus any seen (resolved or not) since. */
   approvals: Record<string, Approval>;
   routines: Record<string, Routine>;
@@ -22,7 +23,7 @@ export type LiveState = {
 };
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -52,6 +53,8 @@ function apply(event: ServerEvent) {
     }
     case "chat.upserted": return set({ chats: { ...state.chats, [event.chat.id]: event.chat } });
     case "chat.deleted": return set({ chats: without(state.chats, event.chatId), messages: without(state.messages, event.chatId) });
+    case "folder.upserted": return set({ folders: { ...state.folders, [event.folder.id]: event.folder } });
+    case "folder.deleted": return set({ folders: without(state.folders, event.folderId) });
     case "message.upserted": {
       const list = state.messages[event.message.chatId];
       return list && set({ messages: { ...state.messages, [event.message.chatId]: upsertMessage(list, event.message) } });
@@ -96,7 +99,7 @@ async function loadState() {
   seq = snapshot.seq;
   set({
     ready: true, error: null,
-    bots: byId(snapshot.bots), chats: byId(snapshot.chats), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
+    bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
     accounts: snapshot.accounts ?? [], access: snapshot.access ?? [],
   });

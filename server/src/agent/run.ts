@@ -347,7 +347,7 @@ export class AgentRunner {
       if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
       const result = streamText({
         model: this.modelFactory(target, `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? ""),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? "", (id) => this.store.getFolder(id)?.title),
         messages: history,
         tools: toToolSet(registry, ctx),
         // Before each step: add any steering messages (the override carries into later steps), and

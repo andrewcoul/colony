@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { ArrowDown, CalendarClock, ChevronLeft, IdCard, Lock, Monitor, MoreHorizontal, Square, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
 import { useStickToBottom } from "../hooks/useStickToBottom";
 import { Composer, type SendMode } from "./Composer";
+import { TopicDialog } from "./Dialogs";
+import { TopicTile } from "./TopicIcon";
 import { BotProfile } from "./BotProfile";
 import { ComputerPanel, type ComputerTab } from "./ComputerPanel";
 import { Face } from "./Face";
@@ -37,6 +39,11 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   const togglePanel = (name: "computer" | "routines") => setPanel((current) => (current === name ? null : name));
   const members = useMemo(() => chat.memberIds.map((id) => botMap[id]).filter(Boolean) as Bot[], [chat.memberIds, botMap]);
   const bot = chat.kind === "bot" ? members[0] : undefined;
+  const topic = chat.kind === "topic";
+  // Who your messages go to: the Bot of its own chat, or a topic's only Bot.
+  const solo = bot ?? (topic && members.length === 1 ? members[0] : undefined);
+  const folder = useLive((s) => (chat.folderId ? s.folders[chat.folderId] : undefined));
+  const [editing, setEditing] = useState(false);
   const routineCount = useLive((s) => (bot ? Object.values(s.routines).filter((routine) => routine.botId === bot.id && routine.enabled).length : 0));
   const busy = messages.some((message) => message.status === "streaming");
   const openBrowser = (botId: string) => {
@@ -67,7 +74,8 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   const title = thread ? members.map((member) => member.name).join(" & ") || chat.title : chat.title;
   const subtitle = bot
     ? [bot.title, bot.activity && bot.presence !== "idle" && bot.presence !== "done" ? bot.activity : null].filter(Boolean).join(" · ")
-    : thread ? "Private thread between Bots" : `Group · ${members.map((member) => member.name).join(", ")}`;
+    : thread ? "Private thread between Bots"
+    : [chat.archivedAt ? "Archived" : null, folder?.title, members.length ? `with ${members.map((member) => member.name).join(", ")}` : "No Bots yet"].filter(Boolean).join(" · ");
 
   return (
     <div className="flex min-w-0 flex-1">
@@ -86,7 +94,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
           </button>
         ) : (
           <>
-            <GroupFaces bots={members} size={22} />
+            {topic ? <TopicTile icon={chat.icon} size={32} active /> : <GroupFaces bots={members} size={22} />}
             <div className="flex min-w-0 flex-1 flex-col">
               <strong className="truncate text-[15px]">{title}</strong>
               <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
@@ -115,13 +123,19 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
           <MenuTrigger><Button size="icon" aria-label="Chat options"><MoreHorizontal size={18} /></Button></MenuTrigger>
           <MenuContent>
             {bot && <MenuItem onClick={() => setPanel("profile")}><IdCard size={15} />Profile, memory & skills</MenuItem>}
+            {topic && <MenuItem onClick={() => setEditing(true)}><Pencil size={15} />Edit topic</MenuItem>}
+            {topic && (
+              <MenuItem onClick={() => void api.updateTopic(chat.id, { archived: !chat.archivedAt }).catch(() => onError("Couldn't change that."))}>
+                {chat.archivedAt ? <><ArchiveRestore size={15} />Move out of the archive</> : <><Archive size={15} />Archive</>}
+              </MenuItem>
+            )}
             {bot ? (
               <MenuItem className="text-danger" onClick={() => { if (confirm(`Delete ${bot.name}? Its memory, skills and workspace are removed.`)) void api.deleteBot(bot.id).then(onBack); }}>
                 <Trash2 size={15} />Delete {bot.name}
               </MenuItem>
             ) : (
-              <MenuItem className="text-danger" onClick={() => { if (confirm(thread ? `Delete the thread between ${title}?` : `Delete the group "${chat.title}"?`)) void api.deleteChat(chat.id).then(onBack); }}>
-                <Trash2 size={15} />{thread ? "Delete thread" : "Delete group"}
+              <MenuItem className="text-danger" onClick={() => { if (confirm(thread ? `Delete the thread between ${title}?` : `Delete the topic "${chat.title}" and its messages?`)) void api.deleteChat(chat.id).then(onBack); }}>
+                <Trash2 size={15} />{thread ? "Delete thread" : "Delete topic"}
               </MenuItem>
             )}
           </MenuContent>
@@ -136,12 +150,14 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
             )}
             {!loaded && <p className="py-10 text-center text-label text-muted">Loading…</p>}
             {loaded && messages.length === 0 && (
-              <p className="py-10 text-center text-label text-muted">{bot ? `Say hello to ${bot.name}.` : thread ? "No messages yet." : "Message the group, or @mention one Bot."}</p>
+              <p className="py-10 text-center text-label text-muted">
+                {bot ? `Say hello to ${bot.name}.` : thread ? "No messages yet." : solo ? `Tell ${solo.name} what this topic is about.` : "Message the topic, or @mention one Bot."}
+              </p>
             )}
             {messages.map((message) => (
               <m.div key={message.id} variants={message.author === "user" ? sent : rise} initial={fresh(message.createdAt) ? "hidden" : false} animate="shown"
                 style={message.author === "user" ? { originX: 1, originY: 1 } : undefined}>
-                <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"} recipient={bot?.name}
+                <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"} recipient={solo?.name}
                   onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser} />
               </m.div>
             ))}
@@ -167,10 +183,10 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       ) : (
       <div className="mx-auto w-full max-w-[844px] shrink-0 px-3 pb-[max(env(safe-area-inset-bottom),12px)] sm:px-8 sm:pb-5">
         <Composer
-          placeholder={bot ? (busy ? `Steer ${bot.name}…` : `Message ${bot.name}`) : "Message the group"}
+          placeholder={solo ? (busy ? `Steer ${solo.name}…` : topic ? `Message ${solo.name} about ${chat.title}` : `Message ${solo.name}`) : "Message the topic"}
           hint={busy
-            ? (phone ? "Sends now · hold Send to wait until it's done" : `${bot?.name ?? "A Bot"} is working · Enter steers now · Alt+Enter waits until ${bot ? `${bot.name} is` : "it's"} done`)
-            : chat.kind === "group" ? "@Name to ask one Bot" : undefined}
+            ? (phone ? "Sends now · hold Send to wait until it's done" : `${solo?.name ?? "A Bot"} is working · Enter steers now · Alt+Enter waits until ${solo ? `${solo.name} is` : "it's"} done`)
+            : topic && members.length > 1 ? "@Name to ask one Bot" : undefined}
           busy={busy}
           onSend={send}
           onStop={() => void api.stop(chat.id)}
@@ -178,6 +194,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       </div>
       )}
     </section>
+    {topic && <TopicDialog open={editing} onOpenChange={setEditing} topic={chat} onSaved={() => {}} />}
     <AnimatePresence initial={false}>
       {bot && panel && (
         <PanelDock key="dock" phone={phone}>

@@ -91,7 +91,7 @@ export class PushService {
     this.notified.add(message.id);
     if (this.notified.size > 500) this.notified.delete(this.notified.values().next().value!);
     const routine = message.cards.find((card) => card.type === "routine" && card.action === "ran");
-    const where = routine?.type === "routine" ? routine.title : chat.kind === "group" ? chat.title : null;
+    const where = routine?.type === "routine" ? routine.title : chat.kind === "topic" ? chat.title : null;
     const body = plainText(message.text).slice(0, 180) || message.error || "Finished.";
     void this.notify({ title: where ? `${bot.name} · ${where}` : bot.name, body, chatId: chat.id, tag: chat.id });
   }

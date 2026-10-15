@@ -5,7 +5,7 @@ import { config } from "../config.js";
 import * as files from "../files.js";
 import type { Store } from "../store.js";
 import { describeSchedule, MIN_INTERVAL_MINUTES, parseTime } from "../shared/schedule.js";
-import type { Message, Schedule } from "../shared/types.js";
+import { TOPIC_ICONS, type Message, type Schedule } from "../shared/types.js";
 import { isPublicWebUrl } from "../shared/urlPolicy.js";
 import type { ApprovalGate } from "./approvals.js";
 import type { Scrubber } from "./scrub.js";
@@ -196,6 +196,44 @@ export const coreTools = {
       ctx.store.recordHandoff(ctx.messageId, { botId: target.id, chatId }, reply.text.trim() ? 2 : 1);
       if (reply.status !== "done" || !reply.text.trim()) throw new Error(`${target.name} couldn't answer${reply.error ? `: ${reply.error}` : "."}`);
       return { from: target.name, reply: reply.text };
+    },
+  }),
+
+  topic_create: define({
+    description: "Suggest starting a topic: a separate, ongoing conversation for one piece of the user's life or work (a trip, a renovation, a purchase, a launch), filed in a folder, with its own history. The user sees a card and decides; nothing is created until they tap Create. Suggest one when a thread of work clearly deserves its own place, not for one-off questions.",
+    inputSchema: z.object({
+      title: z.string().trim().min(1).max(60).describe("Short name, e.g. \"Hallway renovation\"."),
+      icon: z.enum(TOPIC_ICONS).describe("The closest icon."),
+      brief: z.string().trim().max(600).describe("One or two sentences: what it's about and what's been decided so far."),
+      folder: z.string().trim().max(40).optional().describe("Name of an existing folder to file it in (see topic_list)."),
+      bots: z.array(z.string()).max(5).optional().describe("Names of other Bots who should be in it too. You're always in it."),
+    }),
+    describe: ({ title }) => `Suggested the topic ${quote(title, 40)}`,
+    execute: async ({ title, icon, brief, folder, bots }, ctx) => {
+      const team = ctx.store.listBots();
+      const others = (bots ?? []).map((name) => team.find((bot) => bot.name.toLowerCase() === name.toLowerCase())).filter((bot) => bot && bot.id !== ctx.botId);
+      const folderId = folder ? ctx.store.listFolders().find((item) => item.title.toLowerCase() === folder.toLowerCase())?.id ?? null : null;
+      const proposal = { title, icon, brief, folderId, memberIds: [ctx.botId, ...others.map((bot) => bot!.id)] };
+      ctx.store.appendCard(ctx.messageId, { type: "topic", proposalId: crypto.randomUUID(), proposal, chatId: null, dismissed: false });
+      return { suggested: title, note: "The user will see a card with Create and Not now. Don't assume it exists until they create it." };
+    },
+  }),
+
+  topic_list: define({
+    description: "List the user's topics and folders, to point them at an existing topic or file a new one sensibly.",
+    inputSchema: z.object({}),
+    describe: () => "Checked the topics",
+    summarize: (output: { topics: unknown[] }) => `${output.topics.length} topic${output.topics.length === 1 ? "" : "s"}`,
+    execute: async (_input, ctx) => {
+      const folders = ctx.store.listFolders();
+      const name = (id: string | null) => folders.find((folder) => folder.id === id)?.title ?? null;
+      const bots = new Map(ctx.store.listBots().map((bot) => [bot.id, bot.name]));
+      return {
+        folders: folders.map((folder) => folder.title),
+        topics: ctx.store.listChats().filter((chat) => chat.kind === "topic").map((chat) => ({
+          title: chat.title, folder: name(chat.folderId), bots: chat.memberIds.map((id) => bots.get(id)).filter(Boolean), archived: Boolean(chat.archivedAt), about: chat.brief.slice(0, 200),
+        })),
+      };
     },
   }),
 
