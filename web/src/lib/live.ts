@@ -56,6 +56,10 @@ function apply(event: ServerEvent) {
       const list = state.messages[event.message.chatId];
       return list && set({ messages: { ...state.messages, [event.message.chatId]: upsertMessage(list, event.message) } });
     }
+    case "message.deleted": {
+      const list = state.messages[event.chatId];
+      return list && set({ messages: { ...state.messages, [event.chatId]: list.filter((item) => item.id !== event.messageId) } });
+    }
     case "approval.upserted":
       return set({ approvals: { ...state.approvals, [event.approval.id]: event.approval } });
     case "routine.upserted": return set({ routines: { ...state.routines, [event.routine.id]: event.routine } });

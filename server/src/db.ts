@@ -120,6 +120,11 @@ const MIGRATIONS = [
     PRIMARY KEY (bot_id, account_id, item_id)
   );
   `,
+  // v6: steering. A message sent while a Bot works is steered into the run or queued for after it.
+  `
+  ALTER TABLE messages ADD COLUMN delivery TEXT;
+  ALTER TABLE messages ADD COLUMN steered_at INTEGER;
+  `,
 ];
 
 export type Db = DatabaseSync;

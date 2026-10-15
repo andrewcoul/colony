@@ -10,7 +10,7 @@ import type { EventLog } from "../events.js";
 import type { Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
-import { historyFor, stripNotes, systemPrompt } from "./prompt.js";
+import { historyFor, steerNote, stripNotes, systemPrompt } from "./prompt.js";
 import { Scrubber } from "./scrub.js";
 import type { Integrations } from "../integrations/index.js";
 import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./tools.js";
@@ -50,7 +50,18 @@ type StartOptions = {
 /** Connected accounts, when Colony has them: what each Bot can use, for its prompt and tools. */
 export type RunnerExtras = { integrations?: Integrations; guidance?: (botId: string) => string };
 
-type ActiveRun = { controller: AbortController; botId: string; chatId: string; messageId: string };
+type ActiveRun = {
+  controller: AbortController;
+  botId: string;
+  chatId: string;
+  messageId: string;
+  /** User messages to steer into this turn at its next step. */
+  inbox: string[];
+  /** User messages waiting for this turn to finish (Alt+Enter). */
+  queued: string[];
+  /** Message ids the model has already seen, so nothing is added twice. */
+  seen: Set<string>;
+};
 
 /** Runs Bot turns: streams the model, records steps, and drives presence. */
 export class AgentRunner {
@@ -81,6 +92,47 @@ export class AgentRunner {
     for (const run of this.active.values()) if (run.chatId === chatId) run.controller.abort("stopped");
   }
 
+  /**
+   * Hands a user message to a Bot that's already working in this chat.
+   * "steer" reaches the running turn before its next step; "queue" waits until the turn ends.
+   * Returns false when the Bot isn't working, so the caller should start a turn instead.
+   */
+  deliver(chatId: string, botId: string, messageId: string, mode: "steer" | "queue") {
+    const run = this.active.get(`${chatId}:${botId}`);
+    if (!run || run.controller.signal.aborted) return false;
+    if (mode === "queue") {
+      run.queued.push(messageId);
+      this.store.updateMessage(messageId, { delivery: "queued" });
+    } else {
+      run.inbox.push(messageId);
+      this.store.updateMessage(messageId, { delivery: "steer" });
+      this.store.setPresence(botId, "thinking", "Reading your message");
+    }
+    return true;
+  }
+
+  /** "Steer now" on a queued message: give it to the running turn instead of waiting. */
+  steerNow(messageId: string) {
+    for (const run of this.active.values()) {
+      const index = run.queued.indexOf(messageId);
+      if (index < 0) continue;
+      run.queued.splice(index, 1);
+      run.inbox.push(messageId);
+      this.store.updateMessage(messageId, { delivery: "steer" });
+      return true;
+    }
+    return false;
+  }
+
+  /** Takes a queued message back before the Bot sees it. */
+  unqueue(messageId: string) {
+    for (const run of this.active.values()) {
+      const index = run.queued.indexOf(messageId);
+      if (index >= 0) { run.queued.splice(index, 1); return true; }
+    }
+    return false;
+  }
+
   /** Whether the Bot is working on a reply in any chat. */
   isBotRunning(botId: string) {
     return [...this.active.values()].some((run) => run.botId === botId);
@@ -103,12 +155,12 @@ export class AgentRunner {
     if (this.isRunning(thread.id, toId)) throw new Error(`${to.name} is still answering an earlier message.`);
     this.store.createMessage({ chatId: thread.id, author: fromId, text });
     const reply = await new Promise<Message>((resolve, reject) => {
-      let messageId: string;
-      try {
-        messageId = this.start(thread.id, toId, { depth: depth + 1, onFinish: resolve });
-      } catch (error) { reject(error); return; }
       const key = `${thread.id}:${toId}`;
-      signal.addEventListener("abort", () => { if (this.active.get(key)?.messageId === messageId) this.active.get(key)!.controller.abort("stopped"); }, { once: true });
+      try {
+        this.start(thread.id, toId, { depth: depth + 1, onFinish: resolve });
+      } catch (error) { reject(error); return; }
+      const run = this.active.get(key);
+      signal.addEventListener("abort", () => { if (run && this.active.get(key) === run) run.controller.abort("stopped"); }, { once: true });
     });
     return { chatId: thread.id, reply };
   }
@@ -123,23 +175,42 @@ export class AgentRunner {
 
     const message = this.store.createMessage({ chatId, author: botId, status: "streaming", cards: options.cards });
     const controller = new AbortController();
-    this.active.set(key, { controller, botId, chatId, messageId: message.id });
+    const run: ActiveRun = { controller, botId, chatId, messageId: message.id, inbox: [], queued: [], seen: new Set() };
+    this.active.set(key, run);
     clearTimeout(this.idleTimers.get(botId));
     const asker = options.depth ? this.store.listBots().find((item) => item.id !== botId && chat.memberIds.includes(item.id)) : undefined;
     this.store.setPresence(botId, "thinking", asker ? `Helping ${asker.name}` : "Thinking");
 
-    void this.execute(message.id, chatId, botId, controller, options).finally(() => this.active.delete(key));
+    void this.execute(message.id, chatId, botId, controller, options, run).finally(() => {
+      this.active.delete(key);
+      this.followUp(run);
+    });
     return message.id;
   }
 
-  private async execute(messageId: string, chatId: string, botId: string, controller: AbortController, options: StartOptions) {
+  /**
+   * After a turn: messages that arrived too late to steer (during the final model call), and
+   * queued ones, get a turn of their own. Stop means stop, so a stopped turn starts nothing.
+   */
+  private followUp(run: ActiveRun) {
+    const waiting = [...run.inbox, ...run.queued].filter((id) => !run.seen.has(id));
+    if (!waiting.length) return;
+    for (const id of waiting) this.store.updateMessage(id, { delivery: null, steeredAt: null });
+    if (run.controller.signal.reason === "stopped") return;
+    try { this.start(run.chatId, run.botId); } catch { /* the Bot was deleted, or a new turn already began */ }
+  }
+
+  private async execute(firstMessageId: string, chatId: string, botId: string, controller: AbortController, options: StartOptions, run: ActiveRun) {
     const bot = this.store.getBot(botId)!;
     const chat = this.store.getChat(chatId)!;
     const timeout = setTimeout(() => controller.abort("timeout"), config.limits.turnTimeoutMs);
 
+    // A steered turn continues in a new reply below your message, so these move with it.
+    let messageId = firstMessageId;
     let text = "";
     let reasoning = "";
-    const steps: Step[] = [];
+    let steps: Step[] = [];
+    let stepsBefore = 0;
     let error: string | null = null;
     let lastSave = 0;
     let afterTool = false;
@@ -159,7 +230,9 @@ export class AgentRunner {
       const bots = this.store.listBots();
       const names = new Map(bots.map((item) => [item.id, item.name]));
       const others = bots.filter((item) => chat.memberIds.includes(item.id) && item.id !== botId);
-      const history: ModelMessage[] = historyFor(bot, this.store.listMessages(chatId, { limit: config.limits.historyMessages }), names);
+      const recent = this.store.listMessages(chatId, { limit: config.limits.historyMessages });
+      for (const item of recent) run.seen.add(item.id);
+      const history: ModelMessage[] = historyFor(bot, recent, names);
       if (options.hiddenPrompt) history.push({ role: "user", content: options.hiddenPrompt });
       if (!history.length) throw new Error("Nothing to reply to.");
 
@@ -175,6 +248,29 @@ export class AgentRunner {
         secrets: new Scrubber(),
         integrations: this.extras.integrations,
       };
+      // Steering: user messages that arrived since the last step join the conversation here.
+      const pickUp = (): ModelMessage[] => {
+        const added: ModelMessage[] = [];
+        for (const id of run.inbox.splice(0)) {
+          if (run.seen.has(id)) continue;
+          run.seen.add(id);
+          const steered = this.store.updateMessage(id, { delivery: "steer", steeredAt: stepsBefore + steps.length });
+          if (steered?.text.trim()) added.push({ role: "user", content: steerNote(steered.text) });
+        }
+        if (!added.length) return added;
+        this.store.setPresence(botId, "thinking", "Changing course");
+        // Close the reply where you cut in; the rest of the turn continues in a new reply below your message.
+        if (text.trim() || steps.length) {
+          this.store.updateMessage(messageId, { text: stripNotes(text), reasoning, steps, status: "done" });
+          stepsBefore += steps.length;
+          const next = this.store.createMessage({ chatId, author: botId, status: "streaming" });
+          messageId = next.id;
+          ctx.messageId = next.id;
+          run.messageId = next.id;
+          text = ""; reasoning = ""; steps = []; afterTool = false;
+        }
+        return added;
+      };
       const desktopMode = this.desktopMode(bot, target);
       if (desktopMode === "claude") registry.computer = claudeComputer(this.desktop!, ctx);
       if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
@@ -183,8 +279,14 @@ export class AgentRunner {
         system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? ""),
         messages: history,
         tools: toToolSet(registry, ctx),
-        // Desktop work takes many small steps; screenshots are pruned so they stay affordable.
-        ...(desktopMode ? { prepareStep: ({ messages }: { messages: ModelMessage[] }) => ({ messages: prepareDesktopMessages(messages, latestShot) }) } : {}),
+        // Before each step: add any steering messages (the override carries into later steps), and
+        // on the desktop prune old screenshots so the many small steps stay affordable.
+        prepareStep: ({ messages }: { messages: ModelMessage[] }) => {
+          const added = pickUp();
+          const next = added.length ? [...messages, ...added] : messages;
+          if (desktopMode) return { messages: prepareDesktopMessages(next, latestShot) };
+          return added.length ? { messages: next } : {};
+        },
         stopWhen: stepCountIs(desktopMode ? config.limits.maxDesktopSteps : config.limits.maxSteps),
         maxOutputTokens: config.limits.maxOutputTokens,
         // Gateways can route steps of one run to different upstream accounts, which invalidates

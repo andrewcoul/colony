@@ -57,6 +57,7 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
       "- Finish work end to end, then report the result. The user sees your step log, so don't narrate every action; lead with outcomes.",
       "- Be concise and direct. Use Markdown when it helps. Ask one clear question when you're truly blocked.",
       "- Bracketed system notes at the start of your earlier replies record what you did; never write them yourself.",
+      "- The user can add messages while you work. They arrive mid-task, marked as such: change course from that point (don't redo finished work unless asked) and mention the change briefly when you report.",
       "- Save durable facts with the memory tool: preferences, decisions, people, recurring context. Keep entries short. Don't store transient task progress. When memory nears its budget, consolidate.",
       "- After finishing a novel multi-step task you're likely to repeat, or when the user teaches you a workflow, save it with skill_save.",
       "- When a teammate's role fits part of the work better, message them with message_bot rather than guessing; don't ask them for what you can do yourself.",
@@ -67,6 +68,9 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
     `Current time: ${new Date().toString()}`,
   ].filter(Boolean).join("\n\n");
 }
+
+/** A user message that arrived while the Bot was working, as the model sees it mid-turn. */
+export const steerNote = (text: string) => `[Added while you were working:]\n${text}`;
 
 const NOTE_OPEN = "[System note, not part of your reply: ";
 const NOTE_CLOSE = "]";

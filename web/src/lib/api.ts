@@ -77,7 +77,10 @@ export const api = {
   createGroup: (input: { title: string; memberIds: string[]; coordinatorId?: string }) => request<Chat>("POST", "/groups", input),
   deleteChat: (id: string) => request<void>("DELETE", `/chats/${id}`),
   messages: (chatId: string, before?: number) => request<Message[]>("GET", `/chats/${chatId}/messages${before ? `?before=${before}` : ""}`),
-  send: (chatId: string, text: string) => request<{ message: Message; replies: string[] }>("POST", `/chats/${chatId}/messages`, { text }),
+  /** mode only matters while a Bot is working: steer joins its turn now, queue waits for it to finish. */
+  send: (chatId: string, text: string, mode: "steer" | "queue" = "steer") => request<{ message: Message; replies: string[] }>("POST", `/chats/${chatId}/messages`, { text, mode }),
+  steerNow: (messageId: string) => request<void>("POST", `/messages/${messageId}/steer`),
+  unqueue: (messageId: string) => request<void>("DELETE", `/messages/${messageId}`),
   stop: (chatId: string) => request<void>("POST", `/chats/${chatId}/stop`),
   markRead: (chatId: string) => request<void>("POST", `/chats/${chatId}/read`),
   decide: (approvalId: string, approve: boolean) => request<void>("POST", `/approvals/${approvalId}`, { approve }),
