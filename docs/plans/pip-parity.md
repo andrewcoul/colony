@@ -1,6 +1,6 @@
 # Plan: Steering, durable runs, topics, artifacts, people, voice, "this PC", logo and motion
 
-Status: proposed, 2026-10-15. Nothing built yet.
+Status: built, 2026-10-15, on branch `pip-parity` (phases 0–7, one commit each). See "Where the build differs" at the end.
 
 Designs: Paper file "Colony · Grok-style chat", one page per section below (`Pip parity · 1 Steering & recovery` … `Pip parity · 6 This PC`). Artboards are numbered to match the sections (1a, 1b, 2a …). The new logo is on the `Brand · Colony logo` page.
 
@@ -311,3 +311,33 @@ Prototype: the "Colony motion" preview shows the main transitions running.
 2. Which speech providers are on hand? The plan assumes OpenAI-compatible endpoints, local or hosted.
 3. Should the node's "Control other apps" level ship at all on Windows in v1, or stop at browser windows, screen, terminal and files?
 4. Topic icons: a fixed icon set (as planned), or free emoji like Pip?
+
+## Where the build differs
+
+What shipped follows the plan except where noted here.
+
+- **Motion (0):** `LazyMotion` loads `domMax` rather than `domAnimation`, because the roster's layout animations need it.
+- **Steering (1):** a steer message splits the Bot's reply at the point it was picked up. The rest of the turn continues in a new reply below your message, so the transcript reads in order.
+- **Durable runs (2):** each checkpoint is a snapshot of the conversation plus the reply so far. Screenshots and other binary parts are replaced with a placeholder.
+- **Topics (3):** topic rows don't show a Bot's presence label; it repeated for every topic a Bot was in.
+- **Side panel (4):**
+  - The artifact tab is called **Doc**.
+  - Photos you attach go to models that can see (Claude, or ones that passed the desktop check). Others get the file name and read text and PDFs with `chat_files`.
+- **Voice (5):**
+  - Speech detection is a small energy-based detector on an AudioWorklet, not `@ricky0123/vad-web`, so there's no ONNX model to ship.
+  - Transcription and speech call the provider's `/audio` endpoints directly rather than the AI SDK's experimental helpers.
+  - Voice speed is a control on the call (saved per device), not a Setting.
+  - A Bot's replies on a call aren't marked "Said on a call". Only your words and a Bot's opening line when it rings you are.
+- **This PC (6):**
+  - The node speaks MCP's JSON-RPC methods (`initialize`, `tools/list`, `tools/call`) over Colony's own socket, without the MCP SDK.
+  - Colony defines the `pc_*` tool schemas. The PC only says which tools it has switched on.
+  - **Control other apps** (nut-js) isn't built: it needs a native module and the open question about Windows stands.
+  - A Bot uses the most recently seen PC it's allowed on; choosing between several PCs per call is left for later.
+  - The desktop app honours `COLONY_DESKTOP_DATA`, so a dev copy keeps its settings apart from the installed app.
+- **People (7):**
+  - Members talk to Bots in shared topics only; per-person Bot chats (Bot × person) aren't built.
+  - Approvals, routines, calls and PCs are owner-only, rather than members approving actions on things they own: members don't own anything yet.
+  - Unread counts are per chat, not per person.
+  - "@Name" for a person keeps the Bots quiet unless a Bot is named in the same message (with or without @).
+  - The owner's own notes stay in `data/USER.md`; members' are in `data/people/<id>/USER.md`.
+
