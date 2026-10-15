@@ -200,6 +200,22 @@ const MIGRATIONS = [
   `,
   // v10: messages said on a call.
   `ALTER TABLE messages ADD COLUMN via TEXT;`,
+  // v11: PCs lent through the desktop app, and how far each Bot may use them.
+  `
+  CREATE TABLE nodes (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    platform TEXT NOT NULL,
+    capabilities TEXT NOT NULL DEFAULT '[]',
+    last_seen INTEGER NOT NULL
+  );
+  CREATE TABLE node_access (
+    bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    level INTEGER NOT NULL,
+    PRIMARY KEY (bot_id, node_id)
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

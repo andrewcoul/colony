@@ -33,6 +33,7 @@ import { RoutineScheduler } from "./routines.js";
 import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
+import { NodeHub, pcToolsFor } from "./nodes.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -62,6 +63,7 @@ for (const bot of store.listBots()) {
   if (target) store.updateBot(bot.id, { model: target.ref });
 }
 const gate = new ApprovalGate(store);
+const nodes = new NodeHub(store, events);
 const computer = new ComputerService(store, events);
 void computer.syncStates().then(() => computer.pruneOldImages());
 const browser = new BrowserService(computer);
@@ -83,6 +85,7 @@ const toolsFor = (botId: string): ToolRegistry => {
     ...mailToolsFor(accountTools, integrations, botId),
     ...(hasComputer ? vaultToolsFor(loginTools, integrations, botId) : {}),
     ...ringTools,
+    ...pcToolsFor(nodes, store, botId),
   };
 };
 const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop, {
@@ -90,6 +93,7 @@ const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop
   guidance: (botId) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)),
 });
 const calls = new Calls(store, events, runner);
+nodes.stopBot = (botId) => runner.stopBot(botId);
 const ringTools = callTools(calls);
 const routines = new RoutineScheduler(store, runner);
 routines.start();
@@ -116,7 +120,7 @@ const updater = new Updater({
   busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => bot.name),
 });
 updater.start();
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, integrations, signIns, calls }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, integrations, signIns, calls, nodes }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -156,6 +160,12 @@ computer.onUse = (botId) => idle.touch(botId);
 idle.start();
 server.on("upgrade", (request, socket, head) => {
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
+  // The desktop app lending this PC to Bots.
+  if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
+    if (allowed(header)) { socket.destroy(); return; }
+    nodes.upgrade(request, socket, head);
+    return;
+  }
   // A voice call: /api/chats/<id>/call.
   if (/^\/api\/chats\/[\w-]+\/call(\?|$)/.test(request.url ?? "")) {
     if (allowed(header)) { socket.destroy(); return; }

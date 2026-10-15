@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import type { Approval, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, NodeAccess, PcCapability, PcLevel, PcNode, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
 import { removeChatFolder } from "./chatFiles.js";
 
 type Row = Record<string, unknown>;
@@ -317,6 +317,37 @@ export class Store {
     this.db.prepare("DELETE FROM chat_files WHERE id = ?").run(id);
     this.events.emit({ type: "file.deleted", chatId: file.chatId, fileId: id });
     return file;
+  }
+
+  // ---------- PCs (nodes) ----------
+  /** Known PCs, most recently seen first. `online` is filled in by the node hub. */
+  listNodes(): Omit<PcNode, "online">[] {
+    return (this.db.prepare("SELECT * FROM nodes ORDER BY last_seen DESC").all() as Row[]).map((row) => ({
+      id: row.id as string, name: row.name as string, platform: row.platform as string,
+      capabilities: JSON.parse(row.capabilities as string) as PcCapability[], lastSeen: row.last_seen as number,
+    }));
+  }
+
+  saveNode(node: { id: string; name: string; platform: string; capabilities: PcCapability[] }) {
+    this.db.prepare(`INSERT INTO nodes (id, name, platform, capabilities, last_seen) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET name = excluded.name, platform = excluded.platform, capabilities = excluded.capabilities, last_seen = excluded.last_seen`)
+      .run(node.id, node.name, node.platform, JSON.stringify(node.capabilities), Date.now());
+  }
+
+  deleteNode(id: string) {
+    this.db.prepare("DELETE FROM nodes WHERE id = ?").run(id);
+  }
+
+  listNodeAccess(): NodeAccess[] {
+    return (this.db.prepare("SELECT * FROM node_access WHERE level > 0").all() as Row[]).map((row) => ({
+      botId: row.bot_id as string, nodeId: row.node_id as string, level: row.level as PcLevel,
+    }));
+  }
+
+  setNodeAccess(botId: string, nodeId: string, level: PcLevel) {
+    if (level === 0) this.db.prepare("DELETE FROM node_access WHERE bot_id = ? AND node_id = ?").run(botId, nodeId);
+    else this.db.prepare(`INSERT INTO node_access (bot_id, node_id, level) VALUES (?, ?, ?)
+      ON CONFLICT (bot_id, node_id) DO UPDATE SET level = excluded.level`).run(botId, nodeId, level);
   }
 
   // ---------- Folders ----------

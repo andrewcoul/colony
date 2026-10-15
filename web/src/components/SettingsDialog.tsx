@@ -4,6 +4,8 @@ import type { AccountKind } from "@shared/types";
 import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settings } from "../lib/api";
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
 import { VoiceSettingsEditor } from "./VoiceSettings";
+import { ThisPcSettings } from "./ThisPcSettings";
+import { desktopApp } from "../lib/desktop";
 import { useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
 import { pending, useUpdates, WEB_VERSION } from "../lib/updates";
@@ -46,10 +48,11 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [connecting, setConnecting] = useState<AccountKind | null | undefined>(undefined);
   const [error, setError] = useState("");
   const [voicing, setVoicing] = useState(false);
+  const [lending, setLending] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setEditing(null); setConnecting(undefined); setVoicing(false); setError("");
+    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setError("");
     void api.settings().then(setSettings).catch(() => setError("Couldn't load settings."));
   }, [open]);
 
@@ -62,10 +65,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : "Settings"}
-      description={editing || voicing || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : "Settings"}
+      description={editing || voicing || lending || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
+      ) : lending ? (
+        <ThisPcSettings onBack={() => setLending(false)} />
       ) : voicing && settings ? (
         <VoiceSettingsEditor settings={settings} onBack={() => setVoicing(false)} onSaved={setSettings} />
       ) : editing ? (
@@ -124,6 +129,17 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             </span>
             <ChevronRight size={16} className="shrink-0 text-muted" />
           </button>
+          {desktopApp?.node && (
+            <button type="button" onClick={() => setLending(true)}
+              className="mt-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
+              <Monitor size={16} className="shrink-0 text-muted" />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <strong className="truncate text-sm font-medium">This PC</strong>
+                <span className="truncate text-meta text-muted">Lend this computer to your Bots: browser, screen, terminal, files</span>
+              </span>
+              <ChevronRight size={16} className="shrink-0 text-muted" />
+            </button>
+          )}
           <AccountsList onConnect={setConnecting} />
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">

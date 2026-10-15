@@ -220,6 +220,17 @@ export type Approval = {
   resolvedAt: number | null;
 };
 
+/** What a PC lets Bots do, switched on in its desktop app (and enforced there). */
+export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk";
+/**
+ * Someone's own PC, lent to Bots through the Colony desktop app.
+ * `online`: its desktop app is connected now.
+ */
+export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number };
+/** How far a Bot may use a PC: 1 browser windows and the screen, 2 also its terminal, 3 also its files. */
+export type PcLevel = 0 | 1 | 2 | 3;
+export type NodeAccess = { botId: string; nodeId: string; level: PcLevel };
+
 export type AppState = {
   bots: Bot[];
   chats: Chat[];
@@ -235,6 +246,9 @@ export type AppState = {
   accounts: Account[];
   /** Every Bot's access to every account it has been given. */
   access: Access[];
+  /** PCs lent through the desktop app, and which Bots may use them. */
+  nodes: PcNode[];
+  nodeAccess: NodeAccess[];
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };
@@ -256,7 +270,8 @@ export type ServerEvent =
   | { type: "settings.updated"; models: ModelOption[]; defaultModel: string; configured: boolean }
   | { type: "routine.upserted"; routine: Routine }
   | { type: "routine.deleted"; routineId: string }
-  | { type: "accounts.updated"; accounts: Account[]; access: Access[] };
+  | { type: "accounts.updated"; accounts: Account[]; access: Access[] }
+  | { type: "nodes.updated"; nodes: PcNode[]; nodeAccess: NodeAccess[] };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
 export type EphemeralEvent =
