@@ -5,7 +5,7 @@ import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadMessages, loadOlder, useLive } from "../lib/live";
 import { useStickToBottom } from "../hooks/useStickToBottom";
-import { Composer } from "./Composer";
+import { Composer, type SendMode } from "./Composer";
 import { BotProfile } from "./BotProfile";
 import { ComputerPanel, type ComputerTab } from "./ComputerPanel";
 import { Face } from "./Face";
@@ -58,8 +58,8 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
     if (chat.unread > 0 && document.visibilityState === "visible") void api.markRead(chat.id).catch(() => {});
   }, [chat.id, chat.unread]);
 
-  async function send(text: string) {
-    try { await api.send(chat.id, text); }
+  async function send(text: string, mode: SendMode) {
+    try { await api.send(chat.id, text, mode); }
     catch (failure) { onError(failure instanceof Error ? failure.message : "Couldn't send that."); throw failure; }
   }
 
@@ -141,7 +141,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
             {messages.map((message) => (
               <m.div key={message.id} variants={message.author === "user" ? sent : rise} initial={fresh(message.createdAt) ? "hidden" : false} animate="shown"
                 style={message.author === "user" ? { originX: 1, originY: 1 } : undefined}>
-                <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"}
+                <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"} recipient={bot?.name}
                   onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser} />
               </m.div>
             ))}
@@ -167,8 +167,10 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       ) : (
       <div className="mx-auto w-full max-w-[844px] shrink-0 px-3 pb-[max(env(safe-area-inset-bottom),12px)] sm:px-8 sm:pb-5">
         <Composer
-          placeholder={bot ? `Message ${bot.name}` : "Message the group"}
-          hint={chat.kind === "group" ? "@Name to ask one Bot" : undefined}
+          placeholder={bot ? (busy ? `Steer ${bot.name}…` : `Message ${bot.name}`) : "Message the group"}
+          hint={busy
+            ? (phone ? "Sends now · hold Send to wait until it's done" : `${bot?.name ?? "A Bot"} is working · Enter steers now · Alt+Enter waits until ${bot ? `${bot.name} is` : "it's"} done`)
+            : chat.kind === "group" ? "@Name to ask one Bot" : undefined}
           busy={busy}
           onSend={send}
           onStop={() => void api.stop(chat.id)}

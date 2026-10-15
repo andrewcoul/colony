@@ -345,16 +345,37 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const chat = store.getChat(c.req.param("id"));
     if (!chat) return c.json({ error: "Chat not found." }, 404);
     if (chat.kind === "thread") return c.json({ error: "This is a private thread between two Bots; message one of them directly." }, 400);
-    const { text } = z.object({ text: z.string().trim().min(1).max(32_000) }).parse(await c.req.json());
+    const { text, mode } = z.object({
+      text: z.string().trim().min(1).max(32_000),
+      // A Bot that's already working gets the message at its next step (steer) or after it finishes (queue).
+      mode: z.enum(["steer", "queue"]).default("steer"),
+    }).parse(await c.req.json());
     const message = store.createMessage({ chatId: chat.id, author: "user", text });
     const targets = chat.kind === "bot" ? chat.memberIds : addressedBots(text, chat.memberIds, store, chat.coordinatorId);
     const started: string[] = [];
     for (const botId of targets) {
-      if (runner.isRunning(chat.id, botId)) continue; // The Bot will see this message on its next turn.
+      if (runner.deliver(chat.id, botId, message.id, mode)) continue;
       started.push(runner.start(chat.id, botId));
     }
     store.markRead(chat.id);
-    return c.json({ message, replies: started }, 201);
+    return c.json({ message: store.getMessage(message.id) ?? message, replies: started }, 201);
+  });
+
+  /** A queued message, sent to the running turn now instead of after it. */
+  api.post("/messages/:id/steer", (c) => {
+    if (!runner.steerNow(c.req.param("id"))) return c.json({ error: "That message isn't waiting any more." }, 409);
+    return c.body(null, 204);
+  });
+
+  /** Takes back a queued message before the Bot sees it. */
+  api.delete("/messages/:id", (c) => {
+    const message = store.getMessage(c.req.param("id"));
+    if (!message) return c.json({ error: "Message not found." }, 404);
+    if (message.author !== "user" || message.delivery !== "queued" || !runner.unqueue(message.id)) {
+      return c.json({ error: "Only a message that's still waiting can be taken back." }, 409);
+    }
+    store.deleteMessage(message.id);
+    return c.body(null, 204);
   });
 
   api.post("/chats/:id/stop", (c) => {

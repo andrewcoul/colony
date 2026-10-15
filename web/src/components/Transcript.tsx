@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, Globe, Hand, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, Clock, Copy, CornerDownRight, Globe, Hand, Loader2, Repeat, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
@@ -17,28 +17,65 @@ type ItemProps = {
   message: Message;
   bot: Bot | undefined;
   showAuthor: boolean;
+  /** Who a message of yours goes to, for "Queued · sends when Kenny finishes". */
+  recipient?: string;
   onOpenRoutines?: () => void;
   onOpenChat?: (chatId: string) => void;
   onOpenBrowser?: (botId: string) => void;
 };
 
-export function MessageItem({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser }: ItemProps) {
-  if (message.author === "user") {
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-[22px] bg-raised px-[18px] py-3 text-body leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap max-sm:max-w-[88%]">
-          {message.text}
-        </div>
-      </div>
-    );
-  }
+export function MessageItem({ message, bot, showAuthor, recipient, onOpenRoutines, onOpenChat, onOpenBrowser }: ItemProps) {
+  if (message.author === "user") return <UserMessage message={message} recipient={recipient ?? "the Bot"} />;
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
   return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} />;
 }
 
-function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser }: ItemProps) {
+/** Your message. One sent while a Bot worked shows whether it steered the turn or is waiting for it. */
+function UserMessage({ message, recipient }: { message: Message; recipient: string }) {
+  const queued = message.delivery === "queued";
+  const steered = message.delivery === "steer" && message.steeredAt !== null;
+  const steering = message.delivery === "steer" && message.steeredAt === null;
+  const [busy, setBusy] = useState(false);
+  const act = (action: () => Promise<void>) => { setBusy(true); void action().catch(() => {}).finally(() => setBusy(false)); };
+  return (
+    <div className="flex flex-col items-end gap-1.5">
+      <m.div
+        className={cn("max-w-[80%] rounded-[22px] border px-[18px] py-3 text-body leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap max-sm:max-w-[88%]",
+          queued ? "border-dashed border-muted/50 bg-transparent text-soft" : "bg-raised",
+          steered || steering ? "border-mint/45" : !queued && "border-transparent")}
+        // When the Bot picks the message up, its outline pulses once.
+        initial={false}
+        animate={steered ? { boxShadow: ["0 0 0 0 rgb(126 226 184 / 0.5)", "0 0 0 9px rgb(126 226 184 / 0)"] } : { boxShadow: "0 0 0 0 rgb(126 226 184 / 0)" }}
+        transition={{ duration: 0.7, ease: "easeOut" }}
+      >
+        {message.text}
+      </m.div>
+      <AnimatePresence mode="wait" initial={false}>
+        {queued && (
+          <m.span key="queued" className="flex flex-wrap items-center justify-end gap-x-1.5 pr-1.5 text-meta text-muted"
+            initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }} transition={soft}>
+            <Clock size={12} />Queued · sends when {recipient} finishes ·
+            <button type="button" disabled={busy} className="text-soft hover:text-ink" onClick={() => act(() => api.steerNow(message.id))}>Steer now</button>·
+            <button type="button" disabled={busy} className="text-soft hover:text-ink" onClick={() => act(() => api.unqueue(message.id))}>Cancel</button>
+          </m.span>
+        )}
+        {(steered || steering) && (
+          <m.span key="steer" className={cn("flex items-center gap-1.5 pr-1.5 text-meta", steered ? "text-mint" : "text-muted")}
+            initial={{ opacity: 0, y: -3 }} animate={{ opacity: 1, y: 0 }} transition={soft}>
+            <CornerDownRight size={12} />
+            {steered
+              ? `Steered · ${recipient} picked this up ${message.steeredAt ? `after step ${message.steeredAt}` : "straight away"}`
+              : `Steering · ${recipient} reads this at the next step`}
+          </m.span>
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOpenBrowser }: Omit<ItemProps, "recipient">) {
   const streaming = message.status === "streaming";
   const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();

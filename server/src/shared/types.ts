@@ -62,6 +62,12 @@ export type Card =
 
 export type MessageStatus = "streaming" | "done" | "failed" | "stopped";
 
+/**
+ * How a message sent while a Bot was working reached it.
+ * steer: added to the running turn at the next step. queued: waits for the turn to finish.
+ */
+export type Delivery = "steer" | "queued";
+
 export type Message = {
   id: string;
   chatId: string;
@@ -73,6 +79,10 @@ export type Message = {
   cards: Card[];
   status: MessageStatus;
   error: string | null;
+  /** Set when the message arrived while a Bot was working (see Delivery). */
+  delivery: Delivery | null;
+  /** For a steer: how many steps the Bot had taken when it picked the message up. */
+  steeredAt: number | null;
   createdAt: number;
 };
 
@@ -176,6 +186,7 @@ export type ServerEvent =
   | { type: "chat.upserted"; chat: Chat }
   | { type: "chat.deleted"; chatId: string }
   | { type: "message.upserted"; message: Message }
+  | { type: "message.deleted"; chatId: string; messageId: string }
   | { type: "approval.upserted"; approval: Approval }
   | { type: "settings.updated"; models: ModelOption[]; defaultModel: string; configured: boolean }
   | { type: "routine.upserted"; routine: Routine }

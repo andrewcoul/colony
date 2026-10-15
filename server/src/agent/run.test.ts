@@ -426,3 +426,86 @@ describe("Bots messaging each other", () => {
     expect(store.getChat(thread.id)).toBeNull();
   });
 });
+
+describe("steering while a Bot works", () => {
+  // The email tool waits for approval, which holds the run mid-turn so messages can arrive.
+  async function working() {
+    script = scriptedModel([textTurn("Hi."), toolTurn("send_email", { to: "sarah@acme.com", body: "Draft" }), textTurn("Sent, and noted.")]);
+    const harness = setup();
+    const { json: bot } = await harness.call("POST", "/bots", { name: "Peng" });
+    await finished(harness.store, bot.chatId, 1);
+    await harness.call("POST", `/chats/${bot.chatId}/messages`, { text: "Email Sarah the draft." });
+    const approval = await until(() => harness.store.listApprovals("pending")[0]);
+    return { ...harness, bot, approval };
+  }
+
+  test("a message sent mid-turn reaches the model at its next step, and is marked steered", async () => {
+    const { store, call, bot, approval } = await working();
+    const { status, json } = await call("POST", `/chats/${bot.chatId}/messages`, { text: "Also cc Tom." });
+    expect(status).toBe(201);
+    expect(json.replies).toEqual([]); // no second turn: it joins the running one
+    expect(json.message.delivery).toBe("steer");
+
+    await call("POST", `/approvals/${approval.id}`, { approve: true });
+    await finished(store, bot.chatId, 3);
+    const nextStep = JSON.stringify(script.prompts.at(-1));
+    expect(nextStep).toContain("Added while you were working");
+    expect(nextStep).toContain("Also cc Tom.");
+    const steered = store.getMessage(json.message.id)!;
+    expect(steered).toMatchObject({ delivery: "steer", steeredAt: 1 });
+    // The reply splits where you cut in: the step before your message, the rest after it.
+    const [, before, yours, after] = store.listMessages(bot.chatId).slice(-4);
+    expect(before).toMatchObject({ author: bot.id, status: "done" });
+    expect(before.steps).toMatchObject([{ tool: "send_email", status: "done" }]);
+    expect(yours.id).toBe(json.message.id);
+    expect(after).toMatchObject({ author: bot.id, status: "done", text: "Sent, and noted.", steps: [] });
+    // Nothing left over, so no follow-up turn.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(store.listMessages(bot.chatId).filter((m) => m.author === bot.id)).toHaveLength(3);
+  });
+
+  test("a queued message waits for the turn to end, then gets a turn of its own", async () => {
+    const { store, call, bot, approval } = await working();
+    const { json } = await call("POST", `/chats/${bot.chatId}/messages`, { text: "Then summarise it.", mode: "queue" });
+    expect(json.message.delivery).toBe("queued");
+
+    // The running turn keeps its model; the follow-up turn gets this one.
+    const firstTurn = script;
+    script = scriptedModel([textTurn("Here's the summary.")]);
+    await call("POST", `/approvals/${approval.id}`, { approve: true });
+    const replies = await finished(store, bot.chatId, 3);
+    expect(replies.at(-1)!.text).toBe("Here's the summary.");
+    // The first turn never saw it; the follow-up turn did, as an ordinary message.
+    expect(JSON.stringify(firstTurn.prompts)).not.toContain("Then summarise it.");
+    expect(JSON.stringify(script.prompts.at(-1))).toContain("Then summarise it.");
+    expect(store.getMessage(json.message.id)!.delivery).toBeNull();
+  });
+
+  test("steer now moves a queued message into the running turn; cancel takes one back", async () => {
+    const { store, call, bot, approval } = await working();
+    const { json: first } = await call("POST", `/chats/${bot.chatId}/messages`, { text: "Use the formal greeting.", mode: "queue" });
+    const { json: second } = await call("POST", `/chats/${bot.chatId}/messages`, { text: "Never mind that.", mode: "queue" });
+
+    expect((await call("POST", `/messages/${first.message.id}/steer`)).status).toBe(204);
+    expect(store.getMessage(first.message.id)!.delivery).toBe("steer");
+    expect((await call("DELETE", `/messages/${second.message.id}`)).status).toBe(204);
+    expect(store.getMessage(second.message.id)).toBeNull();
+    expect((await call("DELETE", `/messages/${first.message.id}`)).status).toBe(409); // not waiting any more
+
+    await call("POST", `/approvals/${approval.id}`, { approve: true });
+    await finished(store, bot.chatId, 3);
+    expect(JSON.stringify(script.prompts.at(-1))).toContain("Use the formal greeting.");
+    expect(JSON.stringify(script.prompts.at(-1))).not.toContain("Never mind that.");
+  });
+
+  test("stop clears waiting messages instead of starting another turn", async () => {
+    const { store, call, bot } = await working();
+    const { json } = await call("POST", `/chats/${bot.chatId}/messages`, { text: "And then the next one.", mode: "queue" });
+    await call("POST", `/chats/${bot.chatId}/stop`);
+    const replies = await finished(store, bot.chatId, 2);
+    expect(replies.at(-1)!.status).toBe("stopped");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(store.listMessages(bot.chatId).filter((m) => m.author === bot.id)).toHaveLength(2);
+    expect(store.getMessage(json.message.id)!.delivery).toBeNull();
+  });
+});

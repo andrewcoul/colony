@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Message, MessageStatus, Presence, Routine, Schedule, Step } from "./shared/types.js";
+import type { Approval, ApprovalStatus, Bot, Card, Chat, ComputerState, Delivery, Message, MessageStatus, Presence, Routine, Schedule, Step } from "./shared/types.js";
 
 type Row = Record<string, unknown>;
 
@@ -32,6 +32,8 @@ const toMessage = (row: Row): Message => ({
   cards: JSON.parse(row.cards as string) as Card[],
   status: row.status as MessageStatus,
   error: (row.error as string | null) ?? null,
+  delivery: (row.delivery as Delivery | null) ?? null,
+  steeredAt: (row.steered_at as number | null) ?? null,
   createdAt: row.created_at as number,
 });
 
@@ -260,28 +262,36 @@ export class Store {
     return row ? toMessage(row) : null;
   }
 
-  createMessage(input: { chatId: string; author: string; text?: string; status?: MessageStatus; cards?: Card[] }): Message {
+  createMessage(input: { chatId: string; author: string; text?: string; status?: MessageStatus; cards?: Card[]; delivery?: Delivery }): Message {
     const id = newId();
     // Strictly increasing timestamps keep ordering stable within the same millisecond.
     const last = this.db.prepare("SELECT MAX(created_at) AS t FROM messages WHERE chat_id = ?").get(input.chatId) as { t: number | null };
     const createdAt = Math.max(Date.now(), (last.t ?? 0) + 1);
-    this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", createdAt);
+    this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, delivery, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", input.delivery ?? null, createdAt);
     const message = this.getMessage(id)!;
     this.events.emit({ type: "message.upserted", message });
     if (message.status !== "streaming") this.touchChat(message);
     return message;
   }
 
-  updateMessage(id: string, patch: Partial<Pick<Message, "text" | "reasoning" | "steps" | "cards" | "status" | "error">>, options: { emit?: boolean } = {}) {
+  updateMessage(id: string, patch: Partial<Pick<Message, "text" | "reasoning" | "steps" | "cards" | "status" | "error" | "delivery" | "steeredAt">>, options: { emit?: boolean } = {}) {
     const message = this.getMessage(id);
     if (!message) return null;
     const next = { ...message, ...patch };
-    this.db.prepare(`UPDATE messages SET text = ?, reasoning = ?, steps = ?, cards = ?, status = ?, error = ? WHERE id = ?`)
-      .run(next.text, next.reasoning, JSON.stringify(next.steps), JSON.stringify(next.cards), next.status, next.error, id);
+    this.db.prepare(`UPDATE messages SET text = ?, reasoning = ?, steps = ?, cards = ?, status = ?, error = ?, delivery = ?, steered_at = ? WHERE id = ?`)
+      .run(next.text, next.reasoning, JSON.stringify(next.steps), JSON.stringify(next.cards), next.status, next.error, next.delivery, next.steeredAt, id);
     if (options.emit !== false) this.events.emit({ type: "message.upserted", message: next });
     if (message.status === "streaming" && next.status !== "streaming") this.touchChat(next);
     return next;
+  }
+
+  /** Only used for a queued message the user takes back before the Bot sees it. */
+  deleteMessage(id: string) {
+    const message = this.getMessage(id);
+    if (!message) return;
+    this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
+    this.events.emit({ type: "message.deleted", chatId: message.chatId, messageId: id });
   }
 
   appendCard(messageId: string, card: Card) {
