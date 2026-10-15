@@ -5,6 +5,7 @@ import { api } from "../lib/api";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
+import { PersonAvatar } from "./People";
 import { DesktopToggle } from "./DesktopToggle";
 import { ModelPicker } from "./ModelPicker";
 import { TopicTile } from "./TopicIcon";
@@ -143,12 +144,17 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
   const [newFolder, setNewFolder] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  // Who else in the household sees it.
+  const people = useLive((s) => s.people).filter((person) => person.role === "member");
+  const [peopleIds, setPeopleIds] = useState<string[]>([]);
+  const [everyone, setEveryone] = useState(false);
 
   useEffect(() => {
     if (!open) return;
     setTitle(topic?.title ?? ""); setIcon(topic?.icon ?? "chat"); setBrief(topic?.brief ?? ""); setFolderId(topic?.folderId ?? "");
     const start = topic?.memberIds ?? (defaultBotId ? [defaultBotId] : bots.length === 1 ? [bots[0].id] : []);
     setMembers(start); setCoordinatorId(topic?.coordinatorId ?? start[0] ?? ""); setNewFolder(null); setAllIcons(false); setError("");
+    setPeopleIds(topic?.peopleIds ?? []); setEveryone(topic?.everyone ?? false);
     // Only when the dialog opens: later edits to the Bot list shouldn't reset what you've typed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, topic?.id]);
@@ -165,7 +171,8 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
     try {
       const folder = newFolder?.trim() ? (await api.createFolder(newFolder.trim())).id : folderId || null;
       const input = { title: title.trim(), icon, brief: brief.trim(), folderId: folder, memberIds: members, coordinatorId: coordinatorId || undefined };
-      const chat = topic ? await api.updateTopic(topic.id, input) : await api.createTopic(input);
+      let chat = topic ? await api.updateTopic(topic.id, input) : await api.createTopic(input);
+      if (people.length && (everyone !== chat.everyone || peopleIds.join() !== chat.peopleIds.join())) chat = await api.shareTopic(chat.id, { peopleIds, everyone });
       onOpenChange(false);
       onSaved(chat.id);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't save the topic."); }
@@ -225,6 +232,33 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
             placeholder="Repaint, new lights and a built-in wardrobe. Budget about 25,000 zł, done before Christmas."
             className="w-full resize-y rounded-lg border border-rule bg-ground px-3.5 py-3 text-sm leading-relaxed text-ink outline-none placeholder:text-muted focus:border-muted" />
         </Field>
+
+        {people.length > 0 && (
+          <div className="mb-4 flex flex-col gap-2 border-t border-rule pt-3 text-sm">
+            <span className="flex items-center justify-between gap-3">
+              <span>Shared with</span>
+              <label className="flex items-center gap-2 text-label text-soft">
+                <input type="checkbox" checked={everyone} onChange={(e) => setEveryone(e.target.checked)} className="size-4 accent-[var(--ink)]" />Everyone
+              </label>
+            </span>
+            {!everyone && (
+              <div className="flex flex-wrap gap-2">
+                {people.map((person) => {
+                  const selected = peopleIds.includes(person.id);
+                  return (
+                    <button key={person.id} type="button" aria-pressed={selected}
+                      onClick={() => setPeopleIds((current) => (selected ? current.filter((id) => id !== person.id) : [...current, person.id]))}
+                      className={cn("flex h-9 items-center gap-2 rounded-full border pr-3 pl-1.5 text-sm transition-colors",
+                        selected ? "border-muted/60 bg-raised text-ink" : "border-dashed border-rule text-muted hover:text-ink")}>
+                      <PersonAvatar person={person} size={24} className={cn(!selected && "opacity-50")} />{person.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <span className="text-meta text-muted">{everyone ? "Everyone you've added can see and post here." : peopleIds.length ? "They can see and post here, and its Bots answer them." : "Only you, for now."}</span>
+          </div>
+        )}
 
         <div className="mb-4 flex items-center justify-between gap-3 border-t border-rule pt-3 text-sm">
           <span>Folder</span>

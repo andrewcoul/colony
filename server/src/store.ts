@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, NodeAccess, PcCapability, PcLevel, PcNode, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import type { Approval, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, NodeAccess, PcCapability, PcLevel, PcNode, Person, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
 import { removeChatFolder } from "./chatFiles.js";
 
 type Row = Record<string, unknown>;
@@ -205,6 +205,8 @@ export class Store {
       lastAuthor: (row.last_author as string | null) ?? null,
       updatedAt: row.updated_at as number,
       unread: row.unread as number,
+      peopleIds: (this.db.prepare("SELECT person_id FROM chat_people WHERE chat_id = ?").all(row.id as string) as Row[]).map((item) => item.person_id as string),
+      everyone: Boolean(row.everyone),
     };
   }
 
@@ -242,7 +244,7 @@ export class Store {
     if (chat) this.events.emit({ type: "chat.upserted", chat });
   }
 
-  updateTopic(id: string, patch: { title?: string; icon?: TopicIcon; brief?: string; folderId?: string | null; archived?: boolean; memberIds?: string[]; coordinatorId?: string | null }) {
+  updateTopic(id: string, patch: { title?: string; icon?: TopicIcon; brief?: string; folderId?: string | null; archived?: boolean; memberIds?: string[]; coordinatorId?: string | null; peopleIds?: string[]; everyone?: boolean }) {
     const chat = this.getChat(id);
     if (!chat || chat.kind !== "topic") return null;
     if (patch.title !== undefined) this.db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(patch.title, id);
@@ -254,6 +256,13 @@ export class Store {
     if (patch.memberIds) {
       this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
       for (const botId of patch.memberIds) this.db.prepare("INSERT INTO chat_members (chat_id, bot_id) VALUES (?, ?)").run(id, botId);
+    }
+    if (patch.everyone !== undefined) this.db.prepare("UPDATE chats SET everyone = ? WHERE id = ?").run(patch.everyone ? 1 : 0, id);
+    if (patch.peopleIds) {
+      this.db.prepare("DELETE FROM chat_people WHERE chat_id = ?").run(id);
+      for (const personId of new Set(patch.peopleIds)) {
+        if (personId !== "owner" && this.getPerson(personId)) this.db.prepare("INSERT INTO chat_people (chat_id, person_id) VALUES (?, ?)").run(id, personId);
+      }
     }
     const updated = this.getChat(id)!;
     this.events.emit({ type: "chat.upserted", chat: updated });
@@ -317,6 +326,48 @@ export class Store {
     this.db.prepare("DELETE FROM chat_files WHERE id = ?").run(id);
     this.events.emit({ type: "file.deleted", chatId: file.chatId, fileId: id });
     return file;
+  }
+
+  // ---------- People ----------
+  listPeople(): Person[] {
+    return (this.db.prepare("SELECT * FROM people ORDER BY role = 'owner' DESC, created_at").all() as Row[]).map(toPerson);
+  }
+
+  getPerson(id: string): Person | null {
+    const row = this.db.prepare("SELECT * FROM people WHERE id = ?").get(id) as Row | undefined;
+    return row ? toPerson(row) : null;
+  }
+
+  personByLogin(login: string): Person | null {
+    const row = this.db.prepare("SELECT * FROM people WHERE login = ?").get(login) as Row | undefined;
+    return row ? toPerson(row) : null;
+  }
+
+  addPerson(input: { login: string; name: string; color: string; role: Person["role"] }): Person {
+    const id = newId();
+    this.db.prepare("INSERT INTO people (id, login, name, color, role, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, input.login, input.name, input.color, input.role, Date.now());
+    this.events.emit({ type: "people.updated", people: this.listPeople() });
+    return this.getPerson(id)!;
+  }
+
+  updatePerson(id: string, patch: { login?: string | null; name?: string; color?: string; role?: Person["role"] }) {
+    const person = this.getPerson(id);
+    if (!person) return null;
+    if (patch.login !== undefined) this.db.prepare("UPDATE people SET login = ? WHERE id = ?").run(patch.login, id);
+    if (patch.name !== undefined) this.db.prepare("UPDATE people SET name = ? WHERE id = ?").run(patch.name, id);
+    if (patch.color !== undefined) this.db.prepare("UPDATE people SET color = ? WHERE id = ?").run(patch.color, id);
+    // The owner stays the owner.
+    if (patch.role !== undefined && person.role !== "owner" && patch.role !== "owner") this.db.prepare("UPDATE people SET role = ? WHERE id = ?").run(patch.role, id);
+    this.events.emit({ type: "people.updated", people: this.listPeople() });
+    return this.getPerson(id);
+  }
+
+  deletePerson(id: string) {
+    if (id === "owner") return;
+    const shared = (this.db.prepare("SELECT chat_id FROM chat_people WHERE person_id = ?").all(id) as Row[]).map((row) => row.chat_id as string);
+    this.db.prepare("DELETE FROM people WHERE id = ?").run(id);
+    this.events.emit({ type: "people.updated", people: this.listPeople() });
+    for (const chatId of shared) { const chat = this.getChat(chatId); if (chat) this.events.emit({ type: "chat.upserted", chat }); }
   }
 
   // ---------- PCs (nodes) ----------
@@ -620,3 +671,8 @@ export class Store {
       ON CONFLICT (routine_id) DO UPDATE SET mail = excluded.mail, updated_at = excluded.updated_at`).run(routineId, JSON.stringify(mail), Date.now());
   }
 }
+
+const toPerson = (row: Row): Person => ({
+  id: row.id as string, login: (row.login as string | null) ?? null, name: row.name as string, color: row.color as string,
+  role: row.role as Person["role"], createdAt: row.created_at as number,
+});

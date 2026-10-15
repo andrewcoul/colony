@@ -1,3 +1,4 @@
+import { authorOf, canSee, eventFor, identify, memberRefusal, OWNER_ID, readAbout, readHousehold, writeAbout, writeHousehold } from "./people.js";
 import type { NodeHub } from "./nodes.js";
 import { speak, type Calls } from "./voice.js";
 import { sendUserMessage } from "./send.js";
@@ -23,7 +24,7 @@ import { MIN_INTERVAL_MINUTES, parseTime } from "./shared/schedule.js";
 import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
-import type { AppState, Chat, TopicIcon } from "./shared/types.js";
+import type { AppState, Chat, Person, TopicIcon } from "./shared/types.js";
 import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
@@ -106,7 +107,21 @@ async function fetchImage(url: string) {
 }
 
 export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
-  const api = new Hono();
+  const api = new Hono<{ Variables: { person: Person } }>();
+
+  // Who's asking (from their Tailscale login), and whether they may: members only reach the topics shared with them.
+  api.use("*", async (c, next) => {
+    const person = identify(store, c.req.header("Tailscale-User-Login")?.toLowerCase());
+    c.set("person", person);
+    if (person.role === "owner") return next();
+    const route = c.req.path.replace(/^\/api(?=\/)/, "");
+    if (person.role !== "member") {
+      if (route === "/me") return next();
+      return c.json({ error: person.role === "pending" ? "Waiting for the owner to add you." : "This Colony isn't shared with you.", pending: person.role === "pending" }, 403);
+    }
+    const refusal = memberRefusal(store, person, c.req.method, route);
+    return refusal ? c.json({ error: refusal }, 403) : next();
+  });
 
   /** A mail-triggered routine must watch a mailbox its Bot can read. */
   const mailProblem = (botId: string, when: z.infer<typeof schedule>) => {
@@ -123,7 +138,10 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.json({ error: error.message || "Something went wrong." }, 500);
   });
 
-  api.get("/state", (c) => c.json<AppState>({
+  /** Who you are to this Colony (open to people still waiting to be added). */
+  api.get("/me", (c) => c.json({ me: c.get("person"), owner: store.getPerson(OWNER_ID)!.name }));
+
+  api.get("/state", (c) => c.get("person").role !== "owner" ? c.json<AppState>(memberState(c.get("person"))) : c.json<AppState>({
     bots: store.listBots(),
     chats: store.listChats(),
     folders: store.listFolders(),
@@ -137,8 +155,48 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     access: integrations?.accounts.listAccess() ?? [],
     nodes: nodes?.list() ?? [],
     nodeAccess: store.listNodeAccess(),
+    people: store.listPeople(),
+    me: c.get("person"),
     seq: events.latestSeq(),
   }));
+  /** A member's view: the topics shared with them and their Bots; nothing of the owner's settings or accounts. */
+  const memberState = (person: Person): AppState => {
+    const chats = store.listChats().filter((chat) => canSee(person, chat));
+    const botIds = new Set(chats.flatMap((chat) => chat.memberIds));
+    return {
+      bots: store.listBots().filter((bot) => botIds.has(bot.id)), chats, folders: store.listFolders(), approvals: [], routines: [],
+      models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], nodeAccess: [],
+      people: store.listPeople().filter((item) => item.role === "owner" || item.role === "member"), me: person, seq: events.latestSeq(),
+    };
+  };
+
+  // ---------- People (the owner's) ----------
+  const personPatch = z.object({
+    name: z.string().trim().min(1).max(40),
+    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+    role: z.enum(["member", "pending", "ignored"]),
+  }).partial();
+  api.patch("/people/:id", async (c) => {
+    const person = store.updatePerson(c.req.param("id"), personPatch.parse(await c.req.json()));
+    return person ? c.json(person) : c.json({ error: "Not found." }, 404);
+  });
+  api.delete("/people/:id", (c) => {
+    if (c.req.param("id") === OWNER_ID) return c.json({ error: "The owner can't be removed." }, 400);
+    store.deletePerson(c.req.param("id"));
+    return c.body(null, 204);
+  });
+  /** What Bots know about a person (their USER.md), and about the household (HOUSEHOLD.md). */
+  api.get("/people/:id/about", (c) => store.getPerson(c.req.param("id")) ? c.json({ text: readAbout(c.req.param("id")) }) : c.json({ error: "Not found." }, 404));
+  api.put("/people/:id/about", async (c) => {
+    if (!store.getPerson(c.req.param("id"))) return c.json({ error: "Not found." }, 404);
+    writeAbout(c.req.param("id"), z.object({ text: z.string().max(8000) }).parse(await c.req.json()).text);
+    return c.body(null, 204);
+  });
+  api.get("/household", (c) => c.json({ text: readHousehold() }));
+  api.put("/household", async (c) => {
+    writeHousehold(z.object({ text: z.string().max(8000) }).parse(await c.req.json()).text);
+    return c.body(null, 204);
+  });
 
   // ---------- Version and updates ----------
   api.get("/system", (c) => updater ? c.json(updater.info()) : c.json({ error: "Updates aren't available here." }, 404));
@@ -364,7 +422,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const chat = store.getChat(c.req.param("id"));
     if (!chat) return c.json({ error: "Chat not found." }, 404);
     if (chat.kind !== "topic") return c.json({ error: "Only topics can be renamed, filed or archived." }, 400);
-    const patch = z.object({ ...topicFields, archived: z.boolean(), coordinatorId: z.string().nullable() }).partial().parse(await c.req.json());
+    const patch = z.object({ ...topicFields, archived: z.boolean(), coordinatorId: z.string().nullable(), peopleIds: z.array(z.string()).max(20), everyone: z.boolean() }).partial().parse(await c.req.json());
     const problem = topicProblem(patch);
     if (problem) return c.json({ error: problem }, 400);
     const members = patch.memberIds ?? chat.memberIds;
@@ -435,7 +493,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (attached.length !== attachmentIds.length) return c.json({ error: "One of those files isn't in this chat any more." }, 400);
     if (!text && !attached.length) return c.json({ error: "Write something, or attach a file." }, 400);
     const attachments = attached.map((file) => ({ id: file!.id, name: file!.name, mime: file!.mime, size: file!.size }));
-    return c.json(sendUserMessage(store, runner, chat, { text, mode, attachments }), 201);
+    return c.json(sendUserMessage(store, runner, chat, { text, mode, attachments, author: authorOf(c.get("person")) }), 201);
   });
 
   // ---------- A topic's Doc ----------
@@ -469,7 +527,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (!(upload instanceof File)) return c.json({ error: "No file in that upload." }, 400);
     if (upload.size > MAX_FILE_BYTES) return c.json({ error: "That file is over 25 MB." }, 413);
     const bytes = new Uint8Array(await upload.arrayBuffer());
-    const file = store.addFile({ chatId: chat.id, name: safeName(upload.name), mime: upload.type || "application/octet-stream", size: bytes.byteLength, addedBy: "user" });
+    const file = store.addFile({ chatId: chat.id, name: safeName(upload.name), mime: upload.type || "application/octet-stream", size: bytes.byteLength, addedBy: authorOf(c.get("person")) });
     writeChatFile(file, bytes);
     shareWithComputers(file, chat, chat.memberIds.filter((id) => store.getBot(id)?.computer));
     return c.json(file, 201);
@@ -777,7 +835,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   // ---------- Notifications ----------
   api.get("/push/key", (c) => push ? c.json({ publicKey: push.publicKey }) : c.json({ error: "Notifications are off." }, 503));
   api.post("/push/subscribe", async (c) => {
-    push?.subscribe(pushSubscription.parse(await c.req.json()));
+    push?.subscribe(pushSubscription.parse(await c.req.json()), c.get("person").id);
     return c.body(null, 204);
   });
   api.post("/push/unsubscribe", async (c) => {
@@ -789,7 +847,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.json({ subscribed: push?.isSubscribed(endpoint) ?? false });
   });
   api.post("/push/test", async (c) => {
-    const delivered = await push?.notify({ title: "Colony", body: "Notifications are on. Your Bots will ping you here.", chatId: null, tag: "test" }, { force: true }) ?? 0;
+    const delivered = await push?.notify({ title: "Colony", body: "Notifications are on. Your Bots will ping you here.", chatId: null, tag: "test" }, { force: true, personId: c.get("person").id }) ?? 0;
     return c.json({ delivered });
   });
   api.post("/focus", async (c) => {
@@ -814,12 +872,20 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const detach = () => { if (!released) { released = true; release?.(); } };
     const queue: { seq: number | null; event: unknown }[] = [];
     let wake: (() => void) | null = null;
-    const unsubscribe = events.subscribe((item) => { queue.push(item); wake?.(); });
+    // Members only hear about the topics shared with them.
+    const person = c.get("person");
+    const unsubscribe = events.subscribe((item) => {
+      const event = eventFor(person, item.event, store);
+      if (event) { queue.push({ ...item, event }); wake?.(); }
+    });
     stream.onAbort(() => { unsubscribe(); detach(); wake?.(); });
 
     const backlog = events.since(since);
     if (backlog === null) await stream.writeSSE({ event: "reset", data: "{}" });
-    else for (const item of backlog) await stream.writeSSE({ id: String(item.seq), event: "event", data: JSON.stringify(item.event) });
+    else for (const item of backlog) {
+      const event = eventFor(person, item.event, store);
+      if (event) await stream.writeSSE({ id: String(item.seq), event: "event", data: JSON.stringify(event) });
+    }
     let last = backlog?.at(-1)?.seq ?? since;
     // Flush headers right away so the client sees the connection open.
     await stream.writeSSE({ event: "ready", data: String(last) });

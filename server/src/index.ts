@@ -34,6 +34,7 @@ import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
+import { identify } from "./people.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -160,6 +161,8 @@ computer.onUse = (botId) => idle.touch(botId);
 idle.start();
 server.on("upgrade", (request, socket, head) => {
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
+  // Calls, lending a PC and watching a Bot's screen are the owner's.
+  if (allowed(header) || identify(store, header("Tailscale-User-Login")?.toLowerCase()).role !== "owner") { socket.destroy(); return; }
   // The desktop app lending this PC to Bots.
   if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
     if (allowed(header)) { socket.destroy(); return; }

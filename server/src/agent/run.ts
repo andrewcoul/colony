@@ -12,7 +12,8 @@ import type { EventLog } from "../events.js";
 import type { RunCheckpoint, Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
-import { historyFor, steerNote, stripNotes, systemPrompt } from "./prompt.js";
+import { authorOf, isHuman, isShared, peopleIn } from "../people.js";
+import { historyFor, peopleNote, steerNote, stripNotes, systemPrompt } from "./prompt.js";
 import { Scrubber } from "./scrub.js";
 import type { Integrations } from "../integrations/index.js";
 import { coreTools, toToolSet, type ToolContext, type ToolRegistry } from "./tools.js";
@@ -219,8 +220,8 @@ export class AgentRunner {
     const controller = new AbortController();
     const run: ActiveRun = { id: checkpoint.id, controller, botId, chatId, messageId: checkpoint.messageId, inbox: [], queued: [], seen: new Set() };
     for (const message of this.store.listMessages(chatId, { limit: 200 })) {
-      if (message.author === "user" && message.createdAt > checkpoint.startedAt && message.delivery === "queued") run.queued.push(message.id);
-      else if (message.author === "user" && message.createdAt > checkpoint.startedAt && message.delivery === "steer" && message.steeredAt === null) run.inbox.push(message.id);
+      if (isHuman(message.author) && message.createdAt > checkpoint.startedAt && message.delivery === "queued") run.queued.push(message.id);
+      else if (isHuman(message.author) && message.createdAt > checkpoint.startedAt && message.delivery === "steer" && message.steeredAt === null) run.inbox.push(message.id);
       else run.seen.add(message.id);
     }
     this.active.set(key, run);
@@ -292,6 +293,9 @@ export class AgentRunner {
       if (!target) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
       const bots = this.store.listBots();
       const names = new Map(bots.map((item) => [item.id, item.name]));
+      // In a topic shared with people, each person's messages carry their name.
+      const people = isShared(chat) ? peopleIn(this.store, chat) : [];
+      const speakers = people.length ? new Map(people.map((person) => [authorOf(person), person.name])) : undefined;
       const others = bots.filter((item) => chat.memberIds.includes(item.id) && item.id !== botId);
       let history: ModelMessage[];
       if (options.resume) {
@@ -302,8 +306,8 @@ export class AgentRunner {
         for (const item of recent) run.seen.add(item.id);
         // Photos you attached go to models that can see, for your last few messages.
         const seeing = canDriveDesktop(target) || (target.provider.protocol === "anthropic" && /claude/i.test(target.model));
-        const recentPhotos = new Set(recent.filter((item) => item.author === "user" && item.attachments.length).slice(-4).map((item) => item.id));
-        history = historyFor(bot, recent, names, seeing ? (message) => recentPhotos.has(message.id) ? photosOf(message, this.store) : [] : undefined);
+        const recentPhotos = new Set(recent.filter((item) => isHuman(item.author) && item.attachments.length).slice(-4).map((item) => item.id));
+        history = historyFor(bot, recent, names, seeing ? (message) => recentPhotos.has(message.id) ? photosOf(message, this.store) : [] : undefined, speakers);
         if (options.hiddenPrompt) history.push({ role: "user", content: options.hiddenPrompt });
         if (!history.length) throw new Error("Nothing to reply to.");
       }
@@ -352,7 +356,7 @@ export class AgentRunner {
       if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
       const result = streamText({
         model: this.modelFactory(target, `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? "", (id) => this.store.getFolder(id)?.title),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? "", (id) => this.store.getFolder(id)?.title, peopleNote(this.store, chat)),
         messages: history,
         tools: toToolSet(registry, ctx),
         // Before each step: add any steering messages (the override carries into later steps), and

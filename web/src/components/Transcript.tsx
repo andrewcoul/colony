@@ -5,11 +5,12 @@ import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
 import { api, fileUrl } from "../lib/api";
-import { useLive } from "../lib/live";
+import { useLive, myAuthor } from "../lib/live";
 import { pop, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { useCopy } from "../hooks/useCopy";
 import { Face } from "./Face";
+import { PersonAvatar } from "./People";
 import { MarkdownView } from "./MarkdownView";
 import { TopicTile } from "./TopicIcon";
 import { Button } from "./ui/button";
@@ -30,11 +31,35 @@ type ItemProps = {
 };
 
 export function MessageItem({ message, bot, showAuthor, recipient, onOpenRoutines, onOpenChat, onOpenBrowser, onOpenDoc, onAnswer }: ItemProps) {
-  if (message.author === "user") return <UserMessage message={message} recipient={recipient ?? "the Bot"} />;
+  const me = useLive((s) => s.me);
+  if (message.author === myAuthor(me)) return <UserMessage message={message} recipient={recipient ?? "the Bot"} />;
+  if (message.author === "user" || message.author.startsWith("person:")) return <PersonMessage message={message} />;
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
   return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} onOpenDoc={onOpenDoc} onAnswer={onAnswer} />;
+}
+
+/** Someone else in a shared topic: their name and color, on the left. */
+function PersonMessage({ message }: { message: Message }) {
+  const person = useLive((s) => s.people.find((item) => (item.role === "owner" ? "user" : `person:${item.id}`) === message.author));
+  const who = person ?? { name: "Someone", color: "#8a8a8a", role: "member" as const };
+  return (
+    <div className="flex items-start gap-2.5">
+      <PersonAvatar person={who} size={28} className="mt-5" />
+      <div className="flex min-w-0 flex-col items-start gap-1.5">
+        <span className="flex items-center gap-1.5 text-label font-semibold" style={{ color: who.color }}>{who.name}</span>
+        {message.attachments.length > 0 && <Attachments attachments={message.attachments} />}
+        {message.text && (
+          <div className="max-w-[80%] rounded-[22px] border border-transparent bg-surface px-[18px] py-3 text-body leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap max-sm:max-w-[88%]"
+            style={{ boxShadow: `inset 3px 0 0 ${who.color}` }}>
+            {message.text}
+          </div>
+        )}
+        {message.via === "voice" && <span className="flex items-center gap-1 pl-1.5 text-meta text-muted"><Mic size={12} />Said on a call</span>}
+      </div>
+    </div>
+  );
 }
 
 /** Your message. One sent while a Bot worked shows whether it steered the turn or is waiting for it. */

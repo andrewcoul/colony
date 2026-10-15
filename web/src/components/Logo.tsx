@@ -8,7 +8,7 @@ import { bouncy } from "../lib/motion";
  * a thin ink outline instead (the stroke is the ink colour, so it vanishes on dark).
  */
 
-const CROWN = "M13.2 10.6 12.2 3.6l4.4 3.3L20 2.2l3.4 4.7 4.4-3.3-1 7z";
+export const CROWN = "M13.2 10.6 12.2 3.6l4.4 3.3L20 2.2l3.4 4.7 4.4-3.3-1 7z";
 
 export type LogoMood = "still" | "alive" | "connecting" | "landing";
 

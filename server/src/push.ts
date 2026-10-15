@@ -4,6 +4,7 @@ import webpush from "web-push";
 import { config } from "./config.js";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
+import { canSee, OWNER_ID } from "./people.js";
 import { plainText, type Store } from "./store.js";
 import type { Message } from "./shared/types.js";
 
@@ -48,10 +49,11 @@ export class PushService {
     });
   }
 
-  subscribe(subscription: PushSubscriptionInput) {
-    this.db.prepare(`INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`)
-      .run(subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, Date.now());
+  /** A device's subscription, and whose device it is (they get only their notifications). */
+  subscribe(subscription: PushSubscriptionInput, personId = OWNER_ID) {
+    this.db.prepare(`INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at, person_id) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, person_id = excluded.person_id`)
+      .run(subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, Date.now(), personId);
   }
 
   unsubscribe(endpoint: string) {
@@ -96,9 +98,16 @@ export class PushService {
     void this.notify({ title: where ? `${bot.name} · ${where}` : bot.name, body, chatId: chat.id, tag: chat.id });
   }
 
-  async notify(notification: Notification, { force = false } = {}) {
+  /**
+   * Notifies the owner's devices and those of people the chat is shared with (`personId`: only
+   * that person's). Approvals, and anything without a chat, go to the owner only.
+   */
+  async notify(notification: Notification, { force = false, personId }: { force?: boolean; personId?: string } = {}) {
     if (!force && notification.chatId && this.watching(notification.chatId)) return 0;
-    const rows = this.db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions").all() as { endpoint: string; p256dh: string; auth: string }[];
+    const chat = notification.chatId && !notification.tag.startsWith("approval-") ? this.store.getChat(notification.chatId) : null;
+    const audience = new Set(personId ? [personId] : [OWNER_ID, ...(chat ? this.store.listPeople().filter((person) => canSee(person, chat)).map((person) => person.id) : [])]);
+    const rows = (this.db.prepare("SELECT endpoint, p256dh, auth, person_id FROM push_subscriptions").all() as { endpoint: string; p256dh: string; auth: string; person_id: string | null }[])
+      .filter((row) => audience.has(row.person_id ?? OWNER_ID));
     const payload = JSON.stringify({ title: notification.title, body: notification.body, tag: notification.tag, url: notification.path || notification.chatId ? `/#/chat/${notification.path ?? notification.chatId}` : "/" });
     let delivered = 0;
     await Promise.all(rows.map(async (row) => {
