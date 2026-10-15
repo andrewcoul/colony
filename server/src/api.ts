@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import { chatFilePath, isImage, isPdf, MAX_FILE_BYTES, removeChatFile, safeName, shareWithComputers, writeChatFile } from "./chatFiles.js";
+import { isPublicWebUrl } from "./shared/urlPolicy.js";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
@@ -89,6 +92,18 @@ function addressedBots(text: string, memberIds: string[], store: Store, coordina
   const mentioned = members.filter((bot) => new RegExp(`@${bot.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text));
   if (mentioned.length) return mentioned.map((bot) => bot.id);
   return coordinatorId && memberIds.includes(coordinatorId) ? [coordinatorId] : memberIds.slice(0, 1);
+}
+
+/** Images a Doc shows, fetched once and kept in memory (up to 200, each under 4 MB). */
+const imageCache = new Map<string, { type: string; bytes: ArrayBuffer }>();
+async function fetchImage(url: string) {
+  const response = await fetch(url, { redirect: "follow", signal: AbortSignal.timeout(10_000), headers: { "User-Agent": "colony/0.2" } });
+  const type = response.headers.get("content-type") ?? "";
+  if (!response.ok || !/^image\/(png|jpe?g|gif|webp|avif|svg\+xml)/.test(type)) return null;
+  const bytes = await response.arrayBuffer();
+  if (bytes.byteLength > 4 * 1024 * 1024) return null;
+  if (imageCache.size >= 200) imageCache.delete(imageCache.keys().next().value!);
+  return { type: type.startsWith("image/svg") ? "image/svg+xml" : type, bytes };
 }
 
 export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword }: Services) {
@@ -408,12 +423,18 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const chat = store.getChat(c.req.param("id"));
     if (!chat) return c.json({ error: "Chat not found." }, 404);
     if (chat.kind === "thread") return c.json({ error: "This is a private thread between two Bots; message one of them directly." }, 400);
-    const { text, mode } = z.object({
-      text: z.string().trim().min(1).max(32_000),
+    const { text, mode, attachments: attachmentIds } = z.object({
+      text: z.string().trim().max(32_000),
       // A Bot that's already working gets the message at its next step (steer) or after it finishes (queue).
       mode: z.enum(["steer", "queue"]).default("steer"),
+      /** Files already uploaded to this chat (POST /chats/:id/files) to send with the message. */
+      attachments: z.array(z.string()).max(10).default([]),
     }).parse(await c.req.json());
-    const message = store.createMessage({ chatId: chat.id, author: "user", text });
+    const attached = attachmentIds.map((id) => store.getFile(id)).filter((file) => file?.chatId === chat.id);
+    if (attached.length !== attachmentIds.length) return c.json({ error: "One of those files isn't in this chat any more." }, 400);
+    if (!text && !attached.length) return c.json({ error: "Write something, or attach a file." }, 400);
+    const attachments = attached.map((file) => ({ id: file!.id, name: file!.name, mime: file!.mime, size: file!.size }));
+    const message = store.createMessage({ chatId: chat.id, author: "user", text, attachments });
     // A Bot's own chat, or a topic with one Bot, always goes to that Bot; with several, @mentions pick.
     const targets = chat.memberIds.length <= 1 ? chat.memberIds : addressedBots(text, chat.memberIds, store, chat.coordinatorId);
     const started: string[] = [];
@@ -423,6 +444,76 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     }
     store.markRead(chat.id);
     return c.json({ message: store.getMessage(message.id) ?? message, replies: started }, 201);
+  });
+
+  // ---------- A topic's Doc ----------
+  api.get("/chats/:id/artifact", (c) => {
+    const artifact = store.getArtifact(c.req.param("id"));
+    // History without the bodies: each version's body loads when you open it.
+    const versions = artifact ? store.listArtifactVersions(artifact.id).map(({ body: _, ...version }) => version) : [];
+    return c.json({ artifact, versions });
+  });
+  api.get("/chats/:id/artifact/versions/:version", (c) => {
+    const artifact = store.getArtifact(c.req.param("id"));
+    const version = artifact && store.listArtifactVersions(artifact.id).find((item) => item.version === Number(c.req.param("version")));
+    return version ? c.json(version) : c.json({ error: "No such version." }, 404);
+  });
+  /** Restoring writes the old version again as a new one, so nothing is ever lost. */
+  api.post("/chats/:id/artifact/restore", async (c) => {
+    const { version } = z.object({ version: z.number().int().min(1) }).parse(await c.req.json());
+    const artifact = store.getArtifact(c.req.param("id"));
+    const old = artifact && store.listArtifactVersions(artifact.id).find((item) => item.version === version);
+    if (!old) return c.json({ error: "No such version." }, 404);
+    return c.json(store.saveArtifact(artifact.chatId, { title: old.title, status: old.status, body: old.body, note: `Restored v${version}`, by: "user" }));
+  });
+
+  // ---------- Files in a chat ----------
+  api.get("/chats/:id/files", (c) => c.json(store.listFiles(c.req.param("id"))));
+  api.post("/chats/:id/files", async (c) => {
+    const chat = store.getChat(c.req.param("id"));
+    if (!chat || chat.kind === "thread") return c.json({ error: "Files go in a Bot's chat or a topic." }, 404);
+    const body = await c.req.parseBody();
+    const upload = body.file;
+    if (!(upload instanceof File)) return c.json({ error: "No file in that upload." }, 400);
+    if (upload.size > MAX_FILE_BYTES) return c.json({ error: "That file is over 25 MB." }, 413);
+    const bytes = new Uint8Array(await upload.arrayBuffer());
+    const file = store.addFile({ chatId: chat.id, name: safeName(upload.name), mime: upload.type || "application/octet-stream", size: bytes.byteLength, addedBy: "user" });
+    writeChatFile(file, bytes);
+    shareWithComputers(file, chat, chat.memberIds.filter((id) => store.getBot(id)?.computer));
+    return c.json(file, 201);
+  });
+  /** Downloads a file. Only photos and PDFs open in the browser; anything else downloads, so a page can't run as Colony. */
+  api.get("/files/:id", (c) => {
+    const file = store.getFile(c.req.param("id"));
+    if (!file || !fs.existsSync(chatFilePath(file))) return c.json({ error: "File not found." }, 404);
+    const inline = isImage(file) || isPdf(file);
+    c.header("Content-Type", inline ? file.mime : "application/octet-stream");
+    c.header("Content-Disposition", `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(file.name)}`);
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("Cache-Control", "private, max-age=86400");
+    return c.body(fs.readFileSync(chatFilePath(file)));
+  });
+  api.delete("/files/:id", (c) => {
+    const file = store.deleteFile(c.req.param("id"));
+    if (file) removeChatFile(file);
+    return c.body(null, 204);
+  });
+
+  /**
+   * Images in a Doc come from the web. The phone loads them through here, so third-party sites
+   * see Colony's request instead of your device, and each image is fetched once.
+   */
+  api.get("/img", async (c) => {
+    const url = c.req.query("u") ?? "";
+    if (!isPublicWebUrl(url)) return c.json({ error: "Only public web images." }, 400);
+    const cached = imageCache.get(url);
+    const hit = cached ?? await fetchImage(url).catch(() => null);
+    if (!hit) return c.json({ error: "Couldn't load that image." }, 502);
+    if (!cached) imageCache.set(url, hit);
+    c.header("Content-Type", hit.type);
+    c.header("Cache-Control", "private, max-age=604800");
+    c.header("X-Content-Type-Options", "nosniff");
+    return c.body(hit.bytes);
   });
 
   /** A queued message, sent to the running turn now instead of after it. */
@@ -606,10 +697,14 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.post("/bots/:id/routines", async (c) => {
     const bot = store.getBot(c.req.param("id"));
     if (!bot) return c.json({ error: "Bot not found." }, 404);
-    const input = routineInput.parse(await c.req.json());
+    const body = await c.req.json();
+    const input = routineInput.parse(body);
+    // A routine posts to the Bot's own chat, or to a topic it's in (the topic's Schedule tab).
+    const { chatId = bot.chatId } = z.object({ chatId: z.string().optional() }).parse(body);
+    if (chatId !== bot.chatId && !store.getChat(chatId)?.memberIds.includes(bot.id)) return c.json({ error: "That Bot isn't in that topic." }, 400);
     const problem = mailProblem(bot.id, input.schedule);
     if (problem) return c.json({ error: problem }, 400);
-    const routine = store.createRoutine({ botId: bot.id, chatId: bot.chatId, title: input.title, prompt: input.prompt, schedule: input.schedule });
+    const routine = store.createRoutine({ botId: bot.id, chatId, title: input.title, prompt: input.prompt, schedule: input.schedule });
     return c.json(input.enabled === false ? store.updateRoutine(routine.id, { enabled: false }) : routine, 201);
   });
 

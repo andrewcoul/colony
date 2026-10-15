@@ -162,6 +162,42 @@ const MIGRATIONS = [
     WHERE EXISTS (SELECT 1 FROM chats WHERE kind = 'group');
   UPDATE chats SET folder_id = 'groups', icon = 'users', kind = 'topic' WHERE kind = 'group';
   `,
+  // v9: a topic's Doc (versioned), and files in chats and on messages.
+  `
+  CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL UNIQUE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    note TEXT NOT NULL DEFAULT '',
+    updated_by TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE artifact_versions (
+    artifact_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    body TEXT NOT NULL,
+    note TEXT NOT NULL,
+    updated_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (artifact_id, version)
+  );
+  CREATE TABLE chat_files (
+    id TEXT PRIMARY KEY,
+    chat_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mime TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    added_by TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX chat_files_by_chat ON chat_files (chat_id, created_at);
+  ALTER TABLE messages ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+  `,
 ];
 
 export type Db = DatabaseSync;

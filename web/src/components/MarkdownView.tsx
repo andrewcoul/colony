@@ -2,6 +2,7 @@ import { memo, type ReactNode } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
+import { imageUrl } from "../lib/api";
 import { isWebUrl, openExternal } from "../lib/links";
 import { useCopy } from "../hooks/useCopy";
 import { Button } from "./ui/button";
@@ -43,10 +44,18 @@ const components: Components = {
   img: ({ alt }) => <span className="text-label text-muted">[image{alt ? ": " + alt : ""}]</span>,
 };
 
-export const MarkdownView = memo(function MarkdownView({ text }: { text: string }) {
+/** In a Doc, web images load through Colony's image proxy, so the site never sees this device. */
+const docComponents: Components = {
+  ...components,
+  img: ({ src, alt }) => (typeof src === "string" && isWebUrl(src)
+    ? <img src={imageUrl(src)} alt={alt ?? ""} loading="lazy" className="my-2 max-h-80 rounded-lg" />
+    : <span className="text-label text-muted">[image{alt ? ": " + alt : ""}]</span>),
+};
+
+export const MarkdownView = memo(function MarkdownView({ text, images = "blocked" }: { text: string; images?: "blocked" | "proxied" }) {
   return (
     <div className="markdown">
-      <Markdown remarkPlugins={[remarkGfm]} components={components}>{text}</Markdown>
+      <Markdown remarkPlugins={[remarkGfm]} components={images === "proxied" ? docComponents : components}>{text}</Markdown>
     </div>
   );
 });

@@ -81,6 +81,7 @@ function setup() {
   const push = new PushService(db, store, events, async (_subscription, payload) => { pushed.push(JSON.parse(String(payload))); return {} as never; });
   push.subscribe({ endpoint: "https://push.example/device", keys: { p256dh: "k", auth: "a" } });
   const api = createApi({ store, events, gate, runner, routines, push });
+  apiFor.set(store, api);
   const call = async (method: string, url: string, body?: unknown) => {
     const response = await api.request(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     const json = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
@@ -88,6 +89,12 @@ function setup() {
   };
   return { db, store, events, runner, routines, push, pushed, call };
 }
+
+/** The raw API on an existing store, for requests `call` can't make (multipart uploads). */
+function setupApi(store: InstanceType<typeof Store>) {
+  return apiFor.get(store)!;
+}
+const apiFor = new Map<unknown, ReturnType<typeof createApi>>();
 
 /** Colony coming back up on the same database: a fresh store, gate and runner, as after a restart. */
 function restarted(db: ReturnType<typeof openDb>) {
@@ -671,5 +678,81 @@ describe("topics and folders", () => {
     const store = new Store(db, new EventLog(db));
     expect(store.getChat("g1")).toMatchObject({ kind: "topic", folderId: "groups", icon: "users" });
     expect(store.listFolders().map((folder) => folder.title)).toEqual(["Groups"]);
+  });
+});
+
+describe("a topic's Doc, files and questions", () => {
+  async function topicWith(turns: unknown[][]) {
+    script = scriptedModel([textTurn("Hi."), ...turns]);
+    const harness = setup();
+    const { json: luke } = await harness.call("POST", "/bots", { name: "Luke" });
+    await finished(harness.store, luke.chatId, 1);
+    const { json: topic } = await harness.call("POST", "/topics", { title: "IKEA trip", icon: "cart", memberIds: [luke.id] });
+    return { ...harness, luke, topic };
+  }
+
+  test("the Bot writes and edits the Doc as versions, with a card in the chat; restoring makes a new version", async () => {
+    const { store, call, topic } = await topicWith([
+      toolTurn("artifact_write", { body: "# IKEA trip\n\n- KALLAX 4×4", note: "first list", status: "Draft" }),
+      textTurn("Started the list."),
+    ]);
+    await call("POST", `/chats/${topic.id}/messages`, { text: "Make a list." });
+    const [reply] = await finished(store, topic.id, 1);
+    expect(reply.cards).toEqual([{ type: "artifact", title: "IKEA trip", version: 1, note: "first list" }]);
+
+    script = scriptedModel([toolTurn("artifact_edit", { find: "- KALLAX 4×4", replace: "- KALLAX 4×4\n- MOPPE ×2", note: "added MOPPE" }), textTurn("Added.")]);
+    await call("POST", `/chats/${topic.id}/messages`, { text: "Add two MOPPE." });
+    await finished(store, topic.id, 2);
+    const { json } = await call("GET", `/chats/${topic.id}/artifact`);
+    expect(json.artifact).toMatchObject({ version: 2, status: "Draft", note: "added MOPPE", body: "# IKEA trip\n\n- KALLAX 4×4\n- MOPPE ×2" });
+    expect(json.versions.map((version: { version: number; note: string }) => [version.version, version.note])).toEqual([[2, "added MOPPE"], [1, "first list"]]);
+    expect(json.versions[0].body).toBeUndefined();
+
+    const { json: restored } = await call("POST", `/chats/${topic.id}/artifact/restore`, { version: 1 });
+    expect(restored).toMatchObject({ version: 3, note: "Restored v1", body: "# IKEA trip\n\n- KALLAX 4×4", updatedBy: "user" });
+  });
+
+  test("Docs belong to topics", async () => {
+    script = scriptedModel([textTurn("Hi."), toolTurn("artifact_write", { body: "x", note: "n" }), textTurn("Ok.")]);
+    const { store, call } = setup();
+    const { json: luke } = await call("POST", "/bots", { name: "Luke" });
+    await finished(store, luke.chatId, 1);
+    await call("POST", `/chats/${luke.chatId}/messages`, { text: "Write a doc." });
+    const reply = (await finished(store, luke.chatId, 2)).at(-1)!;
+    expect(reply.steps[0].status).toBe("error");
+    expect(reply.steps[0].detail).toContain("Docs live in topics");
+  });
+
+  test("an uploaded file can be sent with a message, listed and read by the Bot", async () => {
+    const { store, call, topic } = await topicWith([toolTurn("chat_files", { action: "read", name: "measurements.txt" }), textTurn("It fits.")]);
+    const form = new FormData();
+    form.append("file", new File(["Boot: 120 x 100 cm with the seats down"], "measurements.txt", { type: "text/plain" }));
+    const upload = await (setupApi(store)).request(`/chats/${topic.id}/files`, { method: "POST", body: form });
+    expect(upload.status).toBe(201);
+    const file = await upload.json();
+    expect(file).toMatchObject({ name: "measurements.txt", mime: "text/plain", addedBy: "user" });
+
+    const { json } = await call("POST", `/chats/${topic.id}/messages`, { text: "Will the KALLAX fit?", attachments: [file.id] });
+    expect(json.message.attachments).toEqual([{ id: file.id, name: "measurements.txt", mime: "text/plain", size: file.size }]);
+    const reply = (await finished(store, topic.id, 1)).at(-1)!;
+    expect(reply.text).toBe("It fits.");
+    expect(JSON.stringify(script.prompts[1])).toContain("[Attached: measurements.txt (text/plain)");
+    // The tool's result (the file's text) went back to the model on the next step.
+    expect(JSON.stringify(script.prompts.at(-1))).toContain("Boot: 120 x 100 cm");
+    expect((await call("GET", `/chats/${topic.id}/files`)).json).toHaveLength(1);
+    expect((await call("POST", `/chats/${topic.id}/messages`, { text: "", attachments: ["nope"] })).status).toBe(400);
+  });
+
+  test("the Bot asks with tappable answers", async () => {
+    const { store, call, topic } = await topicWith([toolTurn("ask", { questions: [{ label: "KALLAX: carry or deliver?", options: ["Carry", "Deliver"] }, { label: "How many MOPPE?" }] }), textTurn("Two questions.")]);
+    await call("POST", `/chats/${topic.id}/messages`, { text: "Plan it." });
+    const [reply] = await finished(store, topic.id, 1);
+    expect(reply.cards).toEqual([{ type: "ask", questions: [{ label: "KALLAX: carry or deliver?", options: ["Carry", "Deliver"] }, { label: "How many MOPPE?", options: [] }] }]);
+  });
+
+  test("the image proxy only fetches public web images", async () => {
+    const { call } = setup();
+    expect((await call("GET", "/img?u=" + encodeURIComponent("http://127.0.0.1:8787/api/state"))).status).toBe(400);
+    expect((await call("GET", "/img?u=" + encodeURIComponent("file:///etc/passwd"))).status).toBe(400);
   });
 });

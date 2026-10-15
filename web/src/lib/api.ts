@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Bot, Chat, Folder, Message, Routine, Schedule, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Routine, Schedule, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -86,7 +86,24 @@ export const api = {
   deleteChat: (id: string) => request<void>("DELETE", `/chats/${id}`),
   messages: (chatId: string, before?: number) => request<Message[]>("GET", `/chats/${chatId}/messages${before ? `?before=${before}` : ""}`),
   /** mode only matters while a Bot is working: steer joins its turn now, queue waits for it to finish. */
-  send: (chatId: string, text: string, mode: "steer" | "queue" = "steer") => request<{ message: Message; replies: string[] }>("POST", `/chats/${chatId}/messages`, { text, mode }),
+  send: (chatId: string, text: string, mode: "steer" | "queue" = "steer", attachments: string[] = []) =>
+    request<{ message: Message; replies: string[] }>("POST", `/chats/${chatId}/messages`, { text, mode, attachments }),
+  artifact: (chatId: string) => request<{ artifact: Artifact | null; versions: Omit<ArtifactVersion, "body">[] }>("GET", `/chats/${chatId}/artifact`),
+  artifactVersion: (chatId: string, version: number) => request<ArtifactVersion>("GET", `/chats/${chatId}/artifact/versions/${version}`),
+  restoreArtifact: (chatId: string, version: number) => request<Artifact>("POST", `/chats/${chatId}/artifact/restore`, { version }),
+  chatFiles: (chatId: string) => request<ChatFile[]>("GET", `/chats/${chatId}/files`),
+  deleteFile: (id: string) => request<void>("DELETE", `/files/${id}`),
+  /** Uploads one file to a chat; it can then be sent with a message or just sit in the topic's Files. */
+  async uploadFile(chatId: string, file: File): Promise<ChatFile> {
+    const form = new FormData();
+    form.append("file", file);
+    const response = await fetch(`/api/chats/${chatId}/files`, { method: "POST", body: form });
+    if (!response.ok) {
+      const data = await response.json().catch(() => null) as { error?: string } | null;
+      throw new Error(data?.error || `Upload failed (${response.status}).`);
+    }
+    return response.json() as Promise<ChatFile>;
+  },
   steerNow: (messageId: string) => request<void>("POST", `/messages/${messageId}/steer`),
   unqueue: (messageId: string) => request<void>("DELETE", `/messages/${messageId}`),
   stop: (chatId: string) => request<void>("POST", `/chats/${chatId}/stop`),
@@ -113,7 +130,8 @@ export const api = {
   desktopCheck: (providerId: string, models?: string[]) => request<{ results: DesktopVerdict[]; settings: Settings }>("POST", `/settings/providers/${encodeURIComponent(providerId)}/desktop-check`, { models }),
   openBrowser: (botId: string) => request<{ open: boolean; url: string | null }>("POST", `/bots/${botId}/browser/open`),
   browserInput: (botId: string, input: BrowserInput) => request<void>("POST", `/bots/${botId}/browser/input`, input),
-  createRoutine: (botId: string, input: RoutineInput) => request<Routine>("POST", `/bots/${botId}/routines`, input),
+  /** chatId: a topic the Bot is in, to post results there instead of the Bot's own chat. */
+  createRoutine: (botId: string, input: RoutineInput, chatId?: string) => request<Routine>("POST", `/bots/${botId}/routines`, { ...input, chatId }),
   updateRoutine: (id: string, patch: Partial<RoutineInput>) => request<Routine>("PATCH", `/routines/${id}`, patch),
   deleteRoutine: (id: string) => request<void>("DELETE", `/routines/${id}`),
   runRoutine: (id: string) => request<{ messageId: string }>("POST", `/routines/${id}/run`),
@@ -133,3 +151,8 @@ export const api = {
   removeAccount: (id: string) => request<void>("DELETE", `/accounts/${encodeURIComponent(id)}`),
   setAccess: (botId: string, accountId: string, patch: Partial<Pick<Access, "mail" | "calendar" | "vault">>) => request<Access>("PUT", `/bots/${botId}/access/${encodeURIComponent(accountId)}`, patch),
 };
+
+/** Where a chat file can be opened or downloaded. */
+export const fileUrl = (id: string) => `/api/files/${id}`;
+/** A web image, loaded through Colony so the site never sees this device. */
+export const imageUrl = (url: string) => `/api/img?u=${encodeURIComponent(url)}`;

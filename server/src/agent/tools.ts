@@ -11,6 +11,7 @@ import type { ApprovalGate } from "./approvals.js";
 import type { Scrubber } from "./scrub.js";
 import { allows } from "../integrations/accounts.js";
 import type { Integrations } from "../integrations/index.js";
+import { docTools } from "./docTools.js";
 
 /** Everything a tool needs to act on behalf of one Bot in one run. */
 export type ToolContext = {
@@ -277,6 +278,8 @@ export const coreTools = {
       return view(updated);
     },
   }),
+
+  ...docTools,
 } satisfies Record<string, ColonyTool>;
 
 export type ToolRegistry = Record<string, ColonyTool>;

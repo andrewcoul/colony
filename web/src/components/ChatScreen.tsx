@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Square, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
-import { loadMessages, loadOlder, useLive } from "../lib/live";
+import { loadArtifact, loadMessages, loadOlder, useLive } from "../lib/live";
 import { useStickToBottom } from "../hooks/useStickToBottom";
-import { Composer, type SendMode } from "./Composer";
+import { Composer, type ComposerHandle, type SendMode } from "./Composer";
+import { TopicPanel, type TopicTab } from "./TopicPanel";
 import { TopicDialog } from "./Dialogs";
 import { TopicTile } from "./TopicIcon";
 import { BotProfile } from "./BotProfile";
@@ -44,6 +45,11 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
   const solo = bot ?? (topic && members.length === 1 ? members[0] : undefined);
   const folder = useLive((s) => (chat.folderId ? s.folders[chat.folderId] : undefined));
   const [editing, setEditing] = useState(false);
+  // A topic's side panel: its Doc, Files and Schedule.
+  const [topicTab, setTopicTab] = useState<TopicTab | null>(null);
+  const artifact = useLive((s) => s.artifacts[chat.id]);
+  useEffect(() => { if (topic && artifact === undefined) void loadArtifact(chat.id).catch(() => {}); }, [topic, chat.id, artifact]);
+  const composer = useRef<ComposerHandle>(null);
   const routineCount = useLive((s) => (bot ? Object.values(s.routines).filter((routine) => routine.botId === bot.id && routine.enabled).length : 0));
   const busy = messages.some((message) => message.status === "streaming");
   const openBrowser = (botId: string) => {
@@ -65,8 +71,8 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
     if (chat.unread > 0 && document.visibilityState === "visible") void api.markRead(chat.id).catch(() => {});
   }, [chat.id, chat.unread]);
 
-  async function send(text: string, mode: SendMode) {
-    try { await api.send(chat.id, text, mode); }
+  async function send(text: string, mode: SendMode, attachments: string[] = []) {
+    try { await api.send(chat.id, text, mode, attachments); }
     catch (failure) { onError(failure instanceof Error ? failure.message : "Couldn't send that."); throw failure; }
   }
 
@@ -100,6 +106,15 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
               <span className="truncate text-meta text-muted">{subtitle || "Teammate"}</span>
             </div>
           </>
+        )}
+        {topic && (
+          <Button
+            variant="ghost" size="pill" aria-pressed={topicTab === "doc"} aria-label={`${chat.title} doc`}
+            onClick={() => setTopicTab((current) => (current ? null : "doc"))}
+            className={cn(artifact ? "bg-peach/12 text-peach hover:bg-peach/18 hover:text-peach" : "text-muted", topicTab && "ring-1 ring-peach/40")}
+          >
+            <FileText size={15} /><span className="max-sm:hidden">Doc</span>{artifact && <span className="tabular-nums">· v{artifact.version}</span>}
+          </Button>
         )}
         {bot && (
           <Button
@@ -143,7 +158,10 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       </header>
 
       <div className="relative flex min-h-0 flex-1 flex-col">
-        <div ref={ref} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:thin]">
+        <div ref={ref} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto [scrollbar-width:thin]"
+          // Files dropped anywhere on the conversation are attached to your next message.
+          onDragOver={(event) => { if (!thread && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+          onDrop={(event) => { if (thread || !event.dataTransfer.files.length) return; event.preventDefault(); composer.current?.attach(event.dataTransfer.files); }}>
           <div className="mx-auto flex max-w-[780px] flex-col gap-6 px-4 pt-5 pb-8 sm:px-8">
             {loaded && hasOlder && messages.length >= 50 && (
               <Button variant="outline" size="pill" className="self-center" onClick={() => { unpin(); void loadOlder(chat.id).then(setHasOlder); }}>Load earlier</Button>
@@ -158,7 +176,9 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
               <m.div key={message.id} variants={message.author === "user" ? sent : rise} initial={fresh(message.createdAt) ? "hidden" : false} animate="shown"
                 style={message.author === "user" ? { originX: 1, originY: 1 } : undefined}>
                 <MessageItem message={message} bot={botMap[message.author]} showAuthor={chat.kind !== "bot"} recipient={solo?.name}
-                  onOpenRoutines={bot ? () => setPanel("routines") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser} />
+                  onOpenRoutines={bot ? () => setPanel("routines") : topic ? () => setTopicTab("schedule") : undefined} onOpenChat={onOpenChat} onOpenBrowser={openBrowser}
+                  onOpenDoc={topic ? () => setTopicTab("doc") : undefined}
+                  onAnswer={thread ? undefined : (text, now) => (now ? void send(text, "steer").catch(() => {}) : composer.current?.insert(text))} />
               </m.div>
             ))}
           </div>
@@ -183,6 +203,8 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
       ) : (
       <div className="mx-auto w-full max-w-[844px] shrink-0 px-3 pb-[max(env(safe-area-inset-bottom),12px)] sm:px-8 sm:pb-5">
         <Composer
+          ref={composer}
+          onUpload={(file) => api.uploadFile(chat.id, file)}
           placeholder={solo ? (busy ? `Steer ${solo.name}…` : topic ? `Message ${solo.name} about ${chat.title}` : `Message ${solo.name}`) : "Message the topic"}
           hint={busy
             ? (phone ? "Sends now · hold Send to wait until it's done" : `${solo?.name ?? "A Bot"} is working · Enter steers now · Alt+Enter waits until ${solo ? `${solo.name} is` : "it's"} done`)
@@ -196,6 +218,11 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError }: {
     </section>
     {topic && <TopicDialog open={editing} onOpenChange={setEditing} topic={chat} onSaved={() => {}} />}
     <AnimatePresence initial={false}>
+      {topic && topicTab && (
+        <PanelDock key="topic-dock" phone={phone}>
+          <TopicPanel chat={chat} bots={members} tab={topicTab} onTab={setTopicTab} phone={phone} onClose={() => setTopicTab(null)} onError={onError} />
+        </PanelDock>
+      )}
       {bot && panel && (
         <PanelDock key="dock" phone={phone}>
           {/* Switching panels crossfades inside the open dock instead of closing and reopening it. */}

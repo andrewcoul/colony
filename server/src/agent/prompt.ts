@@ -1,4 +1,4 @@
-import type { ModelMessage } from "ai";
+import type { ImagePart, ModelMessage } from "ai";
 import * as files from "../files.js";
 import { describeSchedule } from "../shared/schedule.js";
 import type { Bot, Chat, Message, Routine } from "../shared/types.js";
@@ -91,7 +91,11 @@ export function stripNotes(text: string) {
 }
 
 /** Converts the chat transcript into model messages from this Bot's point of view. */
-export function historyFor(bot: Bot, messages: Message[], names: Map<string, string>): ModelMessage[] {
+/**
+ * Converts the chat transcript into model messages from this Bot's point of view.
+ * `photos` turns a message's image attachments into image parts (only for models that can see).
+ */
+export function historyFor(bot: Bot, messages: Message[], names: Map<string, string>, photos?: (message: Message) => ImagePart[]): ModelMessage[] {
   const history: ModelMessage[] = [];
   for (const message of messages) {
     if (message.status === "streaming" && message.author === bot.id) continue;
@@ -106,7 +110,11 @@ export function historyFor(bot: Bot, messages: Message[], names: Map<string, str
       const note = notes.length ? `${NOTE_OPEN}${notes.join(" · ")}${NOTE_CLOSE}\n\n` : "";
       if (text || note) history.push({ role: "assistant", content: note + (text || "(no reply)") });
     } else if (message.author === "user") {
-      if (text) history.push({ role: "user", content: text });
+      const files = message.attachments?.length ? `\n[Attached: ${message.attachments.map((file) => `${file.name} (${file.mime})`).join(", ")}. Read text and PDFs with chat_files.]` : "";
+      const images = photos?.(message) ?? [];
+      const content = (text + files).trim();
+      if (images.length) history.push({ role: "user", content: [{ type: "text", text: content || "(photo)" }, ...images] });
+      else if (content) history.push({ role: "user", content });
     } else if (text) {
       const name = message.author === "system" ? "System" : names.get(message.author) ?? "Another Bot";
       history.push({ role: "user", content: `[${name}]: ${text}` });

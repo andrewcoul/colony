@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Bot, Chat, EphemeralEvent, Folder, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -8,6 +8,10 @@ export type LiveState = {
   bots: Record<string, Bot>;
   chats: Record<string, Chat>;
   folders: Record<string, Folder>;
+  /** Each chat's Doc, keyed by chat id, once loaded (null: loaded, and there isn't one yet). */
+  artifacts: Record<string, Artifact | null>;
+  /** Each chat's files, newest first, once loaded. */
+  files: Record<string, ChatFile[]>;
   /** Pending approvals from the snapshot, plus any seen (resolved or not) since. */
   approvals: Record<string, Approval>;
   routines: Record<string, Routine>;
@@ -23,7 +27,7 @@ export type LiveState = {
 };
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -53,6 +57,15 @@ function apply(event: ServerEvent) {
     }
     case "chat.upserted": return set({ chats: { ...state.chats, [event.chat.id]: event.chat } });
     case "chat.deleted": return set({ chats: without(state.chats, event.chatId), messages: without(state.messages, event.chatId) });
+    case "artifact.upserted": return set({ artifacts: { ...state.artifacts, [event.artifact.chatId]: event.artifact } });
+    case "file.upserted": {
+      const list = state.files[event.file.chatId];
+      return list && set({ files: { ...state.files, [event.file.chatId]: [event.file, ...list.filter((item) => item.id !== event.file.id)] } });
+    }
+    case "file.deleted": {
+      const list = state.files[event.chatId];
+      return list && set({ files: { ...state.files, [event.chatId]: list.filter((item) => item.id !== event.fileId) } });
+    }
     case "folder.upserted": return set({ folders: { ...state.folders, [event.folder.id]: event.folder } });
     case "folder.deleted": return set({ folders: without(state.folders, event.folderId) });
     case "message.upserted": {
@@ -201,4 +214,16 @@ export function useLive<T>(select: (state: LiveState) => T): T {
     (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
     () => select(state),
   );
+}
+
+/** Loads a chat's Doc into the store (events keep it current afterwards). */
+export async function loadArtifact(chatId: string) {
+  const { artifact } = await api.artifact(chatId);
+  set({ artifacts: { ...state.artifacts, [chatId]: artifact } });
+}
+
+/** Loads a chat's files into the store (events keep them current afterwards). */
+export async function loadFiles(chatId: string) {
+  const files = await api.chatFiles(chatId);
+  set({ files: { ...state.files, [chatId]: files } });
 }
