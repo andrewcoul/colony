@@ -1,7 +1,7 @@
 {
   "name": "colony-desktop",
   "productName": "Colony",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Colony for your desktop: your self-hosted team of AI Bots, in its own window.",
   "author": "Andrew Coulson",
