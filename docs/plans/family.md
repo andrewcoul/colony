@@ -1,6 +1,6 @@
 # Plan: Everyone's Bots, one server
 
-Status: proposed, 2026-10-15. Follows `pip-parity.md` (built on branch `pip-parity`) and replaces its owner/member model.
+Status: built on branch `pip-parity`, 2026-10-15 (phases 1–7, one commit each; 145 server tests). Follows `pip-parity.md` (built on branch `pip-parity`) and replaces its owner/member model.
 
 Designs: Paper file "Colony · Grok-style chat", page `Family · Everyone's Bots` (artboards F1–F10).
 
@@ -134,3 +134,15 @@ Voice: the provider stays shared (host); quiet hours, calls on/off and each Bot'
 1. Logins from outside the tailnet (Tailscale's machine sharing) count as family. `COLONY_ALLOWED_USERS` keeps anyone out; Settings › Family says so.
 2. Spending is tracked per person and per Bot, with optional monthly limits on shared keys (section 8).
 3. Bots can be handed to another family member (section 9).
+
+## Where the build differs
+
+- **The spending limit is checked when a turn starts**, not before every model call. A turn that starts under the limit runs to the end, so it can go over by one turn's worth.
+- **Someone over their limit is told once a month** (they and the host each get one notification), not on every stopped turn. The stopped turn itself says why in the chat.
+- **Prices are in US dollars only.** There's no currency setting. The built-in prices are approximate list prices for common Claude, GPT, Gemini and DeepSeek models. Editing a price in the provider editor saves it for that model; clearing it goes back to the built-in price.
+- **Cache writes count at the input price**, and cache reads at the cached price (or the input price when there isn't one).
+- **Turns cost only what the agent spends.** Voice transcription and speech, desktop checks and connection checks aren't counted.
+- **Your own Bot answers you by default** in a shared topic with no @mention. The host's Bot answers the host, and so on. Bots are addressed by plain name or @name, and @Person keeps the Bots quiet.
+- **Folders are per person.** Each person files topics, including shared ones, in their own folders.
+- **The giver still sees a Bot they gave away**, read-only, so their archived chat shows its name and face. They can't open its profile settings or message it.
+- **A Bot's old chat becomes an archived topic** called "Chat with Luke (now Marija's)", with no Bots in it, in the giver's Archived list.
