@@ -1,7 +1,8 @@
 import type { Db } from "./db.js";
 import type { EphemeralEvent, ServerEvent } from "./shared/types.js";
 
-type Listener = (event: { seq: number | null; event: ServerEvent | EphemeralEvent }) => void;
+type Item = { seq: number | null; event: ServerEvent | EphemeralEvent };
+type Listener = (item: Item) => void;
 
 /** Keep enough history for a phone that slept for a while; older clients refetch state. */
 const RETAIN = 5000;
@@ -13,6 +14,8 @@ const RETAIN = 5000;
 export class EventLog {
   private listeners = new Set<Listener>();
   private sinceTrim = 0;
+  private pending: Item[] = [];
+  private delivering = false;
 
   constructor(private db: Db) {}
 
@@ -25,12 +28,31 @@ export class EventLog {
       this.sinceTrim = 0;
       this.db.prepare("DELETE FROM events WHERE seq <= ?").run(seq - RETAIN);
     }
-    for (const listener of this.listeners) listener({ seq, event });
+    this.deliver({ seq, event });
     return seq;
   }
 
   broadcast(event: EphemeralEvent) {
-    for (const listener of this.listeners) listener({ seq: null, event });
+    this.deliver({ seq: null, event });
+  }
+
+  /**
+   * Delivers in seq order. A listener that emits while handling an event (Accounts emits
+   * accounts.updated on bot.deleted) would otherwise reach later listeners first, and the SSE
+   * stream drops anything older than what it last sent.
+   */
+  private deliver(item: Item) {
+    this.pending.push(item);
+    if (this.delivering) return;
+    this.delivering = true;
+    try {
+      for (let next = this.pending.shift(); next; next = this.pending.shift()) {
+        for (const listener of this.listeners) listener(next);
+      }
+    } finally {
+      this.delivering = false;
+      this.pending = [];
+    }
   }
 
   latestSeq() {
