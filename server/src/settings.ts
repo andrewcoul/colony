@@ -14,7 +14,11 @@ export type Protocol = "openai" | "anthropic";
  * One provider: its address, API format, key, the models you've picked from it, and which of
  * those can drive a desktop (read a screenshot and point accurately).
  */
-export type Provider = { id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[]; desktop: string[] };
+/**
+ * A model provider and its key. `ownerId` null: shared (the host's, usable by everyone's Bots);
+ * otherwise one person's own, usable only by their Bots.
+ */
+export type Provider = { id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[]; desktop: string[]; ownerId: string | null };
 export type ProviderInput = { name: string; baseURL: string; protocol?: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
 
 /** Claude models on Anthropic's API can drive a desktop; others are marked by the desktop check (or by hand). */
@@ -43,7 +47,9 @@ const DEFAULT_VOICE: VoiceSettings = {
   providerId: null, transcribeModel: "gpt-4o-mini-transcribe", speechModel: "gpt-4o-mini-tts", voice: "alloy",
   botVoices: {}, allowCalls: true, quietFrom: "22:00", quietTo: "07:00",
 };
-export type SettingsView = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings };
+export type SettingsView = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings; host: boolean };
+/** The host's id: their default is the shared default every Bot falls back to. */
+const HOST = "owner";
 
 /**
  * Bots point at "<provider id>::<model id>". Model ids often contain "/" or ":"
@@ -54,6 +60,8 @@ export const modelRef = (providerId: string, model: string) => `${providerId}${S
 
 let providers: Provider[] = [];
 let defaultRef = "";
+/** Each person's own default model for new Bots (the host's is `defaultRef`). */
+let personalDefaults: Record<string, string> = {};
 let voice: VoiceSettings = { ...DEFAULT_VOICE };
 let source: "app" | "env" = "env";
 
@@ -65,7 +73,7 @@ const hostName = (url: string) => { try { return new URL(url).hostname; } catch 
 export function loadSettings() {
   const env = config.model;
   providers = env.baseURL && env.models.length
-    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), protocol: "openai", apiKey: env.apiKey, models: [...env.models], desktop: [] }]
+    ? [{ id: "env", name: env.providerName === "colony" ? hostName(env.baseURL) : env.providerName, baseURL: normalizeURL(env.baseURL), protocol: "openai", apiKey: env.apiKey, models: [...env.models], desktop: [], ownerId: null }]
     : [];
   defaultRef = "";
   source = "env";
@@ -76,16 +84,19 @@ export function loadSettings() {
       /** The single-provider format from before multiple providers. */
       model?: { providerName: string; baseURL: string; apiKey: string; models: string[] };
       voice?: Partial<VoiceSettings>;
+      personalDefaults?: Record<string, string>;
     };
+    personalDefaults = { ...saved.personalDefaults };
     voice = { ...DEFAULT_VOICE, ...saved.voice, botVoices: { ...saved.voice?.botVoices } };
     if (saved.providers) {
       providers = saved.providers.map((provider) => {
         const protocol = provider.protocol ?? "openai";
-        return { ...provider, protocol, desktop: provider.desktop ?? defaultDesktop(protocol, provider.models) };
+        // Providers from before the family are shared.
+        return { ...provider, protocol, desktop: provider.desktop ?? defaultDesktop(protocol, provider.models), ownerId: provider.ownerId ?? null };
       });
       defaultRef = saved.defaultModel ?? "";
     } else if (saved.model) {
-      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), protocol: "openai", apiKey: saved.model.apiKey, models: saved.model.models, desktop: [] }];
+      providers = [{ id: "env", name: saved.model.providerName, baseURL: normalizeURL(saved.model.baseURL), protocol: "openai", apiKey: saved.model.apiKey, models: saved.model.models, desktop: [], ownerId: null }];
     }
     source = "app";
   } catch { /* Nothing saved yet: .env values stand. */ }
@@ -93,8 +104,8 @@ export function loadSettings() {
 }
 
 function ensureDefault() {
-  if (find(defaultRef)) return;
-  const first = providers.find((provider) => provider.models.length);
+  if (find(defaultRef)?.provider.ownerId === null) return;
+  const first = providers.find((provider) => provider.ownerId === null && provider.models.length);
   defaultRef = first ? modelRef(first.id, first.models[0]) : "";
 }
 
@@ -102,7 +113,7 @@ function persist() {
   fs.mkdirSync(config.dataDir, { recursive: true });
   // Write then rename, so a crash never leaves half a file. Readable only by you.
   const temp = `${settingsFile()}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef, voice }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef, personalDefaults, voice }, null, 2), { mode: 0o600 });
   fs.renameSync(temp, settingsFile());
   source = "app";
 }
@@ -117,26 +128,31 @@ function find(ref: string | undefined): ModelTarget | null {
   return provider?.models.includes(model) ? { provider, model, ref } : null;
 }
 
+/** Whether a person's Bots may use this provider: shared ones, and their own. */
+export const usable = (provider: Provider, personId = HOST) => provider.ownerId === null || provider.ownerId === personId;
+
 /**
- * What a Bot's model setting means right now. Accepts refs and plain model ids from
- * before multiple providers (matched to the first provider offering that model).
- * Falls back to the default model unless `fallback` is false.
+ * What a Bot's model setting means right now, for a Bot owned by `ownerId`. Accepts refs and
+ * plain model ids from before multiple providers (matched to the first provider offering
+ * that model). Someone else's provider doesn't count. Falls back to the owner's default
+ * (or the shared default) unless `fallback` is false.
  */
-export function resolveModel(requested: string | undefined, { fallback = true } = {}): ModelTarget | null {
+export function resolveModel(requested: string | undefined, { fallback = true, ownerId = HOST }: { fallback?: boolean; ownerId?: string } = {}): ModelTarget | null {
   const exact = find(requested);
-  if (exact) return exact;
+  if (exact && usable(exact.provider, ownerId)) return exact;
   if (requested && !requested.includes(SEP)) {
-    const provider = providers.find((item) => item.models.includes(requested));
+    const provider = providers.find((item) => usable(item, ownerId) && item.models.includes(requested));
     if (provider) return { provider, model: requested, ref: modelRef(provider.id, requested) };
   }
-  return fallback ? find(defaultRef) : null;
+  return fallback ? find(defaultModel(ownerId)) : null;
 }
 
-export const modelConfigured = () => Boolean(find(defaultRef));
+export const modelConfigured = (personId = HOST) => Boolean(find(defaultModel(personId)));
 
-export function modelOptions(): ModelOption[] {
-  return providers.flatMap((provider) => provider.models.map((model) => ({
-    ref: modelRef(provider.id, model), providerId: provider.id, providerName: provider.name, model, desktop: provider.desktop.includes(model),
+/** The models a person's Bots can use: shared ones, then their own. */
+export function modelOptions(personId = HOST): ModelOption[] {
+  return providers.filter((provider) => usable(provider, personId)).flatMap((provider) => provider.models.map((model) => ({
+    ref: modelRef(provider.id, model), providerId: provider.id, providerName: provider.name, model, desktop: provider.desktop.includes(model), ownerId: provider.ownerId,
   })));
 }
 
@@ -172,25 +188,34 @@ export function voiceProvider(): Provider | null {
   return provider && provider.protocol === "openai" ? provider : null;
 }
 
-export function defaultModel() {
-  return defaultRef;
+/** A person's default for new Bots: their own pick if it's still usable, else the shared default. */
+export function defaultModel(personId = HOST) {
+  if (personId === HOST) return defaultRef;
+  const own = find(personalDefaults[personId]);
+  return own && usable(own.provider, personId) ? own.ref : defaultRef;
 }
 
-export function settingsView(): SettingsView {
+/** Settings as this person sees them: shared providers and their own (keys never leave). */
+export function settingsView(personId = HOST): SettingsView {
   return {
-    providers: providers.map(({ apiKey, ...provider }) => ({ ...provider, keySet: Boolean(apiKey), keyHint: apiKey.length >= 12 ? apiKey.slice(-4) : null })),
-    defaultModel: defaultRef,
-    configured: modelConfigured(),
+    providers: providers.filter((provider) => usable(provider, personId))
+      .map(({ apiKey, ...provider }) => ({ ...provider, keySet: Boolean(apiKey), keyHint: apiKey.length >= 12 ? apiKey.slice(-4) : null })),
+    defaultModel: defaultModel(personId),
+    configured: modelConfigured(personId),
     source,
     voice,
+    host: personId === HOST,
   };
 }
+
+/** Whether this person may change this provider: their own, or (the host) a shared one. */
+export const canEditProvider = (provider: Provider, personId: string) => provider.ownerId === personId || (provider.ownerId === null && personId === HOST);
 
 /**
  * Adds a provider (id null) or updates one. A blank key keeps the saved one only while
  * the address stays the same: a key is never sent anywhere but where it was saved for.
  */
-export function saveProvider(id: string | null, input: ProviderInput) {
+export function saveProvider(id: string | null, input: ProviderInput, ownerId: string | null = null) {
   const existing = id ? providers.find((item) => item.id === id) : undefined;
   if (id && !existing) throw new Error("That provider no longer exists.");
   const baseURL = normalizeURL(input.baseURL);
@@ -211,6 +236,7 @@ export function saveProvider(id: string | null, input: ProviderInput) {
     apiKey: input.apiKey?.trim() || (keepKey ? existing.apiKey : ""),
     models,
     desktop: models.filter((model) => desktop.includes(model)),
+    ownerId: existing ? existing.ownerId : ownerId,
   };
   providers = existing ? providers.map((item) => (item.id === next.id ? next : item)) : [...providers, next];
   ensureDefault();
@@ -224,9 +250,14 @@ export function deleteProvider(id: string) {
   persist();
 }
 
-export function setDefaultModel(ref: string) {
-  if (!find(ref)) throw new Error("That model isn't configured.");
-  defaultRef = ref;
+/** Sets a person's default for new Bots (the host's is the shared default everyone falls back to). */
+export function setDefaultModel(ref: string, personId = HOST) {
+  const target = find(ref);
+  if (!target || !usable(target.provider, personId)) throw new Error("That model isn't configured.");
+  if (personId === HOST) {
+    if (target.provider.ownerId !== null) throw new Error("The shared default has to be a shared model.");
+    defaultRef = ref;
+  } else personalDefaults[personId] = ref;
   persist();
 }
 

@@ -84,7 +84,8 @@ const reconnectMessage = (account: Account) =>
 
 export type SignInStatus = { status: "pending" | "done" | "error"; error?: string; account?: Account };
 
-type Session = SignInStatus & { id: string; expiresAt: number; close: () => void; finish?: (url: URL) => Promise<void> };
+/** A sign-in in progress, and whose: the account it makes is theirs. */
+type Session = SignInStatus & { id: string; personId: string; expiresAt: number; close: () => void; finish?: (url: URL) => Promise<void> };
 
 const pkce = () => {
   const verifier = randomBytes(32).toString("base64url");
@@ -101,15 +102,15 @@ export class SignIns {
 
   constructor(private accounts: Accounts, private tokens: Tokens, private fetchImpl: Fetch = fetch) {}
 
-  status(id: string): SignInStatus | null {
+  status(id: string, personId?: string): SignInStatus | null {
     const session = this.sessions.get(id);
-    if (!session) return null;
+    if (!session || (personId && session.personId !== personId)) return null;
     return { status: session.status, error: session.error, account: session.account };
   }
 
-  private open(close: () => void) {
+  private open(close: () => void, personId: string) {
     for (const [id, old] of this.sessions) if (old.expiresAt < Date.now()) { old.close(); this.sessions.delete(id); }
-    const session: Session = { id: randomUUID(), status: "pending", expiresAt: Date.now() + SESSION_MS, close };
+    const session: Session = { id: randomUUID(), personId, status: "pending", expiresAt: Date.now() + SESSION_MS, close };
     this.sessions.set(session.id, session);
     const timer = setTimeout(() => {
       if (session.status === "pending") { session.status = "error"; session.error = "The sign-in timed out. Start again."; }
@@ -126,14 +127,14 @@ export class SignIns {
   }
 
   // ---------- Google ----------
-  async startGoogle(app: { clientId: string; clientSecret: string }): Promise<{ id: string; url: string; redirectUri: string }> {
+  async startGoogle(app: { clientId: string; clientSecret: string }, personId = "owner"): Promise<{ id: string; url: string; redirectUri: string }> {
     const { verifier, challenge } = pkce();
     const state = randomBytes(16).toString("base64url");
     const server = http.createServer();
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
     server.unref();
     const redirectUri = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-    const session = this.open(() => server.close());
+    const session = this.open(() => server.close(), personId);
 
     session.finish = async (url: URL) => {
       if (session.status !== "pending") return;
@@ -151,7 +152,7 @@ export class SignIns {
       if (typeof answer.body.refresh_token !== "string") throw new Error("Google didn't send a lasting sign-in. Remove Colony's access at myaccount.google.com/permissions and try again.");
       const accessToken = String(answer.body.access_token);
       const profile = await callApi<{ emailAddress: string }>(this.fetchImpl, async () => accessToken, "https://gmail.googleapis.com/gmail/v1/users/me/profile");
-      const account = this.accounts.connect({ kind: "google", label: "Gmail", email: profile.emailAddress },
+      const account = this.accounts.connect({ kind: "google", label: "Gmail", email: profile.emailAddress, personId: session.personId },
         { kind: "google", clientId: app.clientId, clientSecret: app.clientSecret, refreshToken: answer.body.refresh_token, scopes });
       this.tokens.seed(account.id, accessToken, Number(answer.body.expires_in ?? 3600));
       session.status = "done";
@@ -177,9 +178,9 @@ export class SignIns {
   }
 
   /** From a phone: the address Google sent the browser to (which didn't load) carries the code. */
-  async finishGoogle(id: string, pasted: string): Promise<SignInStatus> {
+  async finishGoogle(id: string, pasted: string, personId?: string): Promise<SignInStatus> {
     const session = this.sessions.get(id);
-    if (!session?.finish) throw new Error("That sign-in has ended. Start again.");
+    if (!session?.finish || (personId && session.personId !== personId)) throw new Error("That sign-in has ended. Start again.");
     let url: URL;
     try { url = new URL(pasted.trim()); } catch { throw new Error("Paste the whole address from the address bar, starting with http://127.0.0.1."); }
     try { await session.finish(url); } catch (error) {
@@ -191,14 +192,14 @@ export class SignIns {
   }
 
   // ---------- Microsoft ----------
-  async startMicrosoft(app: { clientId: string }): Promise<{ id: string; userCode: string; verificationUri: string; expiresIn: number }> {
+  async startMicrosoft(app: { clientId: string }, personId = "owner"): Promise<{ id: string; userCode: string; verificationUri: string; expiresIn: number }> {
     const start = await postForm(this.fetchImpl, `${MICROSOFT.base}/devicecode`, { client_id: app.clientId, scope: MICROSOFT.scopes });
     if (!start.ok) throw new Error(`Microsoft didn't start the sign-in: ${start.error}`);
     const deviceCode = String(start.body.device_code);
     let interval = Number(start.body.interval ?? 5);
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const session = this.open(() => { stopped = true; clearTimeout(timer); });
+    const session = this.open(() => { stopped = true; clearTimeout(timer); }, personId);
 
     const poll = async () => {
       if (stopped) return;
@@ -219,7 +220,7 @@ export class SignIns {
         }
         const accessToken = String(answer.body.access_token);
         const me = await callApi<{ mail?: string | null; userPrincipalName?: string }>(this.fetchImpl, async () => accessToken, "https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName");
-        const account = this.accounts.connect({ kind: "microsoft", label: "Outlook", email: me.mail || me.userPrincipalName || "Outlook" },
+        const account = this.accounts.connect({ kind: "microsoft", label: "Outlook", email: me.mail || me.userPrincipalName || "Outlook", personId: session.personId },
           { kind: "microsoft", clientId: app.clientId, refreshToken: String(answer.body.refresh_token ?? "") });
         this.tokens.seed(account.id, accessToken, Number(answer.body.expires_in ?? 3600));
         session.status = "done";

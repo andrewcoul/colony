@@ -74,6 +74,58 @@ async function until<T>(read: () => T | undefined | null | false, timeoutMs = 30
 afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
 describe("the family", () => {
+  test("everyone can bring their own model key; only their Bots use it, and the shared models stay the host's", async () => {
+    const { andrew, marija, luke, ivy } = await family();
+    const added = await marija("POST", "/settings/providers", { name: "Marija's OpenAI", baseURL: "http://marija.invalid/v1", apiKey: "sk-marija-000000000", models: ["gpt-own"] });
+    expect(added.status).toBe(201);
+    const own = added.json.providers.find((provider: { name: string }) => provider.name === "Marija's OpenAI");
+    expect(own.ownerId).not.toBeNull();
+    // Andrew doesn't see it, can't use it, can't change it.
+    expect((await andrew("GET", "/settings")).json.providers.map((provider: { name: string }) => provider.name)).not.toContain("Marija's OpenAI");
+    expect((await andrew("PATCH", `/bots/${luke.id}`, { model: `${own.id}::gpt-own` })).status).toBe(400);
+    expect((await andrew("DELETE", `/settings/providers/${own.id}`)).status).toBe(403);
+    // Marija's Bot can, and it becomes her default.
+    expect((await marija("PATCH", `/bots/${ivy.id}`, { model: `${own.id}::gpt-own` })).json.model).toBe(`${own.id}::gpt-own`);
+    expect((await marija("PUT", "/settings/default-model", { model: `${own.id}::gpt-own` })).json.defaultModel).toBe(`${own.id}::gpt-own`);
+    expect((await andrew("GET", "/settings")).json.defaultModel).toBe("env::mock-model");
+    // Shared models are added by the host only.
+    expect((await marija("POST", "/settings/providers", { name: "Sneaky", baseURL: "http://x.invalid/v1", models: ["m"], shared: true })).status).toBe(403);
+    await marija("DELETE", `/settings/providers/${own.id}`);
+  });
+
+  test("accounts are whoever connected them: only their Bots can use them", async () => {
+    const db = openDb(":memory:");
+    const events = new EventLog(db);
+    const store = new Store(db, events);
+    const gate = new ApprovalGate(store);
+    const runner = new AgentRunner(store, events, gate, () => coreTools, () => model);
+    const { Accounts } = await import("./integrations/accounts.js");
+    const { Integrations } = await import("./integrations/index.js");
+    const { Tokens } = await import("./integrations/oauth.js");
+    const { Vaults } = await import("./integrations/onepassword.js");
+    const accounts = new Accounts(db, events, path.join(dataDir, `accounts-${Math.random()}.json`));
+    const vault = { vaults: async () => [{ id: "v1", title: "Family" }] } as never;
+    const integrations = new Integrations(accounts, new Tokens(accounts), new Vaults(accounts, async () => vault));
+    const api = createApi({ store, events, gate, runner, integrations, connectVault: async () => vault });
+    const as = (login: string) => async (method: string, url: string, body?: unknown) => {
+      const response = await api.request(url, { method, headers: { "Content-Type": "application/json", "Tailscale-User-Login": login }, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { status: response.status, json: (response.headers.get("content-type")?.includes("json") ? await response.json() : null) as any };
+    };
+    const andrew = as("andrew@example.com");
+    const marija = as("marija@example.com");
+    const luke = (await andrew("POST", "/bots", { name: "Luke", model: "env::mock-model" })).json;
+    const ivy = (await marija("POST", "/bots", { name: "Ivy", model: "env::mock-model" })).json;
+    const vaultAccount = (await marija("POST", "/accounts/onepassword", { token: "ops_marija" })).json;
+    expect(vaultAccount.personId).not.toBe("owner");
+    // Only Marija sees it, and only her Bots can be given it.
+    expect((await andrew("GET", "/accounts")).json.accounts).toEqual([]);
+    expect((await marija("GET", "/accounts")).json.accounts.map((account: { id: string }) => account.id)).toEqual([vaultAccount.id]);
+    expect((await andrew("PUT", `/bots/${luke.id}/access/${vaultAccount.id}`, { vault: "use" })).status).toBe(403);
+    expect((await marija("PUT", `/bots/${ivy.id}/access/${vaultAccount.id}`, { vault: "use" })).status).toBe(200);
+    expect((await andrew("DELETE", `/accounts/${vaultAccount.id}`)).status).toBe(403);
+    expect((await andrew("GET", "/state")).json.accounts).toEqual([]);
+  });
+
   test("the first login is the host's; anyone else is family straight away", async () => {
     const { as } = setup();
     expect((await as("andrew@example.com")("GET", "/me")).json.me).toMatchObject({ id: "owner", role: "host", name: "Andrew" });
@@ -96,8 +148,8 @@ describe("the family", () => {
     expect((await andrew("POST", `/chats/${ivy.chatId}/messages`, { text: "hi" })).status).toBe(403);
     expect((await andrew("PATCH", `/bots/${ivy.id}`, { name: "Mine" })).status).toBe(403);
     expect((await marija("POST", `/bots/${luke.id}/routines`, { title: "x", prompt: "y", schedule: { type: "interval", minutes: 60 } })).status).toBe(403);
-    // Server settings stay the host's.
-    expect((await marija("PUT", "/settings/default-model", { model: "env::mock-model" })).status).toBe(403);
+    // What the whole Colony shares stays the host's.
+    expect((await marija("PUT", "/settings/voice", { allowCalls: false })).status).toBe(403);
     await until(() => store.listMessages(ivy.chatId).length > 0);
   });
 

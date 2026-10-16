@@ -187,6 +187,8 @@ export type Routine = {
 
 /** A model a Bot can use: which provider, and which of its models. */
 export type ModelOption = {
+  /** Null: a shared model (the host's key); otherwise the person whose key it is. */
+  ownerId: string | null;
   ref: string;
   providerId: string;
   providerName: string;
@@ -208,6 +210,8 @@ export type Account = {
   email: string;
   /** "needs_reauth" when its sign-in stopped working and you need to reconnect it. */
   status: "ok" | "needs_reauth";
+  /** Who connected it: only their Bots can use it, and only they approve what it sends. */
+  personId: string;
   createdAt: number;
 };
 

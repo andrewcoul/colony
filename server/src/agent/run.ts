@@ -288,7 +288,8 @@ export class AgentRunner {
       options: { hiddenPrompt: options.hiddenPrompt, depth: options.depth },
     });
 
-    const target = resolveModel(bot.model);
+    // Shared models or the owner's own key; never someone else's.
+    const target = resolveModel(bot.model, { ownerId: bot.ownerId });
     try {
       if (!target) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
       const bots = this.store.listBots();
