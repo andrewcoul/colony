@@ -22,8 +22,6 @@ export type Bot = {
   /** Short description of what the Bot is doing right now, shown on hover. */
   activity: string | null;
   chatId: string;
-  /** Who it belongs to: whoever made it (or was given it). Only they see its chat, memory and routines. */
-  ownerId: string;
   createdAt: number;
 };
 
@@ -57,20 +55,7 @@ export type Chat = {
   lastAuthor: string | null;
   updatedAt: number;
   unread: number;
-  /** Who it belongs to: a Bot's owner for its chat, whoever started a topic. */
-  ownerId: string;
-  /** Topics: the people (besides its owner) who can see and post in it, or everyone. */
-  peopleIds: string[];
-  everyone: boolean;
 };
-
-/**
- * Someone in the family, known by their Tailscale login (no Colony accounts). The host runs
- * Colony on their PC and looks after what's shared; everyone else is family. Each person's
- * Bots are their own.
- */
-export type PersonRole = "host" | "family";
-export type Person = { id: string; login: string | null; name: string; color: string; role: PersonRole; createdAt: number };
 
 /** interrupted: Colony restarted while the step was running (see the run's restart marker). */
 export type StepStatus = "running" | "done" | "error" | "waiting" | "denied" | "interrupted";
@@ -88,8 +73,7 @@ export type Step = {
 };
 
 /** A folder topics are filed in. */
-/** A person's own way of filing their topics. */
-export type Folder = { id: string; title: string; position: number; ownerId: string; createdAt: number };
+export type Folder = { id: string; title: string; position: number; createdAt: number };
 
 /** A topic a Bot suggested starting; nothing exists until you tap Create. */
 export type TopicProposal = { title: string; icon: TopicIcon; brief: string; memberIds: string[]; folderId: string | null };
@@ -187,8 +171,6 @@ export type Routine = {
 
 /** A model a Bot can use: which provider, and which of its models. */
 export type ModelOption = {
-  /** Null: a shared model (the host's key); otherwise the person whose key it is. */
-  ownerId: string | null;
   ref: string;
   providerId: string;
   providerName: string;
@@ -210,8 +192,6 @@ export type Account = {
   email: string;
   /** "needs_reauth" when its sign-in stopped working and you need to reconnect it. */
   status: "ok" | "needs_reauth";
-  /** Who connected it: only their Bots can use it, and only they approve what it sends. */
-  personId: string;
   createdAt: number;
 };
 
@@ -235,62 +215,31 @@ export type Approval = {
   /** Exact command, recipient, or payload to show verbatim. */
   detail: string;
   reason: string;
-  /** Who must answer: the Bot's owner, or whoever owns the account or PC it would act on. */
-  approverId: string;
   status: ApprovalStatus;
   createdAt: number;
   resolvedAt: number | null;
 };
-/** What a tool asks for; the approver defaults to the Bot's owner. */
-export type ApprovalRequest = Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt" | "approverId"> & { approverId?: string };
+/** What a tool asks for. */
+export type ApprovalRequest = Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt">;
 
 /** What a PC lets Bots do, switched on in its desktop app (and enforced there). */
 export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk";
-/**
- * Someone's own PC, lent to Bots through the Colony desktop app.
- * `online`: its desktop app is connected now.
- */
-/**
- * A Bot offered from one person to another. Nothing changes until the recipient accepts; the
- * giver can cancel while it waits. `keepMemory` false: the Bot starts fresh.
- */
-export type BotTransfer = {
-  id: string;
-  botId: string;
-  fromId: string;
-  toId: string;
-  keepMemory: boolean;
-  status: "pending" | "accepted" | "declined" | "cancelled";
-  /** What the recipient sees of the Bot before it's theirs. */
-  bot: { name: string; title: string; faceSeed: string };
-  createdAt: number;
-};
 
 /** A model's price in US dollars per million tokens: in, out, and cached in (falls back to in). */
 export type Price = { input: number; output: number; cached?: number };
 
-/** Your spending: this month by Bot, split into your own keys and shared ones, and the last 30 days. Dollars. */
+/** Your spending: this month by Bot, and the last 30 days. Dollars. */
 export type Spending = {
   month: string;
-  own: number;
-  shared: number;
-  /** The host's monthly limit on your use of shared keys, if they set one. */
-  limit: number | null;
-  hostName: string;
-  bots: { botId: string; name: string; own: number; shared: number; tokens: number }[];
-  days: { date: string; own: number; shared: number }[];
+  total: number;
+  bots: { botId: string; name: string; cost: number; tokens: number }[];
+  days: { date: string; cost: number }[];
   /** Models used this month that have no price, so their tokens count but cost nothing here. */
   unpriced: string[];
 };
 
-/** The host's view of shared keys this month: by person, then by Bot, with each person's limit. */
-export type SharedSpending = {
-  month: string;
-  total: number;
-  people: { personId: string; cost: number; limit: number | null; bots: { botId: string; name: string; cost: number }[] }[];
-};
-
-export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number; personId: string };
+/** Your PC, lent to Bots through the Colony desktop app. `online`: its desktop app is connected now. */
+export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number };
 
 export type AppState = {
   bots: Bot[];
@@ -307,13 +256,8 @@ export type AppState = {
   accounts: Account[];
   /** Every Bot's access to every account it has been given. */
   access: Access[];
-  /** PCs lent through the desktop app: any family Bot may use them, within each PC's switches. */
+  /** PCs lent through the desktop app: Bots may use them, within each PC's switches. */
   nodes: PcNode[];
-  /** The household, and who's asking. */
-  people: Person[];
-  me: Person;
-  /** Bots offered to you, or by you, waiting for an answer. */
-  transfers: BotTransfer[];
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };
@@ -336,9 +280,7 @@ export type ServerEvent =
   | { type: "routine.upserted"; routine: Routine }
   | { type: "routine.deleted"; routineId: string }
   | { type: "accounts.updated"; accounts: Account[]; access: Access[] }
-  | { type: "nodes.updated"; nodes: PcNode[] }
-  | { type: "transfer.upserted"; transfer: BotTransfer }
-  | { type: "people.updated"; people: Person[] };
+  | { type: "nodes.updated"; nodes: PcNode[] };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */
 export type EphemeralEvent =

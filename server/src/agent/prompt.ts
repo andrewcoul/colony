@@ -1,9 +1,8 @@
 import type { ImagePart, ModelMessage } from "ai";
 import * as files from "../files.js";
 import { describeSchedule } from "../shared/schedule.js";
-import { authorOf, isHost, isHuman, isShared, peopleIn, readAbout, readHousehold } from "../people.js";
+import { isHuman } from "../people.js";
 import type { Bot, Chat, Message, Routine } from "../shared/types.js";
-import type { Store } from "../store.js";
 import type { DesktopMode } from "./desktopTools.js";
 
 function section(title: string, body: string) {
@@ -15,7 +14,7 @@ function bullets(entries: string[]) {
 }
 
 /** The system prompt: identity, persona, memory, skills, then the working rules. */
-export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Routine[] = [], team: Bot[] = [], desktop: DesktopMode | null = null, accounts = "", folderName?: (id: string) => string | undefined, people = "") {
+export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Routine[] = [], team: Bot[] = [], desktop: DesktopMode | null = null, accounts = "", folderName?: (id: string) => string | undefined) {
   const memory = files.memoryUsage(bot.id, "memory");
   const user = files.memoryUsage(bot.id, "user");
   const skills = files.listSkills(bot.id);
@@ -42,7 +41,6 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
     section(`Your memory (MEMORY.md, ${memory.used}/${memory.budget} chars)`, bullets(files.readEntries(bot.id, "memory"))),
     section("Your skills (read one with skill_read before following it)", skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")),
     section("This topic", topic),
-    section("People here", people),
     section("Private thread", thread),
     section("Your teammates (message one with message_bot)", team.map((mate) =>
       `- ${mate.name}${mate.title ? `, ${mate.title}` : ""}${mate.description ? `: ${mate.description.replace(/\s+/g, " ").slice(0, 160)}` : ""}`).join("\n")),
@@ -98,7 +96,7 @@ export function stripNotes(text: string) {
  * Converts the chat transcript into model messages from this Bot's point of view.
  * `photos` turns a message's image attachments into image parts (only for models that can see).
  */
-export function historyFor(bot: Bot, messages: Message[], names: Map<string, string>, photos?: (message: Message) => ImagePart[], speakers?: Map<string, string>): ModelMessage[] {
+export function historyFor(bot: Bot, messages: Message[], names: Map<string, string>, photos?: (message: Message) => ImagePart[]): ModelMessage[] {
   const history: ModelMessage[] = [];
   for (const message of messages) {
     if (message.status === "streaming" && message.author === bot.id) continue;
@@ -115,9 +113,7 @@ export function historyFor(bot: Bot, messages: Message[], names: Map<string, str
     } else if (isHuman(message.author)) {
       const files = message.attachments?.length ? `\n[Attached: ${message.attachments.map((file) => `${file.name} (${file.mime})`).join(", ")}. Read text and PDFs with chat_files.]` : "";
       const images = photos?.(message) ?? [];
-      // In a topic with several people, each message says who wrote it.
-      const speaker = speakers ? `[${speakers.get(message.author) ?? "Someone"}]: ` : "";
-      const content = (text + files).trim() && speaker + (text + files).trim();
+      const content = (text + files).trim();
       if (images.length) history.push({ role: "user", content: [{ type: "text", text: content || "(photo)" }, ...images] });
       else if (content) history.push({ role: "user", content });
     } else if (text) {
@@ -130,21 +126,3 @@ export function historyFor(bot: Bot, messages: Message[], names: Map<string, str
   return history;
 }
 
-/**
- * Who's in a topic shared with people, who wrote last, and what Bots know about them (their
- * USER.md and the household's HOUSEHOLD.md). Empty for chats only the owner sees.
- */
-export function peopleNote(store: Store, chat: Chat) {
-  if (!isShared(chat)) return "";
-  const people = peopleIn(store, chat);
-  const last = store.listMessages(chat.id, { limit: 20 }).reverse().find((message) => isHuman(message.author));
-  const sender = last ? people.find((person) => authorOf(person) === last.author) : undefined;
-  const about = sender && !isHost(sender) ? readAbout(sender.id) : "";
-  const household = readHousehold();
-  return [
-    `This topic is shared: ${people.map((person) => `${person.name}${isHost(person) ? " (who runs Colony)" : ""}`).join(", ")}. Each person's messages start with "[Name]: ". Answer whoever wrote last, by name when it helps; a message that @mentions only another person is for them, not you.`,
-    sender ? `The latest message is from ${sender.name}.` : "",
-    about ? `About ${sender!.name} (their USER.md):\n${about}` : "",
-    household ? `About the household (HOUSEHOLD.md):\n${household}` : "",
-  ].filter(Boolean).join("\n\n");
-}

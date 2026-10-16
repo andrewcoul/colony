@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Artifact, Bot, BotTransfer, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, PcNode, Person, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, PcNode, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -23,13 +23,8 @@ export type LiveState = {
   /** Connected mail, calendar and 1Password accounts, and what each Bot may do with them. */
   accounts: Account[];
   access: Access[];
-  /** PCs lent through the desktop app, and which Bots may use them. */
+  /** PCs lent through the desktop app. */
   nodes: PcNode[];
-  /** The household, and who you are in it (null until loaded). */
-  people: Person[];
-  me: Person | null;
-  /** Bots offered to you, or by you, waiting for an answer. */
-  transfers: BotTransfer[];
   /** Bots ringing you right now, by call id. */
   ringing: Record<string, RingingCall>;
   error: string | null;
@@ -37,7 +32,7 @@ export type LiveState = {
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], people: [], me: null, transfers: [], ringing: {}, error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -93,8 +88,6 @@ function apply(event: ServerEvent) {
     case "settings.updated": return set({ models: event.models, defaultModel: event.defaultModel, configured: event.configured });
     case "accounts.updated": return set({ accounts: event.accounts, access: event.access });
     case "nodes.updated": return set({ nodes: event.nodes });
-    case "transfer.upserted": return set({ transfers: [...state.transfers.filter((item) => item.id !== event.transfer.id), ...(event.transfer.status === "pending" ? [event.transfer] : [])] });
-    case "people.updated": return set({ people: event.people, me: event.people.find((person) => person.id === state.me?.id) ?? state.me });
   }
 }
 
@@ -130,7 +123,6 @@ async function loadState() {
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
     accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [],
-    people: snapshot.people ?? [], me: snapshot.me ?? null, transfers: snapshot.transfers ?? [],
   });
 }
 
@@ -197,15 +189,6 @@ export async function startLive() {
     setTimeout(startLive, 3000);
   }
 }
-
-/** The person who runs this Colony (the host) has this id. */
-export const HOST_ID = "owner";
-/** How your own messages are signed: the host as "user", everyone else as "person:<id>". */
-export const myAuthor = (me: Person | null) => (!me || me.id === HOST_ID ? "user" : `person:${me.id}`);
-/** Your id (the host's until the snapshot says otherwise). */
-export const useMyId = () => useLive((s) => s.me?.id ?? HOST_ID);
-/** The host looks after what's shared: the server, shared models, accounts, updates. */
-export const useIsHost = () => useLive((s) => (s.me?.id ?? HOST_ID) === HOST_ID);
 
 /** Identifies this window to the server, which skips notifications for the chat on screen. */
 const clientId = Math.random().toString(36).slice(2) + Date.now().toString(36);

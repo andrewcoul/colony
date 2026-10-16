@@ -6,11 +6,10 @@ import { pending, useUpdates } from "../lib/updates";
 import type { Bot, Chat, Folder, Presence } from "@shared/types";
 import { api } from "../lib/api";
 import { shortTime } from "../lib/dates";
-import { useIsHost, useLive, useMyId } from "../lib/live";
+import { useLive } from "../lib/live";
 import { rise, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
-import { TransferOffers } from "./GiveBot";
 import { LogoMark, type LogoMood } from "./Logo";
 import { NotificationsMenu } from "./NotificationsMenu";
 import { TopicTile } from "./TopicIcon";
@@ -46,10 +45,6 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
   phone: boolean;
 }) {
   const configured = useLive((s) => s.configured);
-  // Your Bots are yours; other people's only appear inside topics you share.
-  const myId = useMyId();
-  const host = useIsHost();
-  const myName = useLive((s) => s.me?.name ?? "");
   const botMap = useLive((s) => s.bots);
   const chatMap = useLive((s) => s.chats);
   const folderMap = useLive((s) => s.folders);
@@ -68,14 +63,14 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
     const needle = query.trim().toLowerCase();
     const match = (text: string) => !needle || text.toLowerCase().includes(needle);
     const recency = (bot: Bot) => chatMap[bot.chatId]?.updatedAt ?? bot.createdAt;
-    const all = Object.values(botMap).filter((bot) => bot.ownerId === myId).sort((a, b) => recency(b) - recency(a));
+    const all = Object.values(botMap).sort((a, b) => recency(b) - recency(a));
     return {
       bots: all.filter((bot) => match(bot.name) || match(bot.title)),
       needsYou: all.filter((bot) => bot.presence === "waiting" || bot.presence === "blocked"),
       topics: Object.values(chatMap).filter((chat) => chat.kind === "topic" && !chat.archivedAt && match(chat.title)).sort((a, b) => b.updatedAt - a.updatedAt),
       archived: Object.values(chatMap).filter((chat) => chat.kind === "topic" && chat.archivedAt && match(chat.title)).sort((a, b) => b.updatedAt - a.updatedAt),
     };
-  }, [botMap, chatMap, query, myId]);
+  }, [botMap, chatMap, query]);
 
   return (
     <aside aria-label="Bots" className={cn("flex h-full flex-col bg-surface", phone ? "w-full" : "w-[290px] shrink-0 border-r border-rule")}>
@@ -174,20 +169,18 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
 
         {(!phone || tab === "bots") && (
           <>
-            <TransferOffers />
             {bots.length === 0 && !query ? (
               <m.div variants={rise} initial="hidden" animate="shown" className="mb-2 flex flex-col gap-3 rounded-2xl border border-lilac/25 bg-lilac/8 p-4">
                 <span className="flex flex-col gap-0.5">
-                  <strong className="text-[15px]">{host ? "Make your first Bot" : `Welcome${myName ? `, ${myName}` : ""}`}</strong>
-                  <span className="text-meta text-soft">{host ? "A teammate that remembers, works on its own computer, and asks before anything leaves your PC." : "This is your Colony too. Make a Bot of your own: only you see its chat, memory and routines."}</span>
+                  <strong className="text-[15px]">Make your first Bot</strong>
+                  <span className="text-meta text-soft">A teammate that remembers, works on its own computer, and asks before anything leaves your PC.</span>
                 </span>
                 <span className="flex flex-wrap gap-2">
                   <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />Make my first Bot</Button>
-                  {!host && <Button variant="outline" size="pill" onClick={onSettings}>Add my key</Button>}
                 </span>
               </m.div>
             ) : (
-              <h2 className="m-0 px-2.5 pb-1.5 text-meta font-normal text-muted">{host ? "Bots" : "Your Bots"}</h2>
+              <h2 className="m-0 px-2.5 pb-1.5 text-meta font-normal text-muted">Bots</h2>
             )}
             {bots.length === 0 && query && <p className="px-2.5 py-6 text-label leading-relaxed text-muted">No Bots match.</p>}
             {bots.map((bot) => (
@@ -198,7 +191,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
 
         {(!phone || tab === "topics") && (
           <TopicsSection topics={topics} archived={archived} folders={folderMap} bots={botMap} activeChatId={activeChatId}
-            onOpen={onOpen} onNew={onNewTopic} myId={myId} phone={phone} searching={Boolean(query)} />
+            onOpen={onOpen} onNew={onNewTopic} phone={phone} searching={Boolean(query)} />
         )}
       </nav>
     </aside>
@@ -255,7 +248,7 @@ function BotRow({ bot, chat, active, onOpen }: { bot: Bot; chat: Chat | undefine
  * Topics, filed in folders (or grouped by Bot). Folders fold away and remember it; on desktop a
  * topic can be dragged onto a folder to file it. Archived topics wait at the bottom.
  */
-function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, onNew, phone, searching, myId }: {
+function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, onNew, phone, searching }: {
   topics: Chat[];
   archived: Chat[];
   folders: Record<string, Folder>;
@@ -265,8 +258,6 @@ function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, 
   onNew: () => void;
   phone: boolean;
   searching: boolean;
-  /** Topics other people started (and shared with you) get their own section. */
-  myId: string;
 }) {
   const [grouping, setGrouping] = useStored<"folder" | "bot">("colony.topicGrouping", "folder");
   const [closed, setClosed] = useStored<string[]>("colony.closedFolders", []);
@@ -285,17 +276,14 @@ function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, 
         .sort((a, b) => a.title.localeCompare(b.title));
     }
     const ordered = Object.values(folders).sort((a, b) => a.position - b.position);
-    const mine = topics.filter((topic) => topic.ownerId === myId);
-    const shared = topics.filter((topic) => topic.ownerId !== myId);
-    const filed = ordered.map((folder) => ({ id: folder.id, title: folder.title, folderId: folder.id as string | null | undefined, items: mine.filter((topic) => topic.folderId === folder.id) }));
-    const loose = mine.filter((topic) => !topic.folderId || !folders[topic.folderId]);
+    const filed = ordered.map((folder) => ({ id: folder.id, title: folder.title, folderId: folder.id as string | null | undefined, items: topics.filter((topic) => topic.folderId === folder.id) }));
+    const loose = topics.filter((topic) => !topic.folderId || !folders[topic.folderId]);
     // Empty folders still show (so you can drop topics into them), except while searching.
     return [
-      ...(shared.length ? [{ id: "shared", title: "Shared with you", folderId: undefined, items: shared }] : []),
       ...filed.filter((section) => section.items.length || !searching),
-      ...(loose.length ? [{ id: "loose", title: ordered.length || shared.length ? "Not in a folder" : "", folderId: null, items: loose }] : []),
+      ...(loose.length ? [{ id: "loose", title: ordered.length ? "Not in a folder" : "", folderId: null, items: loose }] : []),
     ];
-  }, [grouping, topics, folders, bots, searching, myId]);
+  }, [grouping, topics, folders, bots, searching]);
 
   const drop = (folderId: string | null) => ({
     onDragOver: (event: React.DragEvent) => {
@@ -358,7 +346,7 @@ function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, 
                   exit={{ height: 0, opacity: 0, transition: { duration: 0.15 } }} transition={soft}>
                   {section.items.map((topic) => (
                     <TopicRow key={topic.id} topic={topic} bots={topic.memberIds.map((id) => bots[id]).filter(Boolean)} active={topic.id === activeChatId}
-                      onOpen={onOpen} draggable={!phone && topic.ownerId === myId} phone={phone} />
+                      onOpen={onOpen} draggable={!phone} phone={phone} />
                   ))}
                   {section.items.length === 0 && <p className="m-0 px-2.5 pb-1.5 pl-8 text-meta text-muted">{phone ? "Empty" : "Empty · drag a topic here"}</p>}
                 </m.div>

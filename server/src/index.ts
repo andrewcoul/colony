@@ -30,11 +30,12 @@ import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
 import { PushService } from "./push.js";
 import { RoutineScheduler } from "./routines.js";
-import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
+import { loadSettings, modelConfigured, ownerLogin, resolveModel, setOwnerLogin } from "./settings.js";
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
-import { identify } from "./people.js";
+import { foldHousehold } from "./people.js";
+import { removeBotFolder } from "./files.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -58,15 +59,26 @@ const store = new Store(db, events);
 // Turns that were running when Colony stopped are resumed once the runner exists (below).
 const resumable = store.recoverAfterRestart(config.limits.turnTimeoutMs);
 loadSettings();
+// Colony is single-user: the family build's host login is yours, and everyone else's things go.
+if (!ownerLogin()) {
+  const host = db.prepare("SELECT login FROM people WHERE id = 'owner'").get() as { login: string | null } | undefined;
+  if (host?.login) setOwnerLogin(host.login);
+}
+const othersBots = store.forgetOthers();
+for (const botId of othersBots) removeBotFolder(botId);
+foldHousehold();
 // Bots from before multiple providers stored a plain model id; point them at its provider.
 for (const bot of store.listBots()) {
-  const target = bot.model.includes("::") ? null : resolveModel(bot.model, { fallback: false, ownerId: bot.ownerId });
+  const target = bot.model.includes("::") ? null : resolveModel(bot.model, { fallback: false });
   if (target) store.updateBot(bot.id, { model: target.ref });
 }
 const gate = new ApprovalGate(store);
 const nodes = new NodeHub(store, events);
 const computer = new ComputerService(store, events);
-void computer.syncStates().then(() => computer.pruneOldImages());
+void computer.syncStates().then(async () => {
+  for (const botId of othersBots) await computer.remove(botId).catch(() => {});
+  await computer.pruneOldImages();
+});
 const browser = new BrowserService(computer);
 const desktop = new DesktopService(computer);
 const computerToolset = { ...computerTools(computer), ...browserTools(browser) };
@@ -92,7 +104,7 @@ const toolsFor = (botId: string): ToolRegistry => {
 const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop, {
   integrations,
   guidance: (botId) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)),
-  notify: (notification, personId) => void push.notify(notification, { force: true, personId }),
+  notify: (notification) => void push.notify(notification, { force: true }),
 });
 const calls = new Calls(store, events, runner);
 nodes.stopBot = (botId) => runner.stopBot(botId);
@@ -102,7 +114,7 @@ routines.start();
 const poller = new MailPoller(store, integrations, routines);
 poller.start();
 const push = new PushService(db, store, events);
-calls.notify = (notification, personId) => void push.notify(notification, { force: true, personId });
+calls.notify = (notification) => void push.notify(notification, { force: true });
 // Pick up the turns that were running when Colony stopped, in the replies they were writing.
 runner.resumeAll(resumable);
 accounts.onNeedsReauth = (account) => void push.notify({
@@ -110,10 +122,11 @@ accounts.onNeedsReauth = (account) => void push.notify({
   body: `${account.email} stopped working for your Bots. Reconnect it in Settings → Accounts.`,
   chatId: null,
   tag: `reauth-${account.id}`,
-}, { personId: account.personId });
+});
 
 const app = new Hono();
-app.use(tailnetOnly(config.allowedUsers));
+const owner = { allowed: config.allowedUsers, login: ownerLogin, claim: (login: string) => setOwnerLogin(login) };
+app.use(tailnetOnly(owner));
 const updater = new Updater({
   version: VERSION,
   home: config.home,
@@ -143,7 +156,7 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
 
 // The desktop viewer streams video over a WebSocket at /api/bots/<id>/screen/media. Hono doesn't
 // proxy upgrades, so pass them straight to the Bot's desktop, under the same access rules.
-const allowed = accessCheck(config.allowedUsers);
+const allowed = accessCheck(owner);
 /** Open Screen viewers per Bot; an open viewer keeps the computer awake. */
 const screenViewers = new Map<string, number>();
 const idle = new IdleStopper({
@@ -163,21 +176,20 @@ idle.start();
 server.on("upgrade", (request, socket, head) => {
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
   if (allowed(header)) { socket.destroy(); return; }
-  const person = identify(store, header("Tailscale-User-Login")?.toLowerCase());
-  // The desktop app lending a PC to the family's Bots: it's whoever's login lent it.
+  // The desktop app lending your PC to your Bots.
   if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
-    nodes.upgrade(request, socket, head, person);
+    nodes.upgrade(request, socket, head);
     return;
   }
   // A voice call with one of your Bots: /api/chats/<id>/call.
   if (/^\/api\/chats\/[\w-]+\/call(\?|$)/.test(request.url ?? "")) {
-    calls.upgrade(request, socket, head, person);
+    calls.upgrade(request, socket, head);
     return;
   }
-  // Watching a Bot's screen: its owner's.
+  // Watching a Bot's screen.
   const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
   const bot = match ? store.getBot(match[1]) : null;
-  if (!match || !bot?.computer || bot.ownerId !== person.id) { socket.destroy(); return; }
+  if (!match || !bot?.computer) { socket.destroy(); return; }
   void computer.runningDesktopPort(bot.id).then((port) => {
     if (!port) { socket.destroy(); return; }
     const upstream = net.connect(port, "127.0.0.1", () => {

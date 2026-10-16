@@ -6,10 +6,9 @@ import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settin
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
 import { VoiceSettingsEditor } from "./VoiceSettings";
 import { ThisPcSettings } from "./ThisPcSettings";
-import { FamilySettings, PersonAvatar } from "./People";
-import { SharedKeysPage, SpendingPage } from "./Spending";
+import { SpendingPage } from "./Spending";
 import { desktopApp } from "../lib/desktop";
-import { HOST_ID, useIsHost, useLive } from "../lib/live";
+import { useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
 import { pending, useUpdates, WEB_VERSION } from "../lib/updates";
 import { cn } from "../lib/utils";
@@ -46,23 +45,18 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const updates = useUpdates();
   const news = pending(updates);
   const [settings, setSettings] = useState<Settings | null>(null);
-  // A provider being edited, or a new one: your own, or (the host) shared with the family.
-  const [editing, setEditing] = useState<ProviderView | "new" | "new-shared" | null>(null);
+  // A provider being edited, or a new one.
+  const [editing, setEditing] = useState<ProviderView | "new" | null>(null);
   /** Connecting an account: which kind (null = pick one), or undefined when not connecting. */
   const [connecting, setConnecting] = useState<AccountKind | null | undefined>(undefined);
   const [error, setError] = useState("");
   const [voicing, setVoicing] = useState(false);
   const [lending, setLending] = useState(false);
-  const [peopleOpen, setPeopleOpen] = useState(false);
-  const [spendingOpen, setSpendingOpen] = useState<"mine" | "shared" | null>(null);
-  const people = useLive((s) => s.people);
-  // Shared models, voice, accounts and updates are the host's to look after.
-  const host = useIsHost();
-  const hostName = people.find((person) => person.id === HOST_ID)?.name ?? "The host";
+  const [spendingOpen, setSpendingOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setPeopleOpen(false); setSpendingOpen(null); setError("");
+    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setSpendingOpen(false); setError("");
     void api.settings().then(setSettings).catch(() => setError("Couldn't load settings."));
   }, [open]);
 
@@ -75,91 +69,56 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add your own key" : editing === "new-shared" ? "Add a shared provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "Family" : spendingOpen === "mine" ? "Spending" : spendingOpen === "shared" ? "Shared keys" : "Settings"}
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : spendingOpen ? "Spending" : "Settings"}
       description={undefined}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
-      ) : peopleOpen ? (
-        <FamilySettings onBack={() => setPeopleOpen(false)} />
-      ) : spendingOpen === "mine" ? (
-        <SpendingPage onBack={() => setSpendingOpen(null)} />
-      ) : spendingOpen === "shared" ? (
-        <SharedKeysPage onBack={() => setSpendingOpen(null)} />
+      ) : spendingOpen ? (
+        <SpendingPage onBack={() => setSpendingOpen(false)} />
       ) : lending ? (
         <ThisPcSettings onBack={() => setLending(false)} />
       ) : voicing && settings ? (
         <VoiceSettingsEditor settings={settings} onBack={() => setVoicing(false)} onSaved={setSettings} />
       ) : editing ? (
         <ProviderEditor
-          provider={editing === "new" || editing === "new-shared" ? null : editing}
-          shared={editing === "new-shared"}
+          provider={editing === "new" ? null : editing}
           onBack={() => setEditing(null)}
           onSaved={(next) => { setSettings(next); setEditing(null); }}
         />
       ) : (
         <div className="flex flex-col">
-          <SectionLabel>You</SectionLabel>
           {models.length > 0 && (
             <label className="mb-4 flex flex-col gap-1.5">
-              <span className="text-label text-muted">{host ? "Default model for new Bots (everyone's, unless they pick their own)" : "Your default model for new Bots"}</span>
+              <span className="text-label text-muted">Default model for new Bots</span>
               <select value={settings?.defaultModel ?? ""} onChange={(e) => void setDefault(e.target.value)}
                 className="h-[42px] w-full rounded-lg border border-rule bg-ground px-3 font-mono text-[13px] text-ink outline-none">
                 {groups.map((group) => (
-                  <optgroup key={group[0].providerId} label={`${group[0].ownerId ? "Yours" : host ? "Shared" : `Shared by ${hostName}`} · ${group[0].providerName}`}>
-                    {/* The shared default has to be a shared model. */}
-                    {group.map((item) => <option key={item.ref} value={item.ref} disabled={host && Boolean(item.ownerId)}>{item.model}</option>)}
+                  <optgroup key={group[0].providerId} label={group[0].providerName}>
+                    {group.map((item) => <option key={item.ref} value={item.ref}>{item.model}</option>)}
                   </optgroup>
                 ))}
               </select>
             </label>
           )}
-          <ProviderList title={host ? "Just yours" : "My models"} hint={host ? "Only your Bots use these." : `Only your Bots use these, on your key. Without one, they use ${hostName}'s shared models.`}
-            providers={settings?.providers.filter((provider) => provider.ownerId) ?? []}
-            empty={host ? null : "No key of your own yet."}
-            onEdit={setEditing} onAdd={() => setEditing("new")} addLabel="Add your own key" />
+          <ProviderList title="Models" hint="Each provider has its own key and the models you picked from it."
+            providers={settings?.providers ?? []}
+            empty="No models yet. Add a provider so your Bots can think."
+            onEdit={setEditing} onAdd={() => setEditing("new")} addLabel="Add provider" />
           <div className="flex flex-col gap-2">
-            <SettingsRow icon={<Coins size={16} />} title="Spending" onClick={() => setSpendingOpen("mine")}
-              detail={host ? "What your Bots cost this month, by Bot" : `What your Bots cost this month, on your keys and ${hostName}'s`} />
-            {(host || settings?.voice.providerId) && (
-              <SettingsRow icon={<AudioLines size={16} />} title="Calls" onClick={() => setVoicing(true)} disabled={!settings}
-                detail={settings?.voice.providerId
-                  ? settings.voice.allowCalls ? `Your Bots can ring you · quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Your Bots can't ring you"
-                  : "Off · pick a voice provider to talk to Bots"} />
-            )}
+            <SettingsRow icon={<Coins size={16} />} title="Spending" onClick={() => setSpendingOpen(true)}
+              detail="What your Bots cost this month, by Bot" />
+            <SettingsRow icon={<AudioLines size={16} />} title="Voice" onClick={() => setVoicing(true)} disabled={!settings}
+              detail={settings?.voice.providerId
+                ? settings.voice.allowCalls ? `Talk to your Bots · they can ring you · quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Talk to your Bots · they can't ring you"
+                : "Off · pick a voice provider to talk to Bots"} />
             {desktopApp?.node && (
               <SettingsRow icon={<Monitor size={16} />} title="This PC" onClick={() => setLending(true)}
-                detail="Lend this computer to the family's Bots: browser, screen, terminal, files" />
+                detail="Lend this computer to your Bots: browser, screen, terminal, files" />
             )}
           </div>
           <AccountsList onConnect={setConnecting} />
-
-          <SectionLabel>This Colony</SectionLabel>
-          {host ? (
-            <ProviderList title="Shared models" hint="Everyone's Bots can use these. You pay for them."
-              providers={settings?.providers.filter((provider) => !provider.ownerId) ?? []}
-              empty="No shared models yet. Add a provider so everyone's Bots can think."
-              onEdit={setEditing} onAdd={() => setEditing("new-shared")} addLabel="Add shared provider" />
-          ) : null}
-          {host && people.length > 1 && (
-            <div className="mb-2 flex flex-col">
-              <SettingsRow icon={<KeyRound size={16} />} title="Shared keys" onClick={() => setSpendingOpen("shared")}
-                detail="What everyone's Bots cost you this month, and monthly limits" />
-            </div>
-          )}
-          {!host && (
-            <div className="mb-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3">
-              {people.find((person) => person.id === HOST_ID) && <PersonAvatar person={people.find((person) => person.id === HOST_ID)!} size={26} />}
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <strong className="truncate text-sm font-medium">{hostName} runs this Colony</strong>
-                <span className="truncate text-meta text-muted">On {hostName}'s PC · shared models, voice and updates</span>
-              </span>
-            </div>
-          )}
-          <SettingsRow title="Family" onClick={() => setPeopleOpen(true)}
-            icon={<span className="flex -space-x-2">{people.slice(0, 3).map((person) => <PersonAvatar key={person.id} person={person} size={20} className="rounded-full ring-2 ring-raised" />)}</span>}
-            detail={people.length === 1 ? "Just you so far · anyone on the tailnet can join" : `${people.length} people · your name and what Bots know about you`} />
           <p className="m-0 mt-4 text-meta leading-relaxed text-muted">
-            Keys stay on this PC; nobody's app ever sees them, only their last four characters. Your Bots, chats and keys are yours: nobody else in the family can see or manage them.
+            Keys stay on this PC; your devices never see them, only their last four characters.
           </p>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
@@ -173,11 +132,6 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
       )}
     </Dialog>
   );
-}
-
-/** "You" or "This Colony". */
-function SectionLabel({ children }: { children: React.ReactNode }) {
-  return <span className="mt-5 mb-3 text-meta tracking-[0.08em] text-muted uppercase first:mt-0">{children}</span>;
 }
 
 /** A row that opens a page of Settings. */
@@ -195,7 +149,7 @@ function SettingsRow({ icon, title, detail, onClick, disabled }: { icon: React.R
   );
 }
 
-/** A group of providers in Settings: the shared ones, or your own. */
+/** The providers in Settings. */
 function ProviderList({ title, hint, providers, empty, onEdit, onAdd, addLabel }: {
   title: string; hint: string; providers: ProviderView[]; empty: string | null; onEdit: (provider: ProviderView) => void; onAdd: () => void; addLabel: string;
 }) {
@@ -224,7 +178,7 @@ function ProviderList({ title, hint, providers, empty, onEdit, onAdd, addLabel }
   );
 }
 
-function ProviderEditor({ provider, shared = false, onBack, onSaved }: { provider: ProviderView | null; shared?: boolean; onBack: () => void; onSaved: (settings: Settings) => void }) {
+function ProviderEditor({ provider, onBack, onSaved }: { provider: ProviderView | null; onBack: () => void; onSaved: (settings: Settings) => void }) {
   const [name, setName] = useState(provider?.name ?? "");
   const [baseURL, setBaseURL] = useState(provider?.baseURL ?? "");
   const [protocol, setProtocol] = useState<Protocol>(provider?.protocol ?? "openai");
@@ -282,7 +236,7 @@ function ProviderEditor({ provider, shared = false, onBack, onSaved }: { provide
     setBusy(true); setError("");
     try {
       const input = { name: name.trim(), baseURL: baseURL.trim(), protocol, apiKey: apiKey.trim() || undefined, models, desktop: desktop.filter((id) => models.includes(id)), prices: changedPrices() };
-      onSaved(provider ? await api.updateProvider(provider.id, input) : await api.addProvider({ ...input, shared }));
+      onSaved(provider ? await api.updateProvider(provider.id, input) : await api.addProvider(input));
     } catch (failure) { setError(message(failure, "Couldn't save.")); }
     finally { setBusy(false); }
   }

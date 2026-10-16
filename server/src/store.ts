@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalRequest, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, BotTransfer, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, PcCapability, PcNode, Person, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import type { Approval, ApprovalRequest, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, PcCapability, PcNode, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
 import { removeChatFolder } from "./chatFiles.js";
 
 type Row = Record<string, unknown>;
@@ -20,13 +20,12 @@ const toBot = (row: Row): Bot => ({
   presence: row.presence as Presence,
   activity: (row.activity as string | null) ?? null,
   chatId: row.chat_id as string,
-  ownerId: (row.owner_id as string | undefined) ?? "owner",
   createdAt: row.created_at as number,
 });
 
-/** One model step's usage. `payerId` null: a shared key. `costMicros` null: the model has no price. */
+/** One model call's usage. `costMicros` null: the model has no price. */
 export type UsageRow = {
-  id: string; at: number; botId: string; ownerId: string; providerId: string; payerId: string | null; model: string;
+  id: string; at: number; botId: string; providerId: string; model: string;
   inputTokens: number; outputTokens: number; cachedTokens: number; costMicros: number | null;
 };
 
@@ -83,7 +82,6 @@ const toApproval = (row: Row): Approval => ({
   summary: row.summary as string,
   detail: row.detail as string,
   reason: row.reason as string,
-  approverId: (row.approver_id as string | undefined) ?? "owner",
   status: row.status as ApprovalStatus,
   createdAt: row.created_at as number,
   resolvedAt: (row.resolved_at as number | null) ?? null,
@@ -133,14 +131,13 @@ export class Store {
     return row ? toBot(row) : null;
   }
 
-  createBot(input: { name: string; title: string; description: string; model: string; computer: boolean; desktop?: boolean; faceSeed?: string; ownerId?: string }): Bot {
+  createBot(input: { name: string; title: string; description: string; model: string; computer: boolean; desktop?: boolean; faceSeed?: string }): Bot {
     const id = newId();
-    const ownerId = input.ownerId ?? "owner";
-    const chat = this.createChat({ kind: "bot", title: input.name, memberIds: [id], coordinatorId: id, ownerId });
-    this.db.prepare(`INSERT INTO bots (id, name, title, description, face_seed, model, computer, desktop, chat_id, owner_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    const chat = this.createChat({ kind: "bot", title: input.name, memberIds: [id], coordinatorId: id });
+    this.db.prepare(`INSERT INTO bots (id, name, title, description, face_seed, model, computer, desktop, chat_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, input.name, input.title, input.description, input.faceSeed || input.name, input.model, input.computer ? 1 : 0,
-      input.computer && input.desktop ? 1 : 0, chat.id, ownerId, Date.now(),
+      input.computer && input.desktop ? 1 : 0, chat.id, Date.now(),
     );
     const bot = this.getBot(id)!;
     this.events.emit({ type: "bot.upserted", bot });
@@ -164,7 +161,6 @@ export class Store {
   deleteBot(id: string) {
     const bot = this.getBot(id);
     if (!bot) return;
-    for (const transfer of this.listTransfers().filter((item) => item.botId === id)) this.setTransferStatus(transfer.id, "cancelled");
     this.db.prepare("DELETE FROM bots WHERE id = ?").run(id);
     for (const routine of this.listRoutines(id)) this.deleteRoutine(routine.id);
     this.deleteChat(bot.chatId);
@@ -181,64 +177,17 @@ export class Store {
     this.events.emit({ type: "bot.deleted", botId: id });
   }
 
-  // ---------- Handing a Bot over ----------
-  private toTransfer(row: Row): BotTransfer {
-    const bot = this.getBot(row.bot_id as string);
-    return {
-      id: row.id as string, botId: row.bot_id as string, fromId: row.from_id as string, toId: row.to_id as string,
-      keepMemory: Boolean(row.keep_memory), status: row.status as BotTransfer["status"],
-      bot: { name: bot?.name ?? "A Bot", title: bot?.title ?? "", faceSeed: bot?.faceSeed ?? "" }, createdAt: row.created_at as number,
-    };
-  }
-
-  createTransfer(input: { botId: string; fromId: string; toId: string; keepMemory: boolean }): BotTransfer {
-    const id = newId();
-    this.db.prepare("INSERT INTO bot_transfers (id, bot_id, from_id, to_id, keep_memory, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)")
-      .run(id, input.botId, input.fromId, input.toId, input.keepMemory ? 1 : 0, Date.now());
-    const transfer = this.getTransfer(id)!;
-    this.events.emit({ type: "transfer.upserted", transfer });
-    return transfer;
-  }
-
-  getTransfer(id: string): BotTransfer | null {
-    const row = this.db.prepare("SELECT * FROM bot_transfers WHERE id = ?").get(id) as Row | undefined;
-    return row ? this.toTransfer(row) : null;
-  }
-
-  /** Hand-overs still waiting for an answer. */
-  listTransfers(): BotTransfer[] {
-    return (this.db.prepare("SELECT * FROM bot_transfers WHERE status = 'pending' ORDER BY created_at").all() as Row[]).map((row) => this.toTransfer(row));
-  }
-
-  setTransferStatus(id: string, status: BotTransfer["status"]) {
-    this.db.prepare("UPDATE bot_transfers SET status = ?, decided_at = ? WHERE id = ?").run(status, Date.now(), id);
-    const transfer = this.getTransfer(id)!;
-    this.events.emit({ type: "transfer.upserted", transfer });
-    return transfer;
-  }
-
-  /** Whether this person gave this Bot away (they still see its name in their old chat with it). */
-  gaveAway(personId: string, botId: string) {
-    return Boolean(this.db.prepare("SELECT 1 FROM bot_transfers WHERE from_id = ? AND bot_id = ? AND status = 'accepted'").get(personId, botId));
-  }
-
   /**
-   * Gives a Bot to someone else: it gets a new chat with them, its routines move there, and its
-   * old chat stays with the giver as an archived topic it's no longer in.
+   * Colony is single-user: removes what other people had in the family build (their Bots, topics
+   * and folders). Their accounts, PCs and sharing were removed by migration v18. Returns the ids of
+   * the Bots removed, so their folders and computers can go too. Does nothing once they're gone.
    */
-  moveBot(id: string, toId: string, oldChatTitle: string) {
-    const bot = this.getBot(id);
-    if (!bot) return null;
-    const chat = this.createChat({ kind: "bot", title: bot.name, memberIds: [id], coordinatorId: id, ownerId: toId });
-    this.db.prepare("UPDATE bots SET owner_id = ?, chat_id = ? WHERE id = ?").run(toId, chat.id, id);
-    this.db.prepare("UPDATE chats SET kind = 'topic', title = ?, coordinator_id = NULL, archived_at = ? WHERE id = ?").run(oldChatTitle, Date.now(), bot.chatId);
-    this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(bot.chatId);
-    for (const routine of this.listRoutines(id)) if (routine.chatId === bot.chatId) this.updateRoutine(routine.id, { chatId: chat.id });
-    const old = this.getChat(bot.chatId);
-    if (old) this.events.emit({ type: "chat.upserted", chat: old });
-    const moved = this.getBot(id)!;
-    this.events.emit({ type: "bot.upserted", bot: moved });
-    return moved;
+  forgetOthers(): string[] {
+    const others = (this.db.prepare("SELECT id FROM bots WHERE owner_id <> 'owner'").all() as Row[]).map((row) => row.id as string);
+    for (const id of others) this.deleteBot(id);
+    for (const row of this.db.prepare("SELECT id FROM chats WHERE owner_id <> 'owner'").all() as Row[]) this.deleteChat(row.id as string);
+    for (const row of this.db.prepare("SELECT id FROM folders WHERE owner_id <> 'owner'").all() as Row[]) this.deleteFolder(row.id as string);
+    return others;
   }
 
   setPresence(id: string, presence: Presence, activity: string | null = null) {
@@ -275,9 +224,6 @@ export class Store {
       lastAuthor: (row.last_author as string | null) ?? null,
       updatedAt: row.updated_at as number,
       unread: row.unread as number,
-      ownerId: (row.owner_id as string | undefined) ?? "owner",
-      peopleIds: (this.db.prepare("SELECT person_id FROM chat_people WHERE chat_id = ?").all(row.id as string) as Row[]).map((item) => item.person_id as string),
-      everyone: Boolean(row.everyone),
     };
   }
 
@@ -290,10 +236,10 @@ export class Store {
     return row ? this.toChat(row) : null;
   }
 
-  createChat(input: { kind: Chat["kind"]; title: string; memberIds: string[]; coordinatorId: string | null; icon?: TopicIcon; folderId?: string | null; brief?: string; ownerId?: string }): Chat {
+  createChat(input: { kind: Chat["kind"]; title: string; memberIds: string[]; coordinatorId: string | null; icon?: TopicIcon; folderId?: string | null; brief?: string }): Chat {
     const id = newId();
-    this.db.prepare("INSERT INTO chats (id, kind, title, coordinator_id, icon, folder_id, brief, owner_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, input.kind, input.title, input.coordinatorId, input.icon ?? null, input.folderId ?? null, input.brief ?? "", input.ownerId ?? "owner", Date.now());
+    this.db.prepare("INSERT INTO chats (id, kind, title, coordinator_id, icon, folder_id, brief, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, input.kind, input.title, input.coordinatorId, input.icon ?? null, input.folderId ?? null, input.brief ?? "", Date.now());
     for (const botId of input.memberIds) this.db.prepare("INSERT INTO chat_members (chat_id, bot_id) VALUES (?, ?)").run(id, botId);
     const chat = this.getChat(id)!;
     this.events.emit({ type: "chat.upserted", chat });
@@ -315,7 +261,7 @@ export class Store {
     if (chat) this.events.emit({ type: "chat.upserted", chat });
   }
 
-  updateTopic(id: string, patch: { title?: string; icon?: TopicIcon; brief?: string; folderId?: string | null; archived?: boolean; memberIds?: string[]; coordinatorId?: string | null; peopleIds?: string[]; everyone?: boolean }) {
+  updateTopic(id: string, patch: { title?: string; icon?: TopicIcon; brief?: string; folderId?: string | null; archived?: boolean; memberIds?: string[]; coordinatorId?: string | null }) {
     const chat = this.getChat(id);
     if (!chat || chat.kind !== "topic") return null;
     if (patch.title !== undefined) this.db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(patch.title, id);
@@ -327,13 +273,6 @@ export class Store {
     if (patch.memberIds) {
       this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
       for (const botId of patch.memberIds) this.db.prepare("INSERT INTO chat_members (chat_id, bot_id) VALUES (?, ?)").run(id, botId);
-    }
-    if (patch.everyone !== undefined) this.db.prepare("UPDATE chats SET everyone = ? WHERE id = ?").run(patch.everyone ? 1 : 0, id);
-    if (patch.peopleIds) {
-      this.db.prepare("DELETE FROM chat_people WHERE chat_id = ?").run(id);
-      for (const personId of new Set(patch.peopleIds)) {
-        if (personId !== "owner" && this.getPerson(personId)) this.db.prepare("INSERT INTO chat_people (chat_id, person_id) VALUES (?, ?)").run(id, personId);
-      }
     }
     const updated = this.getChat(id)!;
     this.events.emit({ type: "chat.upserted", chat: updated });
@@ -399,58 +338,19 @@ export class Store {
     return file;
   }
 
-  // ---------- People ----------
-  listPeople(): Person[] {
-    return (this.db.prepare("SELECT * FROM people ORDER BY role = 'host' DESC, created_at").all() as Row[]).map(toPerson);
-  }
-
-  getPerson(id: string): Person | null {
-    const row = this.db.prepare("SELECT * FROM people WHERE id = ?").get(id) as Row | undefined;
-    return row ? toPerson(row) : null;
-  }
-
-  personByLogin(login: string): Person | null {
-    const row = this.db.prepare("SELECT * FROM people WHERE login = ?").get(login) as Row | undefined;
-    return row ? toPerson(row) : null;
-  }
-
-  addPerson(input: { login: string; name: string; color: string; role: Person["role"] }): Person {
-    const id = newId();
-    this.db.prepare("INSERT INTO people (id, login, name, color, role, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(id, input.login, input.name, input.color, input.role, Date.now());
-    this.events.emit({ type: "people.updated", people: this.listPeople() });
-    return this.getPerson(id)!;
-  }
-
-  updatePerson(id: string, patch: { login?: string | null; name?: string; color?: string }) {
-    const person = this.getPerson(id);
-    if (!person) return null;
-    if (patch.login !== undefined) this.db.prepare("UPDATE people SET login = ? WHERE id = ?").run(patch.login, id);
-    if (patch.name !== undefined) this.db.prepare("UPDATE people SET name = ? WHERE id = ?").run(patch.name, id);
-    if (patch.color !== undefined) this.db.prepare("UPDATE people SET color = ? WHERE id = ?").run(patch.color, id);
-    this.events.emit({ type: "people.updated", people: this.listPeople() });
-    return this.getPerson(id);
-  }
-
-  deletePerson(id: string) {
-    if (id === "owner") return;
-    const shared = (this.db.prepare("SELECT chat_id FROM chat_people WHERE person_id = ?").all(id) as Row[]).map((row) => row.chat_id as string);
-    this.db.prepare("DELETE FROM people WHERE id = ?").run(id);
-    this.events.emit({ type: "people.updated", people: this.listPeople() });
-    for (const chatId of shared) { const chat = this.getChat(chatId); if (chat) this.events.emit({ type: "chat.upserted", chat }); }
-  }
-
   // ---------- Spending ----------
   recordUsage(entry: Omit<UsageRow, "id" | "at">, at = Date.now()) {
-    this.db.prepare(`INSERT INTO usage (id, at, bot_id, owner_id, provider_id, payer_id, model, input_tokens, output_tokens, cached_tokens, cost_micros)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(newId(), at, entry.botId, entry.ownerId, entry.providerId, entry.payerId, entry.model, entry.inputTokens, entry.outputTokens, entry.cachedTokens, entry.costMicros);
+    // owner_id is left from the family build (dropped in a later migration).
+    this.db.prepare(`INSERT INTO usage (id, at, bot_id, owner_id, provider_id, model, input_tokens, output_tokens, cached_tokens, cost_micros)
+      VALUES (?, ?, ?, 'owner', ?, ?, ?, ?, ?, ?)`)
+      .run(newId(), at, entry.botId, entry.providerId, entry.model, entry.inputTokens, entry.outputTokens, entry.cachedTokens, entry.costMicros);
   }
 
   /** Usage since a time, oldest first. */
   listUsage(since: number): UsageRow[] {
     return (this.db.prepare("SELECT * FROM usage WHERE at >= ? ORDER BY at").all(since) as Row[]).map((row) => ({
-      id: row.id as string, at: row.at as number, botId: row.bot_id as string, ownerId: row.owner_id as string, providerId: row.provider_id as string,
-      payerId: (row.payer_id as string | null) ?? null, model: row.model as string, inputTokens: row.input_tokens as number,
+      id: row.id as string, at: row.at as number, botId: row.bot_id as string, providerId: row.provider_id as string,
+      model: row.model as string, inputTokens: row.input_tokens as number,
       outputTokens: row.output_tokens as number, cachedTokens: row.cached_tokens as number, costMicros: (row.cost_micros as number | null) ?? null,
     }));
   }
@@ -460,14 +360,14 @@ export class Store {
   listNodes(): Omit<PcNode, "online">[] {
     return (this.db.prepare("SELECT * FROM nodes ORDER BY last_seen DESC").all() as Row[]).map((row) => ({
       id: row.id as string, name: row.name as string, platform: row.platform as string,
-      capabilities: JSON.parse(row.capabilities as string) as PcCapability[], lastSeen: row.last_seen as number, personId: (row.person_id as string | undefined) ?? "owner",
+      capabilities: JSON.parse(row.capabilities as string) as PcCapability[], lastSeen: row.last_seen as number,
     }));
   }
 
-  saveNode(node: { id: string; name: string; platform: string; capabilities: PcCapability[]; personId: string }) {
-    this.db.prepare(`INSERT INTO nodes (id, name, platform, capabilities, person_id, last_seen) VALUES (?, ?, ?, ?, ?, ?)
+  saveNode(node: { id: string; name: string; platform: string; capabilities: PcCapability[] }) {
+    this.db.prepare(`INSERT INTO nodes (id, name, platform, capabilities, last_seen) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT (id) DO UPDATE SET name = excluded.name, platform = excluded.platform, capabilities = excluded.capabilities, last_seen = excluded.last_seen`)
-      .run(node.id, node.name, node.platform, JSON.stringify(node.capabilities), node.personId, Date.now());
+      .run(node.id, node.name, node.platform, JSON.stringify(node.capabilities), Date.now());
   }
 
   deleteNode(id: string) {
@@ -477,7 +377,7 @@ export class Store {
   // ---------- Folders ----------
   listFolders(): Folder[] {
     return (this.db.prepare("SELECT * FROM folders ORDER BY position, created_at").all() as Row[]).map((row) => ({
-      id: row.id as string, title: row.title as string, position: row.position as number, ownerId: (row.owner_id as string | undefined) ?? "owner", createdAt: row.created_at as number,
+      id: row.id as string, title: row.title as string, position: row.position as number, createdAt: row.created_at as number,
     }));
   }
 
@@ -485,10 +385,10 @@ export class Store {
     return this.listFolders().find((folder) => folder.id === id) ?? null;
   }
 
-  createFolder(title: string, ownerId = "owner"): Folder {
+  createFolder(title: string): Folder {
     const id = newId();
-    const position = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM folders WHERE owner_id = ?").get(ownerId) as { next: number }).next;
-    this.db.prepare("INSERT INTO folders (id, title, position, owner_id, created_at) VALUES (?, ?, ?, ?, ?)").run(id, title, position, ownerId, Date.now());
+    const position = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM folders").get() as { next: number }).next;
+    this.db.prepare("INSERT INTO folders (id, title, position, created_at) VALUES (?, ?, ?, ?)").run(id, title, position, Date.now());
     const folder = this.getFolder(id)!;
     this.events.emit({ type: "folder.upserted", folder });
     return folder;
@@ -657,10 +557,9 @@ export class Store {
   // ---------- Approvals ----------
   createApproval(input: ApprovalRequest): Approval {
     const id = newId();
-    const approverId = input.approverId ?? this.getBot(input.botId)?.ownerId ?? "owner";
-    this.db.prepare(`INSERT INTO approvals (id, bot_id, chat_id, message_id, tool, summary, detail, reason, approver_id, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
-      .run(id, input.botId, input.chatId, input.messageId, input.tool, input.summary, input.detail, input.reason, approverId, Date.now());
+    this.db.prepare(`INSERT INTO approvals (id, bot_id, chat_id, message_id, tool, summary, detail, reason, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
+      .run(id, input.botId, input.chatId, input.messageId, input.tool, input.summary, input.detail, input.reason, Date.now());
     const approval = this.getApproval(id)!;
     this.events.emit({ type: "approval.upserted", approval });
     return approval;
@@ -746,7 +645,3 @@ export class Store {
   }
 }
 
-const toPerson = (row: Row): Person => ({
-  id: row.id as string, login: (row.login as string | null) ?? null, name: row.name as string, color: row.color as string,
-  role: row.role as Person["role"], createdAt: row.created_at as number,
-});

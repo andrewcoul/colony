@@ -94,8 +94,8 @@ export function ThisPcSettings({ onBack }: { onBack: () => void }) {
       <div className="flex flex-col gap-1.5">
         <span className="text-label text-muted">Who can use {here?.name ?? settings.name}</span>
         <p className="m-0 text-meta leading-relaxed text-muted">
-          Any Bot in the family, within the switches above. You approve anything that acts on it: the browser once per task, the screen, terminal and file writes every time.
-          While a Bot is using it, a pill shows whose Bot it is and lets you stop it.
+          Any of your Bots, within the switches above. You approve anything that acts on it: the browser once per task, the screen, terminal and file writes every time.
+          While a Bot is using it, a pill shows which Bot it is and lets you stop it.
         </p>
       </div>
     </div>

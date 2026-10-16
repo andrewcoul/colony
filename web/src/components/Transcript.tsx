@@ -5,12 +5,11 @@ import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
 import { api, fileUrl } from "../lib/api";
-import { useLive, myAuthor, useMyId } from "../lib/live";
+import { useLive } from "../lib/live";
 import { pop, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { useCopy } from "../hooks/useCopy";
 import { Face } from "./Face";
-import { PersonAvatar } from "./People";
 import { MarkdownView } from "./MarkdownView";
 import { TopicTile } from "./TopicIcon";
 import { Button } from "./ui/button";
@@ -31,48 +30,13 @@ type ItemProps = {
 };
 
 export function MessageItem({ message, bot, showAuthor, recipient, onOpenRoutines, onOpenChat, onOpenBrowser, onOpenDoc, onAnswer }: ItemProps) {
-  const me = useLive((s) => s.me);
-  if (message.author === myAuthor(me)) return <UserMessage message={message} recipient={recipient ?? "the Bot"} />;
-  if (message.author === "user" || message.author.startsWith("person:")) return <PersonMessage message={message} />;
+  if (message.author === "user") return <UserMessage message={message} recipient={recipient ?? "the Bot"} />;
   if (message.author === "system") {
     return <p className="m-0 text-center text-meta text-muted">{message.text}</p>;
   }
   return <BotMessage message={message} bot={bot} showAuthor={showAuthor} onOpenRoutines={onOpenRoutines} onOpenChat={onOpenChat} onOpenBrowser={onOpenBrowser} onOpenDoc={onOpenDoc} onAnswer={onAnswer} />;
 }
 
-/** Whose Bot this is, when it isn't yours: "Andrew's", with their color. */
-function OwnerTag({ ownerId }: { ownerId: string }) {
-  const myId = useMyId();
-  const owner = useLive((s) => s.people.find((person) => person.id === ownerId));
-  if (ownerId === myId || !owner) return null;
-  return (
-    <span className="flex items-center gap-1.5 text-meta text-muted">
-      <span className="size-[7px] rounded-full" style={{ background: owner.color }} />{owner.name}'s
-    </span>
-  );
-}
-
-/** Someone else in a shared topic: their name and color, on the left. */
-function PersonMessage({ message }: { message: Message }) {
-  const person = useLive((s) => s.people.find((item) => myAuthor(item) === message.author));
-  const who = person ?? { id: "", name: "Someone", color: "#8a8a8a" };
-  return (
-    <div className="flex items-start gap-2.5">
-      <PersonAvatar person={who} size={28} className="mt-5" />
-      <div className="flex min-w-0 flex-col items-start gap-1.5">
-        <span className="flex items-center gap-1.5 text-label font-semibold" style={{ color: who.color }}>{who.name}</span>
-        {message.attachments.length > 0 && <Attachments attachments={message.attachments} />}
-        {message.text && (
-          <div className="max-w-[80%] rounded-[22px] border border-transparent bg-surface px-[18px] py-3 text-body leading-6 [overflow-wrap:anywhere] whitespace-pre-wrap max-sm:max-w-[88%]"
-            style={{ boxShadow: `inset 3px 0 0 ${who.color}` }}>
-            {message.text}
-          </div>
-        )}
-        {message.via === "voice" && <span className="flex items-center gap-1 pl-1.5 text-meta text-muted"><Mic size={12} />Said on a call</span>}
-      </div>
-    </div>
-  );
-}
 
 /** Your message. One sent while a Bot worked shows whether it steered the turn or is waiting for it. */
 function UserMessage({ message, recipient }: { message: Message; recipient: string }) {
@@ -148,7 +112,6 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
       {showAuthor && bot && (
         <span className="flex items-center gap-2">
           <span className="text-label font-semibold" style={{ color: "var(--soft)" }}>{bot.name}</span>
-          <OwnerTag ownerId={bot.ownerId} />
         </span>
       )}
       {message.via === "voice" && <span className="-mb-1 flex items-center gap-1 text-meta text-muted"><Mic size={12} />Said on a call</span>}
@@ -447,13 +410,8 @@ function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpe
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showDetail, setShowDetail] = useState(false);
-  // Only the person it's waiting for can answer; everyone else sees who that is.
-  const myId = useMyId();
-  const approver = useLive((s) => s.people.find((person) => person.id === approval?.approverId));
-  const asker = useLive((s) => (approval ? s.bots[approval.botId] : undefined));
   if (!approval) return <p className="m-0 text-meta text-muted">Approval resolved.</p>;
   const pending = approval.status === "pending";
-  const mine = approval.approverId === myId;
   const takeover = approval.tool === "browser_takeover";
 
   async function decide(approve: boolean) {
@@ -473,24 +431,16 @@ function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpe
           exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.14 } }} style={{ originX: 0 }}>
           <span className="flex items-center gap-2 text-label font-semibold text-lemon">
             {takeover ? <Hand size={16} /> : <ShieldCheck size={16} />}<span className="flex-1">{approval.summary}</span>
-            {/* Someone else's Bot asking you: say whose. */}
-            {asker && <OwnerTag ownerId={asker.ownerId} />}
           </span>
           {takeover
             ? <p className="m-0 text-label leading-relaxed whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{approval.detail}</p>
             : <pre className="m-0 overflow-x-auto rounded-lg bg-surface px-3 py-2.5 font-mono text-[13px] leading-5 whitespace-pre-wrap text-ink">{approval.detail}</pre>}
           <div className="flex flex-wrap items-center gap-2">
-            {mine ? <>
-              {takeover && onOpenBrowser && (
+            {takeover && onOpenBrowser && (
                 <Button variant="primary" size="pill" className="px-4" onClick={() => onOpenBrowser(approval.botId)}><Globe size={14} />Open browser</Button>
               )}
               <Button variant={takeover ? "outline" : "primary"} size="pill" className="px-4" disabled={busy} onClick={() => void decide(true)}>{takeover ? "I'm done" : "Approve"}</Button>
               <Button variant="outline" size="pill" className="px-4" disabled={busy} onClick={() => void decide(false)}>{takeover ? "Cancel" : "Deny"}</Button>
-            </> : (
-              <span className="flex items-center gap-2 text-label text-ink">
-                {approver && <PersonAvatar person={approver} size={22} />}Waiting for {approver?.name ?? "someone"}
-              </span>
-            )}
             {approval.reason && <span className="ml-auto text-meta text-muted">{approval.reason}</span>}
           </div>
           {error && <span className="text-meta text-danger">{error}</span>}

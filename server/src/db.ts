@@ -282,6 +282,19 @@ const MIGRATIONS = [
     decided_at INTEGER
   );
   `,
+  // v18: Colony is single-user again. Other people, what was shared with them, their PCs, push
+  // subscriptions and spending go (their Bots, topics and accounts are removed at startup, with
+  // their files). The family columns stay unused for now, so an older Colony can still open this.
+  `
+  DELETE FROM bot_transfers;
+  DELETE FROM chat_people;
+  UPDATE chats SET everyone = 0;
+  DELETE FROM nodes WHERE person_id <> 'owner';
+  DELETE FROM push_subscriptions WHERE person_id IS NOT NULL AND person_id <> 'owner';
+  DELETE FROM usage WHERE owner_id <> 'owner';
+  DELETE FROM people WHERE id <> 'owner';
+  UPDATE approvals SET approver_id = 'owner';
+  `,
 ];
 
 export type Db = DatabaseSync;

@@ -12,7 +12,6 @@ import type { Scrubber } from "./scrub.js";
 import { allows } from "../integrations/accounts.js";
 import type { Integrations } from "../integrations/index.js";
 import { docTools } from "./docTools.js";
-import { canSee } from "../people.js";
 
 /** Everything a tool needs to act on behalf of one Bot in one run. */
 export type ToolContext = {
@@ -193,9 +192,8 @@ export const coreTools = {
     execute: async ({ to, message }, ctx) => {
       if (ctx.depth >= 1) throw new Error("You're answering another Bot right now; reply with what you have instead of messaging a third.");
       const name = to.replace(/^@/, "").toLowerCase();
-      // Your teammates: the other Bots your owner has.
-      const ownerId = ctx.store.getBot(ctx.botId)?.ownerId;
-      const others = ctx.store.listBots().filter((bot) => bot.id !== ctx.botId && bot.ownerId === ownerId);
+      // Your teammates: the user's other Bots.
+      const others = ctx.store.listBots().filter((bot) => bot.id !== ctx.botId);
       const target = others.find((bot) => bot.name.toLowerCase() === name);
       if (!target) throw new Error(`No teammate named "${to}". Your teammates: ${others.map((bot) => bot.name).join(", ") || "none yet"}.`);
       const { chatId, reply } = await ctx.consult(target.id, message);
@@ -216,10 +214,9 @@ export const coreTools = {
     }),
     describe: ({ title }) => `Suggested the topic ${quote(title, 40)}`,
     execute: async ({ title, icon, brief, folder, bots }, ctx) => {
-      const ownerId = ctx.store.getBot(ctx.botId)?.ownerId;
-      const team = ctx.store.listBots().filter((bot) => bot.ownerId === ownerId);
+      const team = ctx.store.listBots();
       const others = (bots ?? []).map((name) => team.find((bot) => bot.name.toLowerCase() === name.toLowerCase())).filter((bot) => bot && bot.id !== ctx.botId);
-      const folderId = folder ? ctx.store.listFolders().find((item) => item.ownerId === ownerId && item.title.toLowerCase() === folder.toLowerCase())?.id ?? null : null;
+      const folderId = folder ? ctx.store.listFolders().find((item) => item.title.toLowerCase() === folder.toLowerCase())?.id ?? null : null;
       const proposal = { title, icon, brief, folderId, memberIds: [ctx.botId, ...others.map((bot) => bot!.id)] };
       ctx.store.appendCard(ctx.messageId, { type: "topic", proposalId: crypto.randomUUID(), proposal, chatId: null, dismissed: false });
       return { suggested: title, note: "The user will see a card with Create and Not now. Don't assume it exists until they create it." };
@@ -232,14 +229,12 @@ export const coreTools = {
     describe: () => "Checked the topics",
     summarize: (output: { topics: unknown[] }) => `${output.topics.length} topic${output.topics.length === 1 ? "" : "s"}`,
     execute: async (_input, ctx) => {
-      // Topics and folders as the Bot's owner sees them.
-      const owner = { id: ctx.store.getBot(ctx.botId)?.ownerId ?? "" };
-      const folders = ctx.store.listFolders().filter((folder) => folder.ownerId === owner.id);
+      const folders = ctx.store.listFolders();
       const name = (id: string | null) => folders.find((folder) => folder.id === id)?.title ?? null;
       const bots = new Map(ctx.store.listBots().map((bot) => [bot.id, bot.name]));
       return {
         folders: folders.map((folder) => folder.title),
-        topics: ctx.store.listChats().filter((chat) => chat.kind === "topic" && canSee(owner, chat)).map((chat) => ({
+        topics: ctx.store.listChats().filter((chat) => chat.kind === "topic").map((chat) => ({
           title: chat.title, folder: name(chat.folderId), bots: chat.memberIds.map((id) => bots.get(id)).filter(Boolean), archived: Boolean(chat.archivedAt), about: chat.brief.slice(0, 200),
         })),
       };

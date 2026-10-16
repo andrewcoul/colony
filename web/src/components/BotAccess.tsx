@@ -67,10 +67,10 @@ export function BotAccess({ bot, onError }: { bot: Bot; onError: (message: strin
           </div>
         );
       })}
-      {/* PCs the family lends through the desktop app: any of your Bots can use them, within each PC's switches. */}
+      {/* PCs you lend through the desktop app: any of your Bots can use them, within each PC's switches. */}
       {nodes.length > 0 && (
         <div className="flex flex-col gap-2 rounded-xl border border-rule px-3.5 py-3">
-          <span className="text-meta text-muted">{bot.name} can use these PCs, within what each owner switched on. Their owner approves anything that acts on them.</span>
+          <span className="text-meta text-muted">{bot.name} can use these PCs, within what you switched on there. You approve anything that acts on them.</span>
           {nodes.map((node) => {
             const on = SWITCHES.filter(([key]) => node.capabilities.includes(key)).map(([, label]) => label);
             return (
