@@ -13,7 +13,8 @@ import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
 import { checkDesktop, type DesktopVerdict } from "./agent/desktopCheck.js";
-import { defaultModelFactory, type ModelFactory } from "./agent/run.js";
+import type { ModelSource } from "./agent/pi/models.js";
+import type { ModelSignIns } from "./agent/pi/signins.js";
 import type { Runner } from "./agent/runner.js";
 import type { BrowserService } from "./computer/browser.js";
 import type { DesktopService } from "./computer/desktop.js";
@@ -35,8 +36,10 @@ export type Services = {
   store: Store; events: EventLog; gate: ApprovalGate; runner: Runner;
   computer?: ComputerService; browser?: BrowserService; desktop?: DesktopService; routines?: RoutineScheduler; push?: PushService;
   updater?: Updater;
-  /** The model client used by the desktop check (tests pass a scripted one). */
-  modelFactory?: ModelFactory;
+  /** The models the desktop check asks (tests pass scripted ones). */
+  models?: ModelSource;
+  /** Signing in to ChatGPT and OpenCode. */
+  modelSignIns?: ModelSignIns;
   /** Connected accounts (mail, calendar, 1Password) and signing in to them. */
   integrations?: Integrations;
   signIns?: SignIns;
@@ -107,7 +110,7 @@ async function fetchImage(url: string) {
   return { type: type.startsWith("image/svg") ? "image/svg+xml" : type, bytes };
 }
 
-export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, models, modelSignIns, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
   const api = new Hono();
 
   /** A mail-triggered routine must watch a mailbox its Bot can read. */
@@ -572,18 +575,14 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.body(null, 204);
   });
 
-  // ---------- Settings: model providers, switchable any time ----------
-  const providerURL = z.string().trim().url().max(500).refine((url) => /^https?:\/\//i.test(url), "Use an http(s) address.");
+  // ---------- Settings: sign-ins and the models picked from each, switchable any time ----------
+  const price = z.object({ input: z.number().min(0).max(10_000), output: z.number().min(0).max(10_000), cached: z.number().min(0).max(10_000).optional() });
   const providerInput = z.object({
-    name: z.string().trim().max(40).default(""),
-    baseURL: providerURL,
-    protocol: z.enum(["openai", "anthropic"]).optional(),
-    apiKey: z.string().max(500).optional(),
-    models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(60),
+    models: z.array(z.string().trim().min(1).max(200)).max(100),
     /** Models that can drive a desktop (set by the desktop check or by hand). */
-    desktop: z.array(z.string().trim().min(1).max(200)).max(60).optional(),
+    desktop: z.array(z.string().trim().min(1).max(200)).max(100).optional(),
     /** Dollars per million tokens per model; null puts one back to the built-in price. */
-    prices: z.record(z.string().max(200), z.object({ input: z.number().min(0).max(10_000), output: z.number().min(0).max(10_000), cached: z.number().min(0).max(10_000).optional() }).nullable()).optional(),
+    prices: z.record(z.string().max(200), price.nullable()).optional(),
   });
   /** Tells the app the models changed, and returns the new settings. */
   const settingsChanged = () => {
@@ -599,7 +598,10 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   // ---------- Voice ----------
   const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 22:00.");
   const voicePatch = z.object({
-    providerId: z.string().max(80).nullable(),
+    /** OpenAI-compatible audio endpoints; "" turns voice off. */
+    baseURL: z.union([z.literal(""), z.string().trim().url().max(500).refine((url) => /^https?:\/\//i.test(url), "Use an http(s) address.")]),
+    /** A new key; "" removes it; left out keeps it. */
+    apiKey: z.string().trim().max(500),
     transcribeModel: z.string().trim().min(1).max(120),
     speechModel: z.string().trim().min(1).max(120),
     voice: z.string().trim().min(1).max(60),
@@ -611,9 +613,6 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.put("/settings/voice", async (c) => {
     const patch = voicePatch.safeParse(await c.req.json());
     if (!patch.success) return c.json({ error: patch.error.issues[0]?.message ?? "Check the voice settings." }, 400);
-    if (patch.data.providerId && settings.providerById(patch.data.providerId)?.protocol !== "openai") {
-      return c.json({ error: "Voice needs an OpenAI-compatible provider." }, 400);
-    }
     settings.setVoiceSettings(Object.fromEntries(Object.entries(patch.data).filter(([, value]) => value !== undefined)));
     return c.json(settings.settingsView());
   });
@@ -639,17 +638,10 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     calls?.miss(c.req.param("id"));
     return c.json({ ok: true });
   });
-  api.post("/settings/providers", async (c) => {
-    settings.saveProvider(null, providerInput.parse(await c.req.json()));
-    return c.json(settingsChanged(), 201);
-  });
+  /** Picks a provider's models. */
   api.put("/settings/providers/:id", async (c) => {
     try { settings.saveProvider(c.req.param("id"), providerInput.parse(await c.req.json())); }
     catch (failure) { if (failure instanceof z.ZodError) throw failure; return c.json({ error: (failure as Error).message }, 404); }
-    return c.json(settingsChanged());
-  });
-  api.delete("/settings/providers/:id", (c) => {
-    settings.deleteProvider(c.req.param("id"));
     return c.json(settingsChanged());
   });
   /** The default for new Bots. */
@@ -662,30 +654,49 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.post("/settings/providers/:id/desktop-check", async (c) => {
     const id = c.req.param("id");
     const provider = settings.providerById(id);
-    if (!provider) return c.json({ error: "That provider no longer exists." }, 404);
-    const { models } = z.object({ models: z.array(z.string().max(200)).max(60).optional() }).parse(await c.req.json().catch(() => ({})));
-    const queue = (models ?? provider.models).filter((model) => provider.models.includes(model));
+    if (!provider) return c.json({ error: "That provider doesn't exist." }, 404);
+    if (!models) return c.json({ error: "Models aren't available here." }, 503);
+    const { models: chosen } = z.object({ models: z.array(z.string().max(200)).max(100).optional() }).parse(await c.req.json().catch(() => ({})));
+    const queue = (chosen ?? provider.models).filter((model) => provider.models.includes(model));
+    const targets = queue.map((model) => settings.resolveModel(settings.modelRef(provider.id, model), { fallback: false }));
+    if (targets.some((target) => !target)) return c.json({ error: `Sign in to ${provider.name} first.` }, 400);
     const results: DesktopVerdict[] = [];
-    for (let start = 0; start < queue.length; start += 4) {
-      results.push(...await Promise.all(queue.slice(start, start + 4).map((model) =>
-        checkDesktop(settings.resolveModel(settings.modelRef(id, model), { fallback: false })!, modelFactory))));
+    for (let start = 0; start < targets.length; start += 4) {
+      results.push(...await Promise.all(targets.slice(start, start + 4).map((target) => checkDesktop(target!, models))));
     }
-    settings.setDesktopModels(id, Object.fromEntries(results.filter((result) => !result.error).map((result) => [result.model, result.canDrive])));
+    settings.setDesktopModels(provider.id, Object.fromEntries(results.filter((result) => !result.error).map((result) => [result.model, result.canDrive])));
     return c.json({ results, settings: settingsChanged() });
   });
 
-  api.post("/settings/providers/check", async (c) => {
-    const { providerId, baseURL, protocol, apiKey } = z.object({
-      providerId: z.string().max(40).optional(),
-      baseURL: providerURL,
-      protocol: z.enum(["openai", "anthropic"]).default("openai"),
-      apiKey: z.string().max(500).optional(),
-    }).parse(await c.req.json());
-    try {
-      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(providerId, baseURL, apiKey), protocol) });
-    } catch (failure) {
-      return c.json({ error: failure instanceof Error ? failure.message : "Couldn't connect." }, 400);
-    }
+  // ---------- Sign-ins: ChatGPT and OpenCode ----------
+  const signInId = z.enum(["chatgpt", "opencode"]);
+  const noSignIns = { error: "Sign-ins aren't available here." };
+  /** Starts a sign-in: an address to open (ChatGPT) or a code to approve (OpenCode). */
+  api.post("/settings/signins/:id/start", async (c) => {
+    if (!modelSignIns) return c.json(noSignIns, 503);
+    const id = signInId.parse(c.req.param("id"));
+    try { return c.json(await modelSignIns.start(id)); } catch (error) { return c.json({ error: error instanceof Error ? error.message : "Couldn't start the sign-in." }, 502); }
+  });
+  api.get("/settings/signins/session/:session", (c) => {
+    const status = modelSignIns?.status(c.req.param("session"));
+    return status ? c.json(status) : c.json({ error: "That sign-in has ended." }, 404);
+  });
+  /** Finishes a ChatGPT sign-in from another device: the address the browser ended on. */
+  api.post("/settings/signins/session/:session/finish", async (c) => {
+    if (!modelSignIns) return c.json(noSignIns, 503);
+    const { url } = z.object({ url: z.string().trim().min(1, "Paste the address.").max(4000) }).parse(await c.req.json());
+    try { modelSignIns.finish(c.req.param("session"), url); } catch (error) { return c.json({ error: error instanceof Error ? error.message : "Couldn't finish." }, 400); }
+    return c.body(null, 204);
+  });
+  api.post("/settings/signins/session/:session/cancel", (c) => {
+    modelSignIns?.cancel(c.req.param("session"));
+    return c.body(null, 204);
+  });
+  /** Signs out: forgets the tokens. Bots on its models switch to the default model. */
+  api.delete("/settings/signins/:id", async (c) => {
+    if (!modelSignIns) return c.json(noSignIns, 503);
+    await modelSignIns.signOut(signInId.parse(c.req.param("id")));
+    return c.json(settingsChanged());
   });
 
   // ---------- Accounts: mail, calendars, 1Password ----------

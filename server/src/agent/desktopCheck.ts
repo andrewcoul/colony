@@ -1,9 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { generateText } from "ai";
 import type { ModelTarget } from "../settings.js";
-import type { ModelFactory } from "./run.js";
+import type { ModelSource } from "./pi/models.js";
 
 /**
  * A screenshot of a Bot desktop (1280×800): a terminal where `echo … && uname -sr` and `ls`
@@ -19,16 +18,24 @@ export type DesktopVerdict = { model: string; reads: boolean; points: boolean; c
  * Can this model drive a desktop? It must read text off a screenshot and point at a small
  * target within a few pixels. Passing is a good sign, not a guarantee for long tasks.
  */
-export async function checkDesktop(target: ModelTarget, factory: ModelFactory): Promise<DesktopVerdict> {
-  const image = fs.readFileSync(SCREENSHOT);
-  const ask = async (question: string) => (await generateText({
-    model: factory(target, `colony-desktop-check-${target.model}`),
-    // Reasoning models think before answering; leave them room.
-    maxOutputTokens: 4000,
-    maxRetries: 1,
-    abortSignal: AbortSignal.timeout(120_000),
-    messages: [{ role: "user", content: [{ type: "text", text: question }, { type: "image", image, mediaType: "image/png" }] }],
-  })).text;
+export async function checkDesktop(target: ModelTarget, source: ModelSource): Promise<DesktopVerdict> {
+  const image = fs.readFileSync(SCREENSHOT).toString("base64");
+  const ref = source.ref(target);
+  const found = source.models.getModel(ref.provider, ref.modelId);
+  const ask = async (question: string) => {
+    if (!found) throw new Error("That model isn't available.");
+    // Shown the picture whatever the catalog says: that's what's being checked.
+    const reply = await source.models.completeSimple({ ...found, input: ["text", "image"] }, {
+      messages: [{ role: "user", content: [{ type: "text", text: question }, { type: "image", data: image, mimeType: "image/png" }], timestamp: Date.now() }],
+    }, {
+      // Reasoning models think before answering; leave them room.
+      maxTokens: 4000,
+      signal: AbortSignal.timeout(120_000),
+      sessionId: `colony-desktop-check-${target.model}`,
+    });
+    if (reply.stopReason === "error" || reply.stopReason === "aborted") throw new Error(reply.errorMessage || "The model didn't answer.");
+    return reply.content.flatMap((block) => (block.type === "text" ? [block.text] : [])).join("");
+  };
   try {
     const read = await ask("This is a 1280x800 screenshot of a Linux desktop. What exact commands were typed in the terminal? Answer with just the commands, one per line.");
     const reads = /uname/.test(read) && /\bls\b/.test(read);

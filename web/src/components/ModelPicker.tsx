@@ -45,9 +45,9 @@ export function ModelPicker({ value, onChange, desktopOnly = false }: { value: s
           ))}
         </select>
       </label>
-      {missing && <span className="text-meta text-lemon">That model isn't in Settings any more, so this Bot uses {modelLabel(defaultModel, models) || "the default"}.</span>}
+      {missing && <span className="text-meta text-lemon">That model isn't available (signed out, or no longer picked in Settings), so this Bot uses {modelLabel(defaultModel, models) || "the default"}.</span>}
       <button type="button" onClick={openSettings} className="self-end text-meta text-muted hover:text-ink">
-        {models.length <= 1 ? "Add models or providers in Settings" : "Manage models"}
+        {models.length <= 1 ? "Sign in and pick models in Settings" : "Manage models"}
       </button>
     </div>
   );

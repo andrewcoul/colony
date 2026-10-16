@@ -7,8 +7,8 @@ import { z } from "zod";
 // Config is read at import time, so point it at a temp data dir first.
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "colony-pi-"));
 process.env.COLONY_DATA_DIR = dataDir;
-process.env.COLONY_API_BASE_URL = "http://model.invalid/v1";
-process.env.COLONY_MODELS = "mock-model,other-model";
+process.env.COLONY_DEV_BASE_URL = "http://model.invalid/v1";
+process.env.COLONY_DEV_MODELS = "mock-model,other-model";
 
 const { openDb } = await import("../../db.js");
 const { EventLog } = await import("../../events.js");
@@ -138,7 +138,7 @@ describe("pi runtime: Bots", () => {
   test("a chat from before the conversation starts it with its recent history", async () => {
     const script = scripted.play([textTurn("Picking up from where we were.")]);
     const { store, call } = await setup();
-    const bot = store.createBot({ name: "Old", title: "", description: "", model: "env::mock-model", computer: false });
+    const bot = store.createBot({ name: "Old", title: "", description: "", model: "dev::mock-model", computer: false });
     store.createMessage({ chatId: bot.chatId, author: "user", text: "We decided on Lisbon." });
     store.createMessage({ chatId: bot.chatId, author: bot.id, text: "Lisbon it is." });
     await call("POST", `/chats/${bot.chatId}/messages`, { text: "Where are we going?" });
@@ -410,7 +410,7 @@ describe("pi runtime: the Bot's desktop", () => {
   } as never;
 
   test("every action returns a fresh screenshot to the model, and only the newest two stay in what it's sent", async () => {
-    settings.setDesktopModels("env", { "mock-model": true });
+    settings.setDesktopModels("dev", { "mock-model": true });
     const script = scripted.play([
       textTurn("Hi."),
       toolTurn("desktop_click", { x: 10, y: 20 }),

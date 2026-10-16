@@ -1,13 +1,12 @@
 import fs from "node:fs";
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
-import { Type, type AssistantMessage, type ImageContent, type Message as PiMessage, type TextContent, type ToolResultMessage, type UserMessage } from "@earendil-works/pi-ai";
+import { Type, type Api, type AssistantMessage, type ImageContent, type Message as PiMessage, type TextContent, type ToolResultMessage, type UserMessage } from "@earendil-works/pi-ai";
 import {
   AssistantEntry, createRegistry, defineExtension, GenerationTask, Harness, hook, UserEntry, watchEvents,
   type AgentEvent, type AgentEventStream, type Conversation, type ConversationId, type Registry, type Storage, type Submission, type SubmissionId,
-  type ToolExecutionApi, type ToolRegistration,
+  type ModelRef, type ToolExecutionApi, type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import type { ImagePart, ModelMessage } from "ai";
 import { z } from "zod";
 import { chatFilePath, isImage } from "../../chatFiles.js";
 import { config } from "../../config.js";
@@ -21,7 +20,7 @@ import { usageEntry } from "../../spending.js";
 import type { RunCheckpoint, Store } from "../../store.js";
 import type { ApprovalGate } from "../approvals.js";
 import { genericDesktopTools, type DesktopMode } from "../desktopTools.js";
-import { historyFor, steerNote, stripNotes, systemPrompt } from "../prompt.js";
+import { historyFor, steerNote, stripNotes, systemPrompt, type ImagePart, type ModelMessage } from "../prompt.js";
 import { replayOf, type Runner, type StartOptions } from "../runner.js";
 import { Scrubber } from "../scrub.js";
 import { coreTools, type ColonyTool, type ToolContext, type ToolRegistry } from "../tools.js";
@@ -361,7 +360,9 @@ export class PiRunner implements Runner {
     const sees = this.models.models.getModel(this.models.ref(run.target).provider, run.target.model)?.input.includes("image") ?? false;
     const photos = new Set(pending.filter((item) => isHuman(item.author) && item.attachments.length).slice(-4).map((item) => item.id));
     const history = historyFor(bot, pending, names, sees ? (message) => (photos.has(message.id) ? photosOf(message, this.store) : []) : undefined);
-    return { ids: pending.map((message) => message.id), messages: history.map((message) => piMessage(message, run.target)) };
+    const ref = this.models.ref(run.target);
+    const api = this.models.models.getModel(ref.provider, ref.modelId)?.api ?? "openai-completions";
+    return { ids: pending.map((message) => message.id), messages: history.map((message) => piMessage(message, ref, api)) };
   }
 
   private async execute(run: PiRun, resuming: boolean) {
@@ -455,7 +456,7 @@ export class PiRunner implements Runner {
   private prepare(run: PiRun) {
     const bot = this.store.getBot(run.botId)!;
     const target = resolveModel(bot.model);
-    if (!target) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
+    if (!target) throw new Error("No model yet. Open Settings (the gear on the Bots screen) and sign in to ChatGPT or OpenCode.");
     run.target = target;
     const botName = bot.name;
     const depth = run.options.depth ?? 0;
@@ -584,8 +585,10 @@ export class PiRunner implements Runner {
           step.status = "interrupted";
           step.detail = "May not have finished";
         } else if (!result || result.isError) {
-          step.status = /denied|said no/i.test(text) ? "denied" : "error";
-          step.detail = (text || "Didn't finish.").slice(0, 160);
+          // pi wraps a tool's error for the model ("<harness>[error] …</harness>"); you see just the error.
+          const said = text.replace(/^<harness>\s*(\[error\]\s*)?/, "").replace(/\s*<\/harness>$/, "").trim();
+          step.status = /denied|said no/i.test(said) ? "denied" : "error";
+          step.detail = (said || "Didn't finish.").slice(0, 160);
         } else {
           step.status = "done";
           const spec = run.registry[event.toolName];
@@ -872,19 +875,18 @@ function pruneScreenshots(messages: readonly PiMessage[]): readonly PiMessage[] 
   return changed ? pruned : messages;
 }
 
-/** A chat message as the AI SDK history built it, as a pi message. */
-function piMessage(message: ModelMessage, target: ModelTarget): PiMessage {
+/** A chat message from the history, as a pi message from this turn's model. */
+function piMessage(message: ModelMessage, ref: ModelRef, api: Api): PiMessage {
   const timestamp = Date.now();
   if (message.role === "assistant") {
-    const text = typeof message.content === "string" ? message.content : message.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n");
     return {
-      role: "assistant", content: [{ type: "text", text }], api: target.provider.protocol === "anthropic" ? "anthropic-messages" : "openai-completions",
-      provider: `colony:${target.provider.id}`, model: target.model, stopReason: "stop", timestamp,
+      role: "assistant", content: [{ type: "text", text: message.content }], api,
+      provider: ref.provider, model: ref.modelId, stopReason: "stop", timestamp,
       usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
     } as AssistantMessage;
   }
-  const content = typeof message.content === "string" ? message.content : (message.content as (ImagePart | { type: "text"; text: string })[]).map((part): TextContent | ImageContent =>
-    part.type === "text" ? { type: "text", text: part.text } : { type: "image", data: Buffer.from(part.image as Uint8Array).toString("base64"), mimeType: part.mediaType ?? "image/png" });
+  const content = typeof message.content === "string" ? message.content : message.content.map((part): TextContent | ImageContent =>
+    part.type === "text" ? { type: "text", text: part.text } : { type: "image", data: Buffer.from(part.image).toString("base64"), mimeType: part.mediaType ?? "image/png" });
   return { role: "user", content, timestamp } as UserMessage;
 }
 

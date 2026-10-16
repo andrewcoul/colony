@@ -123,7 +123,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
             <KeyRound size={18} className="shrink-0 text-lemon" />
             <span className="flex flex-col gap-0.5">
               <strong className="text-sm">Connect a model</strong>
-              <span className="text-meta text-soft">Add an API key from any OpenAI-compatible provider so your Bots can think.</span>
+              <span className="text-meta text-soft">Sign in to ChatGPT or OpenCode in Settings so your Bots can think.</span>
             </span>
           </button>
         )}

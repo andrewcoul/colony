@@ -8,24 +8,14 @@ function list(value: string | undefined) {
   return (value ?? "").split(",").map((item) => item.trim()).filter(Boolean);
 }
 
-const models = list(process.env.COLONY_MODELS);
-
 /** An installed Colony's home folder (set by its launcher); unset when run from a checkout. */
 const home = process.env.COLONY_HOME ? path.resolve(process.env.COLONY_HOME) : null;
 
-export type ModelConfig = { providerName: string; baseURL: string; apiKey: string; models: string[]; defaultModel: string };
-
 /**
- * Starting values for the model provider (any OpenAI-compatible endpoint). Settings in
- * the app take over once saved; see settings.ts.
+ * A keyless OpenAI-compatible server (Ollama, LM Studio, a test double) offered beside the
+ * sign-ins, for development. Off unless both are set.
  */
-const model: ModelConfig = {
-  baseURL: process.env.COLONY_API_BASE_URL ?? "",
-  apiKey: process.env.COLONY_API_KEY ?? "",
-  providerName: process.env.COLONY_PROVIDER_NAME ?? "colony",
-  models,
-  defaultModel: models[0] ?? "",
-};
+const dev = { baseURL: process.env.COLONY_DEV_BASE_URL ?? "", models: list(process.env.COLONY_DEV_MODELS) };
 
 /** Server configuration from environment variables (see .env.example). */
 export const config = {
@@ -37,12 +27,10 @@ export const config = {
   updateRepo: process.env.COLONY_UPDATE_REPO ?? "andrewcoul/colony",
   /** Where to ask about releases (tests point this at a local server). */
   updateApi: process.env.COLONY_UPDATE_API ?? "https://api.github.com",
-  model,
+  dev,
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
   /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */
   allowedUsers: list(process.env.COLONY_ALLOWED_USERS),
-  /** The agent runtime: "pi" (pi durable, persistent conversations; the default) or "ai-sdk" (per-step checkpoints, the fallback). */
-  runtime: (process.env.COLONY_RUNTIME === "ai-sdk" ? "ai-sdk" : "pi") as "pi" | "ai-sdk",
   limits: {
     historyMessages: 40,
     maxSteps: 25,

@@ -4,41 +4,25 @@ import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { MockLanguageModelV4, convertArrayToReadableStream } from "ai/test";
 import { WebSocket } from "ws";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "colony-nodes-"));
 process.env.COLONY_DATA_DIR = dataDir;
-process.env.COLONY_API_BASE_URL = "http://model.invalid/v1";
-process.env.COLONY_MODELS = "mock-model";
+process.env.COLONY_DEV_BASE_URL = "http://model.invalid/v1";
+process.env.COLONY_DEV_MODELS = "mock-model";
 
 const { openDb } = await import("./db.js");
 const { EventLog } = await import("./events.js");
 const { Store } = await import("./store.js");
 const { ApprovalGate } = await import("./agent/approvals.js");
-const { AgentRunner } = await import("./agent/run.js");
+const { PiRunner } = await import("./agent/pi/runner.js");
+const { MemoryStorage } = await import("@earendil-works/pi-durable");
+const { scriptedModels, textTurn, toolTurn } = await import("./agent/pi/testkit.js");
 const { coreTools } = await import("./agent/tools.js");
 const { NodeHub, pcToolsFor } = await import("./nodes.js");
 (await import("./settings.js")).loadSettings();
 
-const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
-const textTurn = (text: string) => [
-  { type: "stream-start", warnings: [] },
-  { type: "text-start", id: "t" },
-  { type: "text-delta", id: "t", delta: text },
-  { type: "text-end", id: "t" },
-  { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
-];
-const toolTurn = (toolName: string, input: unknown, id = toolName) => [
-  { type: "stream-start", warnings: [] },
-  { type: "tool-call", toolCallId: `call-${id}`, toolName, input: JSON.stringify(input) },
-  { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage },
-];
-let turns: unknown[][] = [];
-let call = 0;
-const model = new MockLanguageModelV4({
-  doStream: async () => ({ stream: convertArrayToReadableStream(turns[Math.min(call++, turns.length - 1)] as never[]) }),
-});
+const scripted = scriptedModels();
 
 /** Two Bots, Luke and Ivy, and a server your PCs connect to. */
 async function setup() {
@@ -47,14 +31,14 @@ async function setup() {
   const store = new Store(db, events);
   const gate = new ApprovalGate(store);
   const hub = new NodeHub(store, events);
-  const runner = new AgentRunner(store, events, gate, (botId) => ({ ...coreTools, ...pcToolsFor(hub, store, botId) }), () => model);
+  const runner = await PiRunner.open(store, events, gate, (botId) => ({ ...coreTools, ...pcToolsFor(hub, store, botId) }), { storage: new MemoryStorage(), models: scripted.source });
   hub.stopBot = (botId) => runner.stopBot(botId);
   const server = http.createServer();
   server.on("upgrade", (request, socket, head) => hub.upgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/nodes/connect`;
-  const luke = store.createBot({ name: "Luke", title: "", description: "", model: "env::mock-model", computer: false });
-  const ivy = store.createBot({ name: "Ivy", title: "", description: "", model: "env::mock-model", computer: false });
+  const luke = store.createBot({ name: "Luke", title: "", description: "", model: "dev::mock-model", computer: false });
+  const ivy = store.createBot({ name: "Ivy", title: "", description: "", model: "dev::mock-model", computer: false });
   return { store, gate, hub, runner, luke, ivy, url, close: () => server.close() };
 }
 
@@ -122,13 +106,12 @@ describe("This PC", () => {
     const { store, gate, hub, runner, luke, url, close } = await setup();
     const laptop = await fakePc(url, "pc-laptop-0001", "Laptop", ["browser", "shell"]);
     await until(() => hub.offered("pc-laptop-0001").size > 0);
-    call = 0;
-    turns = [
-      toolTurn("pc_browser_open", { url: "https://example.com" }, "a"),
-      toolTurn("pc_browser_click", { text: "More" }, "b"),
-      toolTurn("pc_shell", { command: "lp boarding.pdf" }, "c"),
+    scripted.play([
+      toolTurn("pc_browser_open", { url: "https://example.com" }),
+      toolTurn("pc_browser_click", { text: "More" }),
+      toolTurn("pc_shell", { command: "lp boarding.pdf" }),
       textTurn("Printed."),
-    ];
+    ]);
     store.createMessage({ chatId: luke.chatId, author: "user", text: "Print the boarding passes" });
     runner.start(luke.chatId, luke.id);
 
@@ -154,8 +137,7 @@ describe("This PC", () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     const desktop = await fakePc(url, "pc-desktop-0001", "Desktop", ["shell"]);
     await until(() => hub.offered("pc-desktop-0001").size > 0);
-    call = 0;
-    turns = [toolTurn("pc_shell", { command: "hostname" }, "a"), toolTurn("pc_shell", { command: "hostname", pc: "LAPTOP" }, "b"), textTurn("Done.")];
+    scripted.play([toolTurn("pc_shell", { command: "hostname" }), toolTurn("pc_shell", { command: "hostname", pc: "LAPTOP" }), textTurn("Done.")]);
     store.createMessage({ chatId: luke.chatId, author: "user", text: "Check both" });
     runner.start(luke.chatId, luke.id);
     const first = await until(() => store.listApprovals("pending")[0]);
@@ -176,8 +158,7 @@ describe("This PC", () => {
     const { store, gate, hub, runner, luke, url, close } = await setup();
     const laptop = await fakePc(url, "pc-laptop-0001", "Laptop", ["browser", "shell"]);
     await until(() => hub.offered("pc-laptop-0001").size > 0);
-    call = 0;
-    turns = [toolTurn("pc_browser_open", { url: "https://example.com" }), toolTurn("pc_shell", { command: "dir" }), textTurn("Done.")];
+    scripted.play([toolTurn("pc_browser_open", { url: "https://example.com" }), toolTurn("pc_shell", { command: "dir" }), textTurn("Done.")]);
     store.createMessage({ chatId: luke.chatId, author: "user", text: "Go" });
     runner.start(luke.chatId, luke.id);
     gate.resolve((await until(() => store.listApprovals("pending")[0])).id, true);

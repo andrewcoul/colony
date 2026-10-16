@@ -35,7 +35,7 @@ has no accounts: your Tailscale network is the only way in.
 ## Requirements
 
 - Windows, macOS or Linux with **Node.js 22.19+** (Colony uses the built-in `node:sqlite`)
-- An **OpenAI-compatible API**: OpenRouter, xAI, OpenCode Go, a local server…
+- A **ChatGPT** plan or an **OpenCode** subscription (Go, or a Zen balance). No API keys.
 - Optional: **Docker Desktop**, for Bot computers
 - Optional: **self-hosted Firecrawl** at `127.0.0.1:3002`, for web search and reading
 - Optional: **Tailscale**, for your phone and other devices
@@ -96,27 +96,26 @@ npm start                   # http://127.0.0.1:8787
 
 ## Connect models
 
-Open Colony and tap the **gear** (Settings) to connect models.
-- **Add provider**: pick a preset or type a base URL, then paste its API key.
-- Choose the provider's **API format**. Most providers are OpenAI-compatible.
-  Claude uses the Anthropic format, both from `api.anthropic.com` and through
-  gateways that offer it (e.g. OpenCode Go's Claude models). OpenRouter serves
-  Claude in the OpenAI format.
-- **Check connection** lists that provider's models; choose the ones you want.
-- Add as many providers as you like, each with its own key. For example,
-  OpenRouter for Claude, OpenCode Go for DeepSeek, and Ollama for local models.
-- Each Bot uses any model from any provider (pick it in the Bot's profile). Set
-  the **default model** for new Bots at the top of Settings.
-- Change keys, providers or models any time. The next reply uses them, with no
-  restart.
-- If you remove a model or provider, Bots that used it fall back to the default.
-- A Bot's failed reply shows the provider's own error, e.g. a model that needs a
-  different API.
-- Keys are saved in `data/settings.json`, readable only by you. Devices only ever
-  see their last four characters.
-- A saved key is only ever sent to the address it was saved for.
+Open Colony and tap the **gear** (Settings). Models come from your subscriptions,
+signed in through your browser. There are no API keys to paste.
+- **ChatGPT**: open it, choose **Sign in with ChatGPT**, and finish on OpenAI's
+  page. It hands back to the PC running Colony. From a phone or another computer,
+  the last page won't load; paste its address into Colony instead.
+- **OpenCode Go** or **OpenCode Zen**: choose **Sign in to OpenCode**, open
+  OpenCode on any device, pick the workspace with your subscription, and approve
+  the code Colony shows. One sign-in covers both Go and Zen.
+- Pick the models your Bots may use from each one's list. Each Bot uses any
+  picked model (choose it in the Bot's profile). Set the **default model** for
+  new Bots at the top of Settings.
+- Change models any time. The next reply uses them, with no restart.
+- If you sign out or remove a model, Bots that used it fall back to the default.
+- Sign-ins are saved in `data/credentials.json`, readable only by you, and
+  renewed as they expire. Your devices never see them.
+- **Voice** is the one exception: sign-ins don't cover audio, so Settings → Voice
+  takes an OpenAI API key (or a local Whisper/Kokoro server with none).
 
-Optionally, `.env` (see `.env.example`) can supply a first provider instead.
+For development, `.env` can add a keyless OpenAI-compatible server such as Ollama
+(`COLONY_DEV_BASE_URL`, `COLONY_DEV_MODELS`; see `.env.example`).
 
 Everything Colony stores lives in `data/`: the SQLite database, settings, each
 Bot's folder (`data/bots/<id>/` with `SOUL.md`, `MEMORY.md`, `skills/`,
@@ -325,8 +324,8 @@ An installed server lives in `%LOCALAPPDATA%\Colony`:
 - `.env`, `data/` and `logs/`.
 
 - **Server** (`server/`): Hono on Node, `node:sqlite`, and pi durable with pi-ai for the
-  agent runtime (`agent/pi/`, conversations in `data/agent.db`). `COLONY_RUNTIME=ai-sdk`
-  switches back to the earlier Vercel AI SDK runtime.
+  agent runtime (`agent/pi/`, conversations in `data/agent.db`). Models are pi-ai's
+  ChatGPT and OpenCode providers, signed in with their own login flows (`agent/pi/models.ts`).
   - Persistent state goes through `Store`, and every change is a sequenced event.
   - The app follows those events over a resumable SSE stream (`/api/events`).
   - The runner (`PiRunner`) turns a Bot's turn into streamed text, steps and presence.

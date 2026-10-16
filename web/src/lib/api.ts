@@ -26,16 +26,28 @@ export type BrowserInput =
 
 export type FileEntry = { name: string; path: string; type: "file" | "dir"; size: number; modifiedAt: number };
 
-/** "openai": OpenAI-compatible chat completions; "anthropic": Anthropic's Messages API (Claude). */
-export type Protocol = "openai" | "anthropic";
-/** `prices`: each model's price per million tokens, set by hand or built in (models without one aren't listed). */
-export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null; prices: Record<string, Price> };
+/** The sign-ins models come from (server/src/settings.ts). */
+export type SignInId = "chatgpt" | "opencode";
+export type SignInView = { id: SignInId; name: string; signedIn: boolean; account: string | null };
+/** A model a provider offers. */
+export type CatalogModel = { id: string; name: string; images: boolean };
+/**
+ * A provider: ChatGPT, OpenCode Go or Zen (or a dev server from .env, `signIn` null), the models
+ * picked from it, and what it offers. `prices`: each picked model's price per million tokens, set or built in.
+ */
+export type ProviderView = { id: string; name: string; signIn: SignInId | null; signedIn: boolean; models: string[]; desktop: string[]; prices: Record<string, Price>; catalog: CatalogModel[] };
 /** `prices`: changed ones only; null puts a model back to its built-in price. */
-export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[]; prices?: Record<string, Price | null> };
+export type ProviderInput = { models: string[]; desktop?: string[]; prices?: Record<string, Price | null> };
+/** How a sign-in continues: open `url` (ChatGPT), or approve `userCode` at `verificationUri` (OpenCode). */
+export type ModelSignInStart =
+  | { id: string; kind: "browser"; url: string }
+  | { id: string; kind: "code"; userCode: string; verificationUri: string };
+export type ModelSignInStatus = { status: "pending" | "done" | "error"; error?: string };
 export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
 /** Voice calls (server/src/settings.ts VoiceSettings). */
 export type VoiceSettings = {
-  providerId: string | null;
+  /** OpenAI-compatible audio endpoints; "" is off. */
+  baseURL: string;
   transcribeModel: string;
   speechModel: string;
   voice: string;
@@ -44,7 +56,9 @@ export type VoiceSettings = {
   quietFrom: string;
   quietTo: string;
 };
-export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings };
+/** Voice as devices see it: the key's last four characters at most. */
+export type VoiceView = VoiceSettings & { keySet: boolean; keyHint: string | null };
+export type Settings = { providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
 
 /** The server's version and updates (server/src/updates.ts). */
 export type SystemInfo = {
@@ -133,11 +147,15 @@ export const api = {
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
   spending: () => request<Spending>("GET", "/spending"),
-  addProvider: (input: ProviderInput) => request<Settings>("POST", "/settings/providers", input),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
-  deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),
+  startModelSignIn: (id: SignInId) => request<ModelSignInStart>("POST", `/settings/signins/${id}/start`),
+  modelSignInStatus: (session: string) => request<ModelSignInStatus>("GET", `/settings/signins/session/${encodeURIComponent(session)}`),
+  finishModelSignIn: (session: string, url: string) => request<void>("POST", `/settings/signins/session/${encodeURIComponent(session)}/finish`, { url }),
+  cancelModelSignIn: (session: string) => request<void>("POST", `/settings/signins/session/${encodeURIComponent(session)}/cancel`),
+  signOut: (id: SignInId) => request<Settings>("DELETE", `/settings/signins/${id}`),
   setDefaultModel: (model: string) => request<Settings>("PUT", "/settings/default-model", { model }),
-  setVoice: (patch: Partial<VoiceSettings>) => request<Settings>("PUT", "/settings/voice", patch),
+  /** `apiKey`: a new key, "" to remove it; left out keeps it. */
+  setVoice: (patch: Partial<VoiceSettings> & { apiKey?: string }) => request<Settings>("PUT", "/settings/voice", patch),
   /** A sample line in a voice, as audio. */
   tryVoice: async (voice: string) => {
     const response = await fetch("/api/settings/voice/try", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ voice }) });
@@ -146,7 +164,6 @@ export const api = {
   },
   forgetNode: (nodeId: string) => request<{ ok: true }>("DELETE", `/nodes/${encodeURIComponent(nodeId)}`),
   declineCall: (callId: string) => request<{ ok: true }>("POST", `/calls/${encodeURIComponent(callId)}/decline`),
-  checkProvider: (input: { providerId?: string; baseURL: string; protocol: Protocol; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
   soul: (botId: string) => request<{ content: string }>("GET", `/bots/${botId}/soul`),
   saveSoul: (botId: string, content: string) => request<void>("PUT", `/bots/${botId}/soul`, { content }),
   memory: (botId: string) => request<BotMemory>("GET", `/bots/${botId}/memory`),

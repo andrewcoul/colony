@@ -12,8 +12,8 @@ import { afterAll, describe, expect, test } from "vitest";
  */
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "colony-restart-"));
 process.env.COLONY_DATA_DIR = root;
-process.env.COLONY_API_BASE_URL = "http://model.invalid/v1";
-process.env.COLONY_MODELS = "mock-model";
+process.env.COLONY_DEV_BASE_URL = "http://model.invalid/v1";
+process.env.COLONY_DEV_MODELS = "mock-model";
 
 const { openDb } = await import("../../db.js");
 const { EventLog } = await import("../../events.js");

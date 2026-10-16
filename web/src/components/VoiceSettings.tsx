@@ -6,6 +6,8 @@ import { Face } from "./Face";
 import { Button } from "./ui/button";
 import { Field, Input } from "./ui/input";
 
+/** OpenAI's audio endpoints, voice's usual address. */
+const OPENAI = "https://api.openai.com/v1";
 /** OpenAI's voices; local servers (Kokoro and others) have their own names, typed in by hand. */
 const VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer", "verse"];
 
@@ -18,10 +20,12 @@ export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: S
   const [trying, setTrying] = useState<string | null>(null);
   const player = useRef<HTMLAudioElement | null>(null);
   useEffect(() => () => player.current?.pause(), []);
-  const providers = settings.providers.filter((provider) => provider.protocol === "openai");
+  const [address, setAddress] = useState(settings.voice.baseURL);
+  const [key, setKey] = useState("");
 
-  async function save(patch: Partial<VoiceSettings>) {
-    setVoice((current) => ({ ...current, ...patch, botVoices: { ...current.botVoices, ...patch.botVoices } }));
+  async function save(patch: Partial<VoiceSettings> & { apiKey?: string }) {
+    const { apiKey: _, ...shown } = patch;
+    setVoice((current) => ({ ...current, ...shown, botVoices: { ...current.botVoices, ...shown.botVoices } }));
     setError("");
     try { onSaved(await api.setVoice(patch)); } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't save that."); }
   }
@@ -41,7 +45,7 @@ export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: S
     }
   }
 
-  const ready = Boolean(voice.providerId && providers.some((provider) => provider.id === voice.providerId));
+  const ready = Boolean(settings.voice.baseURL);
   const TryButton = ({ name, id }: { name: string; id: string }) => (
     <Button variant="outline" size="icon" aria-label={`Hear ${name}`} disabled={!ready || !name || trying !== null} onClick={() => void tryVoice(name, id)}>
       {trying === id ? <Loader2 size={15} className="animate-spin" /> : <Volume2 size={15} />}
@@ -53,18 +57,24 @@ export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: S
       <button type="button" onClick={onBack} className="-mt-1 flex items-center gap-1 self-start text-label text-muted hover:text-ink"><ChevronLeft size={15} />Settings</button>
       <p className="m-0 text-label leading-relaxed text-soft">
         Talk to a Bot with the call button in its chat. What you say is transcribed and posted as your messages; replies are read aloud as they're written.
-        Any provider with OpenAI-style audio works, including local Whisper and Kokoro servers.
+        OpenAI works with an API key, and so does any server with OpenAI-style audio, including local Whisper and Kokoro servers.
       </p>
 
-      <label className="flex flex-col gap-1.5">
-        <span className="text-label text-muted">Provider</span>
-        <select value={voice.providerId ?? ""} onChange={(event) => void save({ providerId: event.target.value || null })}
-          className="h-[42px] w-full rounded-lg border border-rule bg-ground px-3 text-sm text-ink outline-none">
-          <option value="">Off</option>
-          {providers.map((provider) => <option key={provider.id} value={provider.id}>{provider.name}</option>)}
-        </select>
-        {providers.length === 0 && <span className="text-meta text-muted">Add an OpenAI-compatible provider first (Anthropic's API has no audio).</span>}
-      </label>
+      <form className="flex flex-col gap-3 rounded-xl border border-rule px-3.5 py-3"
+        onSubmit={(event) => { event.preventDefault(); void save({ baseURL: address.trim() || OPENAI, ...(key.trim() ? { apiKey: key.trim() } : {}) }).then(() => setKey("")); }}>
+        <span className="text-meta text-muted">Sign-ins don't cover audio, so voice uses an API key of its own: OpenAI's, or none for a local server.</span>
+        <Field label="Address" htmlFor="voice-url">
+          <Input id="voice-url" value={address} onChange={(event) => setAddress(event.target.value)} placeholder={OPENAI} inputMode="url" autoCapitalize="off" spellCheck={false} className="font-mono text-[13px]" />
+        </Field>
+        <Field label="API key" htmlFor="voice-key">
+          <Input id="voice-key" type="password" value={key} onChange={(event) => setKey(event.target.value)} autoComplete="off" spellCheck={false}
+            placeholder={settings.voice.keySet ? `Saved key${settings.voice.keyHint ? ` ending ${settings.voice.keyHint}` : ""} · leave blank to keep` : "sk-… (blank for local servers)"} />
+        </Field>
+        <div className="flex gap-2">
+          <Button type="submit" variant="primary" className="flex-1">{ready ? "Save" : "Turn voice on"}</Button>
+          {ready && <Button variant="outline" onClick={() => void save({ baseURL: "", apiKey: "" }).then(() => { setAddress(""); setKey(""); })}>Turn off</Button>}
+        </div>
+      </form>
 
       <div className="grid grid-cols-2 gap-3 max-sm:grid-cols-1">
         <Field label="Transcription model" htmlFor="voice-stt">

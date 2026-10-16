@@ -9,8 +9,8 @@ import path from "node:path";
 
 const [dataDir, scenario] = process.argv.slice(2) as [string, "approval" | "write" | "read" | "acting"];
 process.env.COLONY_DATA_DIR = dataDir;
-process.env.COLONY_API_BASE_URL = "http://model.invalid/v1";
-process.env.COLONY_MODELS = "mock-model";
+process.env.COLONY_DEV_BASE_URL = "http://model.invalid/v1";
+process.env.COLONY_DEV_MODELS = "mock-model";
 
 const { openDb } = await import("../../db.js");
 const { EventLog } = await import("../../events.js");
@@ -31,7 +31,7 @@ const call = { approval: toolTurn("send_email", { to: "sarah@acme.com", body: "D
 scripted.play([textTurn("Hi."), call]);
 const runner = await PiRunner.open(store, events, gate, () => crashTools(dataDir, 1), { storage: await openNodeSqliteStorage(path.join(dataDir, "agent.db")), models: scripted.source });
 
-const bot = store.createBot({ name: "Peng", title: "", description: "", model: "env::mock-model", computer: false });
+const bot = store.createBot({ name: "Peng", title: "", description: "", model: "dev::mock-model", computer: false });
 runner.start(bot.chatId, bot.id, { hiddenPrompt: "Say hi." });
 const ready = () => {
   if (scenario === "approval") return store.listApprovals("pending").length > 0;

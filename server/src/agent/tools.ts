@@ -1,4 +1,3 @@
-import { tool, type Tool, type ToolSet } from "ai";
 import type { DesktopShot } from "../computer/desktop.js";
 import { z } from "zod";
 import { config } from "../config.js";
@@ -35,7 +34,7 @@ export type ToolContext = {
 };
 
 /**
- * A Colony tool: an AI SDK tool plus how its step reads in the transcript.
+ * A Colony tool: what it does, and how its step reads in the transcript.
  * `describe` titles the step from the input; `summarize` gives a short result.
  */
 export type ColonyTool<I = any, O = any> = {
@@ -44,8 +43,6 @@ export type ColonyTool<I = any, O = any> = {
   execute: (input: I, ctx: ToolContext) => Promise<O>;
   describe: (input: I) => string;
   summarize?: (output: O) => string | undefined;
-  /** A ready-made AI SDK tool (e.g. a provider's computer toolset) used instead of `execute`. */
-  sdkTool?: Tool;
   /** How the result reads to the model, when it isn't plain JSON (e.g. a screenshot). */
   toModelOutput?: (output: O) => unknown;
   /** What a restart that cut this tool off may do (default: by name, see replayOf in runner.ts). */
@@ -288,19 +285,3 @@ export const coreTools = {
 } satisfies Record<string, ColonyTool>;
 
 export type ToolRegistry = Record<string, ColonyTool>;
-
-/** Binds Colony tools to one run, producing an AI SDK ToolSet. Results and errors pass through the run's secret scrubber. */
-export function toToolSet(registry: ToolRegistry, ctx: ToolContext): ToolSet {
-  return Object.fromEntries(Object.entries(registry).map(([name, spec]) => [name, spec.sdkTool ?? tool({
-    description: spec.description,
-    inputSchema: spec.inputSchema,
-    execute: async (input: unknown) => {
-      try {
-        return ctx.secrets.deep(await spec.execute(input, ctx));
-      } catch (error) {
-        throw error instanceof Error ? Object.assign(new Error(ctx.secrets.text(error.message)), { name: error.name }) : error;
-      }
-    },
-    ...(spec.toModelOutput ? { toModelOutput: ({ output }: { output: unknown }) => spec.toModelOutput!(output) as never } : {}),
-  })]));
-}
