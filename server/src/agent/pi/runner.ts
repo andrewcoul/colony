@@ -472,6 +472,8 @@ export class PiRunner implements Runner {
       // Desktop tools hand their screenshot to whichever call is running (see executeTool).
       get: (target, key) => (key === "attachScreenshot" ? (shot: DesktopShot) => this.attach(run, shot) : Reflect.get(target, key)),
     })));
+    // pi runs a tool call (a resumed one too) only once its tool is installed.
+    for (const [name, spec] of Object.entries(run.registry)) this.registrationFor(name, spec);
   }
 
   private shots = new Map<PiRun, DesktopShot>();
@@ -578,7 +580,7 @@ export class PiRunner implements Runner {
         const text = (result?.content ?? []).flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" ").trim();
         const codes = ((event.entry?.data as { diagnostics?: { code?: string }[] } | undefined)?.diagnostics ?? []).map((item) => item.code);
         step.endedAt = Date.now();
-        if (codes.includes("interrupted") || text.startsWith(RESTARTED_ACTING)) {
+        if (codes.includes("interrupted") || text.includes(RESTARTED_ACTING)) {
           step.status = "interrupted";
           step.detail = "May not have finished";
         } else if (!result || result.isError) {

@@ -363,3 +363,30 @@ describe("pi runtime: compaction", () => {
     expect(after).not.toContain("4417");
   });
 });
+
+describe("pi runtime: switching over", () => {
+  test("a turn the AI SDK runtime was running when Colony was updated is picked up here, in the same reply", async () => {
+    const script = scripted.play([textTurn("Hi."), textTurn("Finished it after the update.")]);
+    const { db, store, call } = await setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Peng" });
+    await finished(store, bot.chatId, 1);
+    store.createMessage({ chatId: bot.chatId, author: "user", text: "Email Tom the notes." });
+    const reply = store.createMessage({ chatId: bot.chatId, author: bot.id, status: "streaming" });
+    store.updateMessage(reply.id, { text: "Emailing Tom", steps: [{ id: "a", tool: "send_email", title: "Emailed tom@acme.com", status: "running", startedAt: 1 }] });
+    store.saveRun({ id: reply.id, chatId: bot.chatId, botId: bot.id, messageId: reply.id, stepsBefore: 0, startedAt: Date.now(), updatedAt: Date.now(),
+      messages: JSON.stringify({ conversation: [{ role: "user", content: "Email Tom the notes." }], text: "", reasoning: "", steps: 0 }), options: {} });
+
+    // The updated Colony comes up on the same database, with the pi runtime.
+    const events = new EventLog(db);
+    const after = new Store(db, events);
+    const runner = await PiRunner.open(after, events, new ApprovalGate(after), tools, { storage: new MemoryStorage(), models: scripted.source });
+    runner.resumeAll(after.recoverAfterRestart(15 * 60_000));
+    const done = await until(() => { const message = after.getMessage(reply.id)!; return message.status === "done" && message; });
+    expect(done.text).toContain("Finished it after the update.");
+    expect(done.steps.map((step) => [step.tool, step.status])).toEqual([["send_email", "interrupted"], ["colony.restart", "done"]]);
+    const prompt = promptText(script.prompts.at(-1));
+    expect(prompt).toContain("Colony was updated while you were working");
+    expect(prompt).toContain("Email Tom the notes.");
+    expect(after.listRuns()).toEqual([]);
+  });
+});
