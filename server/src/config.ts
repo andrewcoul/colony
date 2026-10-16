@@ -41,8 +41,8 @@ export const config = {
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
   /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */
   allowedUsers: list(process.env.COLONY_ALLOWED_USERS),
-  /** The agent runtime: "ai-sdk" (per-step checkpoints) or "pi" (pi durable, persistent conversations). */
-  runtime: (process.env.COLONY_RUNTIME === "pi" ? "pi" : "ai-sdk") as "pi" | "ai-sdk",
+  /** The agent runtime: "pi" (pi durable, persistent conversations; the default) or "ai-sdk" (per-step checkpoints, the fallback). */
+  runtime: (process.env.COLONY_RUNTIME === "ai-sdk" ? "ai-sdk" : "pi") as "pi" | "ai-sdk",
   limits: {
     historyMessages: 40,
     maxSteps: 25,

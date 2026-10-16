@@ -1,6 +1,6 @@
 # Plan: Single-user Colony on pi durable, with persistent Bots
 
-Status: plan only, 2026-10-15, on branch `pi-durable`. Nothing is built yet.
+Status: built, 2026-10-15, on branch `pi-durable` (phases 1–8, one commit each; Phase 9 is for a later release). See "Where the build differs" at the end.
 
 Follows `pip-parity.md` (section 0 explains why we stayed on the AI SDK) and `family.md`. Colony is in use again, so the plan also covers runs that are in flight on the live server when the new version is installed.
 
@@ -389,3 +389,25 @@ Exit check: no `ai` / `@ai-sdk` imports, and all tests pass.
 
 1. If Claude is measurably worse on its computer without the native toolset (Phase 6), do we stop there, or accept it for persistent Bots?
 2. Should other people's data be deleted by migration v18 (as planned, with the backup as the safety net), or should the upgrade refuse until you confirm?
+
+## Where the build differs
+
+What shipped follows the plan except where noted here.
+
+- **Phase 0** was dropped: you asked to go straight to the build.
+- **Owner login (Phase 1):**
+  - Your login is recorded the first time Colony sees one, as planned, or taken from the family build's host.
+  - Requests with no login header are still allowed (Colony listens on 127.0.0.1 unless `COLONY_HOST` says otherwise). There's no startup refusal for a non-loopback `COLONY_HOST`.
+- **What Bots know about you** is edited in a Bot's profile (memory, "About you"), as before the family build. The Family page's notes box went with it. `HOUSEHOLD.md` is folded into `USER.md` once, a line per entry.
+- **The effect ledger** uses pi durable's durable per-call memo (`api.memo`) instead of a `tool_effects` table. A tool that asks first records "acting" once you approve; a rerun after a restart then says it may already have happened. No migration was needed.
+- **`message_bot`** is durable the same way: the asking call remembers which reply it's waiting for and waits for it again after a restart.
+- **Step cap:** the tool wrapper refuses calls past the cap ("reply with what you have") rather than a `beforeTool` hook.
+- **Compaction** uses pi's defaults. There's no Colony instruction added to automatic summaries: a `beforeCompact` hook can only decline or replace a summary, not add instructions.
+- **Start fresh** resets the Bot's context in the same conversation (pi's `reset()`), rather than starting a new conversation. Everything before stays in storage.
+- **History bookkeeping:** `conversations`, `conversation_seen` (which chat messages each conversation has taken in) and `message_entries` (where each reply ended, for branching), all in migration v19.
+- **Thinking:** models the catalog marks as reasoning run at pi's "medium" level.
+- **Turns the AI SDK runtime was running** at the update continue as a new pi turn in the same reply, with the cut-off steps marked interrupted and a note telling the model so. Checkpoints aren't converted message by message.
+- **Desktop check** still uses the AI SDK until Phase 9.
+- **`agent.db` size** isn't shown in Settings yet.
+- **Branch from here** asks for the new topic's name with the browser's prompt. The topic starts with a "Branched from …" line, which doesn't link back.
+- **Tests:** 145 at the start; 13 family tests went in Phase 1. With the new owner-login, migration, provider, pi runtime, compaction, branching, desktop and kill-and-restart tests, there are 164.
