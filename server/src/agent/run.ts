@@ -6,13 +6,14 @@ import { APICallError, stepCountIs, streamText, type ImagePart, type LanguageMod
 import { chatFilePath, isImage } from "../chatFiles.js";
 import { config } from "../config.js";
 import type { DesktopService, DesktopShot } from "../computer/desktop.js";
-import { canDriveDesktop, resolveModel, type ModelTarget } from "../settings.js";
+import { canDriveDesktop, ownModel, priceOf, resolveModel, type ModelTarget } from "../settings.js";
+import { monthName, shareUsedUp, usageEntry, usedUpMessage } from "../spending.js";
 import { claudeComputer, genericDesktopTools, prepareDesktopMessages, type DesktopMode } from "./desktopTools.js";
 import type { EventLog } from "../events.js";
 import type { RunCheckpoint, Store } from "../store.js";
 import type { Card, Message, Step } from "../shared/types.js";
 import type { ApprovalGate } from "./approvals.js";
-import { authorOf, isHuman, isShared, peopleIn } from "../people.js";
+import { authorOf, HOST_ID, isHuman, isShared, peopleIn } from "../people.js";
 import { historyFor, peopleNote, steerNote, stripNotes, systemPrompt } from "./prompt.js";
 import { Scrubber } from "./scrub.js";
 import type { Integrations } from "../integrations/index.js";
@@ -67,7 +68,15 @@ const snapshotJSON = (snapshot: Snapshot) => JSON.stringify(snapshot, (_key, val
   value && typeof value === "object" && !Array.isArray(value) && BINARY.has(value.type) ? { type: "text", text: "[screenshot omitted]" } : value);
 
 /** Connected accounts, when Colony has them: what each Bot can use, for its prompt and tools. */
-export type RunnerExtras = { integrations?: Integrations; guidance?: (botId: string) => string };
+export type RunnerExtras = {
+  integrations?: Integrations;
+  guidance?: (botId: string) => string;
+  /** Tells someone something that happened outside a chat they're watching (a push to their devices). */
+  notify?: (notification: { title: string; body: string; chatId: string | null; tag: string }, personId: string) => void;
+};
+
+/** Thrown before calling the model when the Bot's owner has used up their share of the shared keys. */
+class ShareUsedUp extends Error {}
 
 type ActiveRun = {
   /** The turn's first reply message: its checkpoint's id. */
@@ -152,6 +161,24 @@ export class AgentRunner {
       if (index >= 0) { run.queued.splice(index, 1); return true; }
     }
     return false;
+  }
+
+  /** Months in which someone was already told their share ran out ("personId:month"). */
+  private toldUsedUp = new Set<string>();
+
+  /** Tells the person whose share ran out, and the host, once a month. */
+  private tellUsedUp(personId: string, chatId: string) {
+    const month = monthName();
+    const key = `${personId}:${new Date().getFullYear()}-${month}`;
+    if (this.toldUsedUp.has(key)) return;
+    this.toldUsedUp.add(key);
+    const name = this.store.getPerson(personId)?.name ?? "Someone";
+    this.extras.notify?.({ title: "Your share is used up", body: usedUpMessage(this.store), chatId, tag: `spending-${personId}` }, personId);
+    this.extras.notify?.({
+      title: `${name}'s share of your keys is used up`,
+      body: `${name}'s Bots stop on shared models until the 1st unless ${name} adds a key. Change the limit in Settings › Shared keys.`,
+      chatId: null, tag: `spending-${personId}`,
+    }, HOST_ID);
   }
 
   /** Whether the Bot is working on a reply in any chat. */
@@ -289,9 +316,16 @@ export class AgentRunner {
     });
 
     // Shared models or the owner's own key; never someone else's.
-    const target = resolveModel(bot.model, { ownerId: bot.ownerId });
+    let target = resolveModel(bot.model, { ownerId: bot.ownerId });
     try {
       if (!target) throw new Error("No model is configured yet. Open Settings (the gear on the Bots screen) and add your API key.");
+      // Someone whose share of the shared keys is used up for the month goes on with their own key, or stops here.
+      if (target.provider.ownerId === null && shareUsedUp(this.store, bot.ownerId)) {
+        const own = ownModel(bot.ownerId);
+        if (!own) { this.tellUsedUp(bot.ownerId, chatId); throw new ShareUsedUp(usedUpMessage(this.store)); }
+        target = own;
+      }
+      const turnTarget = target;
       const bots = this.store.listBots();
       const names = new Map(bots.map((item) => [item.id, item.name]));
       // In a topic shared with people, each person's messages carry their name.
@@ -429,6 +463,10 @@ export class AgentRunner {
             }
             break;
           }
+          case "finish-step":
+            // What this step used and cost, on whichever key paid for it.
+            this.store.recordUsage(usageEntry(turnTarget, bot, part.usage, priceOf(turnTarget.provider, turnTarget.model)));
+            break;
           case "error":
             throw part.error;
         }
@@ -442,7 +480,7 @@ export class AgentRunner {
         console.warn(`[colony] ${bot.name} run failed:`, failure instanceof Error ? `${failure.name}: ${failure.message.slice(0, 300)}` : "unknown error");
         // Say what the provider said (e.g. a model that needs another protocol), without request details.
         const said = APICallError.isInstance(failure) ? failure.message.replace(/\s+/g, " ").trim().slice(0, 160) : "";
-        error = failure instanceof Error && /configured|Nothing to reply/.test(failure.message)
+        error = failure instanceof ShareUsedUp || (failure instanceof Error && /configured|Nothing to reply/.test(failure.message))
           ? failure.message
           : `The model couldn't finish this reply${said && target ? ` (${target.provider.name} said: “${said}”)` : ""}. Check this Bot's model in its profile or in Settings.`;
       }

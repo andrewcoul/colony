@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { AudioLines, ChevronLeft, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Monitor, Plus, Server, Trash2, X } from "lucide-react";
+import { AudioLines, ChevronLeft, ChevronRight, Coins, Eye, EyeOff, KeyRound, Loader2, Monitor, Plus, Server, Trash2, X } from "lucide-react";
+import type { Price } from "@shared/types";
 import type { AccountKind } from "@shared/types";
 import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settings } from "../lib/api";
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
 import { VoiceSettingsEditor } from "./VoiceSettings";
 import { ThisPcSettings } from "./ThisPcSettings";
 import { FamilySettings, PersonAvatar } from "./People";
+import { SharedKeysPage, SpendingPage } from "./Spending";
 import { desktopApp } from "../lib/desktop";
 import { HOST_ID, useIsHost, useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
@@ -52,6 +54,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [voicing, setVoicing] = useState(false);
   const [lending, setLending] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [spendingOpen, setSpendingOpen] = useState<"mine" | "shared" | null>(null);
   const people = useLive((s) => s.people);
   // Shared models, voice, accounts and updates are the host's to look after.
   const host = useIsHost();
@@ -59,7 +62,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   useEffect(() => {
     if (!open) return;
-    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setPeopleOpen(false); setError("");
+    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setPeopleOpen(false); setSpendingOpen(null); setError("");
     void api.settings().then(setSettings).catch(() => setError("Couldn't load settings."));
   }, [open]);
 
@@ -72,12 +75,16 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add your own key" : editing === "new-shared" ? "Add a shared provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "Family" : "Settings"}
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add your own key" : editing === "new-shared" ? "Add a shared provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "Family" : spendingOpen === "mine" ? "Spending" : spendingOpen === "shared" ? "Shared keys" : "Settings"}
       description={undefined}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
       ) : peopleOpen ? (
         <FamilySettings onBack={() => setPeopleOpen(false)} />
+      ) : spendingOpen === "mine" ? (
+        <SpendingPage onBack={() => setSpendingOpen(null)} />
+      ) : spendingOpen === "shared" ? (
+        <SharedKeysPage onBack={() => setSpendingOpen(null)} />
       ) : lending ? (
         <ThisPcSettings onBack={() => setLending(false)} />
       ) : voicing && settings ? (
@@ -111,6 +118,8 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             empty={host ? null : "No key of your own yet."}
             onEdit={setEditing} onAdd={() => setEditing("new")} addLabel="Add your own key" />
           <div className="flex flex-col gap-2">
+            <SettingsRow icon={<Coins size={16} />} title="Spending" onClick={() => setSpendingOpen("mine")}
+              detail={host ? "What your Bots cost this month, by Bot" : `What your Bots cost this month, on your keys and ${hostName}'s`} />
             {(host || settings?.voice.providerId) && (
               <SettingsRow icon={<AudioLines size={16} />} title="Calls" onClick={() => setVoicing(true)} disabled={!settings}
                 detail={settings?.voice.providerId
@@ -130,7 +139,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               providers={settings?.providers.filter((provider) => !provider.ownerId) ?? []}
               empty="No shared models yet. Add a provider so everyone's Bots can think."
               onEdit={setEditing} onAdd={() => setEditing("new-shared")} addLabel="Add shared provider" />
-          ) : (
+          ) : null}
+          {host && people.length > 1 && (
+            <div className="mb-2 flex flex-col">
+              <SettingsRow icon={<KeyRound size={16} />} title="Shared keys" onClick={() => setSpendingOpen("shared")}
+                detail="What everyone's Bots cost you this month, and monthly limits" />
+            </div>
+          )}
+          {!host && (
             <div className="mb-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3">
               {people.find((person) => person.id === HOST_ID) && <PersonAvatar person={people.find((person) => person.id === HOST_ID)!} size={26} />}
               <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -222,6 +238,10 @@ function ProviderEditor({ provider, shared = false, onBack, onSaved }: { provide
   const [available, setAvailable] = useState<string[] | null>(null);
   const [draft, setDraft] = useState("");
   const [check, setCheck] = useState<{ state: "idle" | "checking" | "ok" | "error"; message?: string }>({ state: "idle" });
+  // Prices as typed, dollars per million tokens; models with a built-in price start with it.
+  const [prices, setPrices] = useState<Record<string, { input: string; output: string }>>(() =>
+    Object.fromEntries(Object.entries(provider?.prices ?? {}).map(([id, price]) => [id, { input: String(price.input), output: String(price.output) }])));
+  const [pricing, setPricing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -261,10 +281,25 @@ function ProviderEditor({ provider, shared = false, onBack, onSaved }: { provide
     event.preventDefault();
     setBusy(true); setError("");
     try {
-      const input = { name: name.trim(), baseURL: baseURL.trim(), protocol, apiKey: apiKey.trim() || undefined, models, desktop: desktop.filter((id) => models.includes(id)) };
+      const input = { name: name.trim(), baseURL: baseURL.trim(), protocol, apiKey: apiKey.trim() || undefined, models, desktop: desktop.filter((id) => models.includes(id)), prices: changedPrices() };
       onSaved(provider ? await api.updateProvider(provider.id, input) : await api.addProvider({ ...input, shared }));
     } catch (failure) { setError(message(failure, "Couldn't save.")); }
     finally { setBusy(false); }
+  }
+
+  /** Only the prices you changed: a cleared one goes back to the built-in price. */
+  function changedPrices() {
+    const changed: Record<string, Price | null> = {};
+    for (const id of models) {
+      const typed = prices[id];
+      const shown = provider?.prices[id];
+      if (!typed) continue;
+      if (!typed.input.trim() && !typed.output.trim()) { if (shown) changed[id] = null; continue; }
+      const next = { input: Number(typed.input), output: Number(typed.output) };
+      if (!Number.isFinite(next.input) || !Number.isFinite(next.output)) continue;
+      if (next.input !== shown?.input || next.output !== shown?.output) changed[id] = { ...next, ...(shown?.cached !== undefined ? { cached: shown.cached } : {}) };
+    }
+    return changed;
   }
 
   async function runDesktopCheck() {
@@ -376,6 +411,29 @@ function ProviderEditor({ provider, shared = false, onBack, onSaved }: { provide
           {suggestions.map((id) => (
             <button key={id} type="button" onClick={() => addModel(id)} className="truncate rounded-md px-2.5 py-1.5 text-left font-mono text-[12px] text-soft hover:bg-hover hover:text-ink">{id}</button>
           ))}
+        </div>
+      )}
+
+      {models.length > 0 && (
+        <div className="mt-2 flex flex-col">
+          <button type="button" onClick={() => setPricing(!pricing)} aria-expanded={pricing} className="flex items-center gap-1 self-start text-label text-muted hover:text-ink">
+            Prices <span className="text-meta">· for Spending, $ per million tokens</span><ChevronRight size={14} className={cn("transition-transform", pricing && "rotate-90")} />
+          </button>
+          {pricing && (
+            <div className="mt-2 flex flex-col gap-1.5">
+              <span className="grid grid-cols-[1fr_5.5rem_5.5rem] gap-2 text-meta text-muted"><span>Model</span><span>In</span><span>Out</span></span>
+              {models.map((id) => (
+                <span key={id} className="grid grid-cols-[1fr_5.5rem_5.5rem] items-center gap-2">
+                  <span className="truncate font-mono text-[12px] text-soft" title={id}>{id}</span>
+                  {(["input", "output"] as const).map((side) => (
+                    <Input key={side} value={prices[id]?.[side] ?? ""} placeholder="no price" inputMode="decimal" aria-label={`${id} price ${side === "input" ? "in" : "out"}`} className="h-8 text-[13px] tabular-nums"
+                      onChange={(e) => setPrices({ ...prices, [id]: { input: prices[id]?.input ?? "", output: prices[id]?.output ?? "", [side]: e.target.value } })} />
+                  ))}
+                </span>
+              ))}
+              <span className="text-meta text-muted">Common models start with an approximate list price. Clear both to go back to it; a model with no price counts tokens only.</span>
+            </div>
+          )}
         </div>
       )}
 

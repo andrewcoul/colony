@@ -92,6 +92,7 @@ const toolsFor = (botId: string): ToolRegistry => {
 const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop, {
   integrations,
   guidance: (botId) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)),
+  notify: (notification, personId) => void push.notify(notification, { force: true, personId }),
 });
 const calls = new Calls(store, events, runner);
 nodes.stopBot = (botId) => runner.stopBot(botId);

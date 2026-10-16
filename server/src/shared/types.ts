@@ -250,6 +250,30 @@ export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk"
  * Someone's own PC, lent to Bots through the Colony desktop app.
  * `online`: its desktop app is connected now.
  */
+/** A model's price in US dollars per million tokens: in, out, and cached in (falls back to in). */
+export type Price = { input: number; output: number; cached?: number };
+
+/** Your spending: this month by Bot, split into your own keys and shared ones, and the last 30 days. Dollars. */
+export type Spending = {
+  month: string;
+  own: number;
+  shared: number;
+  /** The host's monthly limit on your use of shared keys, if they set one. */
+  limit: number | null;
+  hostName: string;
+  bots: { botId: string; name: string; own: number; shared: number; tokens: number }[];
+  days: { date: string; own: number; shared: number }[];
+  /** Models used this month that have no price, so their tokens count but cost nothing here. */
+  unpriced: string[];
+};
+
+/** The host's view of shared keys this month: by person, then by Bot, with each person's limit. */
+export type SharedSpending = {
+  month: string;
+  total: number;
+  people: { personId: string; cost: number; limit: number | null; bots: { botId: string; name: string; cost: number }[] }[];
+};
+
 export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number; personId: string };
 
 export type AppState = {
