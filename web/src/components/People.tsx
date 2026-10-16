@@ -70,10 +70,11 @@ function You({ person, onError }: { person: Person; onError: (message: string) =
 export function FamilySettings({ onBack }: { onBack: () => void }) {
   const myId = useMyId();
   const people = useLive((s) => s.people);
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  const [counts, setCounts] = useState<Record<string, { bots: number; pcs: { name: string; capabilities: string[]; online: boolean }[] }>>({});
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
-  useEffect(() => { void api.family().then((rows) => setCounts(Object.fromEntries(rows.map((row) => [row.person.id, row.bots])))).catch(() => {}); }, [people]);
+  const nodes = useLive((s) => s.nodes);
+  useEffect(() => { void api.family().then((rows) => setCounts(Object.fromEntries(rows.map((row) => [row.person.id, { bots: row.bots, pcs: row.pcs }])))).catch(() => {}); }, [people, nodes]);
   const ordered = [...people].sort((a, b) => Number(b.id === HOST_ID) - Number(a.id === HOST_ID) || a.createdAt - b.createdAt);
 
   return (
@@ -86,7 +87,9 @@ export function FamilySettings({ onBack }: { onBack: () => void }) {
       <div className="flex flex-col rounded-xl border border-rule">
         {ordered.map((person, index) => {
           const you = person.id === myId;
-          const bots = counts[person.id] ?? 0;
+          const bots = counts[person.id]?.bots ?? 0;
+          const pcs = counts[person.id]?.pcs ?? [];
+          const SWITCH: Record<string, string> = { browser: "browser", screen: "screen", shell: "terminal", files: "files" };
           return (
             <m.div key={person.id} layout transition={soft} className={cn(index > 0 && "border-t border-rule")}>
               <button type="button" disabled={!you} onClick={() => setOpen(!open)} aria-expanded={you ? open : undefined}
@@ -99,7 +102,16 @@ export function FamilySettings({ onBack }: { onBack: () => void }) {
                       {[person.id === HOST_ID ? "runs this Colony" : null, you ? "you" : null, person.login].filter(Boolean).join(" · ")}
                     </span>
                   </span>
-                  <span className="text-label text-soft">{bots} Bot{bots === 1 ? "" : "s"}</span>
+                  <span className="flex flex-wrap items-center gap-x-4 gap-y-1 text-label text-soft">
+                    <span className="w-14 shrink-0">{bots} Bot{bots === 1 ? "" : "s"}</span>
+                    {pcs.length === 0 && <span className="flex items-center gap-1.5 text-muted"><span className="size-1.5 rounded-full border border-muted" />No PC lent</span>}
+                    {pcs.map((pc) => (
+                      <span key={pc.name} className="flex items-center gap-1.5">
+                        <span className={cn("size-1.5 rounded-full", pc.online ? "bg-mint" : "bg-muted")} />
+                        {pc.name}{pc.capabilities.length ? ` · ${pc.capabilities.filter((key) => SWITCH[key]).map((key) => SWITCH[key]).join(", ")}` : ""}
+                      </span>
+                    ))}
+                  </span>
                 </span>
                 {you && <ChevronDown size={16} className={cn("shrink-0 text-muted transition-transform", open && "rotate-180")} />}
               </button>

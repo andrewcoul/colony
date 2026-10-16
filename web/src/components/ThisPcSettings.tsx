@@ -4,7 +4,6 @@ import type { ReactNode } from "react";
 import { desktopApp, type NodeSettings, type NodeView } from "../lib/desktop";
 import { useLive } from "../lib/live";
 import { cn } from "../lib/utils";
-import { Face } from "./Face";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 
@@ -14,7 +13,6 @@ const STATUS: Record<NodeView["status"], [string, string]> = {
   connected: ["Connected to Colony", "bg-mint"],
   offline: ["Can't reach Colony · retrying", "bg-coral"],
 };
-const LEVELS = ["", "Browser and screen", "Also the terminal", "Also files"] as const;
 
 function Switch({ icon, title, detail, checked, disabled, onChange, children }: {
   icon: ReactNode; title: string; detail: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void; children?: ReactNode;
@@ -38,8 +36,6 @@ function Switch({ icon, title, detail, checked, disabled, onChange, children }: 
 export function ThisPcSettings({ onBack }: { onBack: () => void }) {
   const [view, setView] = useState<NodeView | null>(null);
   const nodes = useLive((s) => s.nodes);
-  const nodeAccess = useLive((s) => s.nodeAccess);
-  const bots = useLive((s) => s.bots);
   useEffect(() => {
     if (!desktopApp?.node) return;
     void desktopApp.node.get().then(setView);
@@ -51,7 +47,6 @@ export function ThisPcSettings({ onBack }: { onBack: () => void }) {
   const set = (patch: Partial<NodeSettings>) => void desktopApp!.node!.set(patch).then(setView);
   const lent = settings.enabled;
   const here = nodes.find((node) => node.id === settings.id);
-  const allowed = nodeAccess.filter((grant) => grant.nodeId === settings.id && bots[grant.botId]);
   const [label, dot] = STATUS[view.status];
   const folder = settings.shellFolder ?? view.home;
 
@@ -97,16 +92,11 @@ export function ThisPcSettings({ onBack }: { onBack: () => void }) {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <span className="text-label text-muted">Bots allowed on {here?.name ?? settings.name}</span>
-        {allowed.length === 0 ? (
-          <p className="m-0 text-meta text-muted">None yet. Choose in a Bot's profile, under Access, how far it may use this PC.</p>
-        ) : allowed.map((grant) => (
-          <div key={grant.botId} className="flex items-center gap-2.5 text-sm">
-            <Face seed={bots[grant.botId].faceSeed} size={22} title={bots[grant.botId].name} />
-            <span className="flex-1">{bots[grant.botId].name}</span>
-            <span className="text-meta text-muted">{LEVELS[grant.level]}</span>
-          </div>
-        ))}
+        <span className="text-label text-muted">Who can use {here?.name ?? settings.name}</span>
+        <p className="m-0 text-meta leading-relaxed text-muted">
+          Any Bot in the family, within the switches above. You approve anything that acts on it: the browser once per task, the screen, terminal and file writes every time.
+          While a Bot is using it, a pill shows whose Bot it is and lets you stop it.
+        </p>
       </div>
     </div>
   );

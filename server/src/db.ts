@@ -247,6 +247,11 @@ const MIGRATIONS = [
   `,
   // v14: accounts belong to whoever connected them (so far, the host).
   `ALTER TABLE accounts ADD COLUMN person_id TEXT NOT NULL DEFAULT 'owner';`,
+  // v15: a PC belongs to whoever lent it; being family replaces per-Bot PC grants.
+  `
+  ALTER TABLE nodes ADD COLUMN person_id TEXT NOT NULL DEFAULT 'owner';
+  DROP TABLE node_access;
+  `,
 ];
 
 export type Db = DatabaseSync;

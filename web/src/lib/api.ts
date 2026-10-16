@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, NodeAccess, PcLevel, Person, Routine, Schedule, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Person, Routine, Schedule, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -138,14 +138,13 @@ export const api = {
     return response.blob();
   },
   me: () => request<{ me: Person; host: string }>("GET", "/me"),
-  family: () => request<{ person: Person; bots: number }[]>("GET", "/family"),
+  family: () => request<{ person: Person; bots: number; pcs: { name: string; capabilities: string[]; online: boolean }[] }[]>("GET", "/family"),
   updatePerson: (id: string, patch: Partial<Pick<Person, "name" | "color">>) => request<Person>("PATCH", `/people/${encodeURIComponent(id)}`, patch),
   personAbout: (id: string) => request<{ text: string }>("GET", `/people/${encodeURIComponent(id)}/about`),
   setPersonAbout: (id: string, text: string) => request<void>("PUT", `/people/${encodeURIComponent(id)}/about`, { text }),
   household: () => request<{ text: string }>("GET", "/household"),
   setHousehold: (text: string) => request<void>("PUT", "/household", { text }),
   shareTopic: (chatId: string, patch: { peopleIds?: string[]; everyone?: boolean }) => request<Chat>("PATCH", `/chats/${encodeURIComponent(chatId)}`, patch),
-  setPcLevel: (botId: string, nodeId: string, level: PcLevel) => request<{ nodeAccess: NodeAccess[] }>("PUT", `/bots/${encodeURIComponent(botId)}/pc/${encodeURIComponent(nodeId)}`, { level }),
   forgetNode: (nodeId: string) => request<{ ok: true }>("DELETE", `/nodes/${encodeURIComponent(nodeId)}`),
   declineCall: (callId: string) => request<{ ok: true }>("POST", `/calls/${encodeURIComponent(callId)}/decline`),
   checkProvider: (input: { providerId?: string; baseURL: string; protocol: Protocol; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),

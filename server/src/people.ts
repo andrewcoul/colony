@@ -109,6 +109,8 @@ const RULES: Rule[] = [
   ["POST", /^\/messages\/([\w-]+)\/topics\/[\w-]+$/, (store, person, id) => { const message = store.getMessage(id); return message ? ownBot(store, person, message.author) : NOT_YOURS; }],
   ["POST", /^\/approvals\/([\w-]+)$/, (store, person, id) => (store.getApproval(id)?.approverId === person.id ? null : "Only the person it's waiting for can answer that.")],
   ["POST", /^\/calls\/([\w-]+)\/decline$/, anyone],
+  // Your own PCs.
+  ["DELETE", /^\/nodes\/([\w-]+)$/, (store, person, id) => (store.listNodes().find((node) => node.id === id)?.personId === person.id ? null : NOT_YOURS)],
 ];
 
 /** Null if this person may make this request, otherwise why not. */
@@ -137,7 +139,6 @@ export function eventFor(person: Person, event: ServerEvent | EphemeralEvent, st
     case "folder.upserted": return event.folder.ownerId === person.id ? event : null;
     case "settings.updated": return { ...event, models: settings.modelOptions(person.id), defaultModel: settings.defaultModel(person.id), configured: settings.modelConfigured(person.id) };
     case "accounts.updated": return { ...event, accounts: event.accounts.filter((account) => account.personId === person.id), access: event.access.filter((grant) => store.getBot(grant.botId)?.ownerId === person.id) };
-    case "nodes.updated": return { ...event, nodeAccess: event.nodeAccess.filter((grant) => store.getBot(grant.botId)?.ownerId === person.id) };
     case "computer.output": return store.getBot(event.botId)?.ownerId === person.id ? event : null;
     case "call.ringing": return store.getBot(event.botId)?.ownerId === person.id ? event : null;
     default: return event;
