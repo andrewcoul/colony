@@ -1,4 +1,4 @@
-import type { AgentRunner } from "./agent/run.js";
+import type { Runner } from "./agent/runner.js";
 import type { Attachment, Chat, Message } from "./shared/types.js";
 import type { Store } from "./store.js";
 
@@ -17,7 +17,7 @@ export function addressedBots(text: string, memberIds: string[], store: Store, c
  * gets it at its next step (steer) or after it finishes (queue); the others start a turn.
  * Typed messages and spoken ones (calls) both come through here.
  */
-export function sendUserMessage(store: Store, runner: AgentRunner, chat: Chat, input: {
+export function sendUserMessage(store: Store, runner: Runner, chat: Chat, input: {
   text: string;
   mode?: "steer" | "queue";
   attachments?: Attachment[];

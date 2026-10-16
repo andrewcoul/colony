@@ -1,4 +1,4 @@
-import type { AgentRunner } from "./agent/run.js";
+import type { Runner } from "./agent/runner.js";
 import { nextRun } from "./shared/schedule.js";
 import type { Routine } from "./shared/types.js";
 import type { Store } from "./store.js";
@@ -15,7 +15,7 @@ const routinePrompt = (routine: Routine) =>
 export class RoutineScheduler {
   private timer: ReturnType<typeof setInterval> | undefined;
 
-  constructor(private store: Store, private runner: AgentRunner) {}
+  constructor(private store: Store, private runner: Runner) {}
 
   start(intervalMs = 20_000) {
     this.tick();

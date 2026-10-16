@@ -11,7 +11,8 @@ import { usageEntry } from "../spending.js";
 import { claudeComputer, genericDesktopTools, prepareDesktopMessages, type DesktopMode } from "./desktopTools.js";
 import type { EventLog } from "../events.js";
 import type { RunCheckpoint, Store } from "../store.js";
-import type { Card, Message, Step } from "../shared/types.js";
+import type { Message, Step } from "../shared/types.js";
+import { replayOf, type Runner, type StartOptions } from "./runner.js";
 import type { ApprovalGate } from "./approvals.js";
 import { isHuman } from "../people.js";
 import { historyFor, steerNote, stripNotes, systemPrompt } from "./prompt.js";
@@ -40,24 +41,6 @@ export const defaultModelFactory: ModelFactory = ({ provider, model }, sessionId
   }).chatModel(model);
 };
 
-type StartOptions = {
-  /** Extra user-turn text that is sent to the model but not shown in the chat. */
-  hiddenPrompt?: string;
-  /** Cards the reply starts with, e.g. the routine that triggered it. */
-  cards?: Card[];
-  /** How many Bots deep this turn is (another Bot asking = 1). */
-  depth?: number;
-  /** Called with the finished reply (used by groups and routines). */
-  onFinish?: (message: Message) => void;
-  /** Pick the turn back up from this checkpoint (after a restart) instead of starting fresh. */
-  resume?: RunCheckpoint;
-};
-
-/** Tools that only read: if a restart cuts one off, running it again is harmless. */
-const SAFE_TO_REPEAT = new Set([
-  "web_search", "web_read", "skill_read", "read_file", "list_files", "browser_read",
-  "mail_search", "mail_read", "calendar_list", "vault_list", "desktop_screenshot",
-]);
 
 /** What a checkpoint holds: the conversation for the next model step, and the reply as it stood then. */
 type Snapshot = { conversation: ModelMessage[]; text: string; reasoning: string; steps: number };
@@ -91,7 +74,7 @@ type ActiveRun = {
 };
 
 /** Runs Bot turns: streams the model, records steps, and drives presence. */
-export class AgentRunner {
+export class AgentRunner implements Runner {
   private active = new Map<string, ActiveRun>();
   private idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -242,7 +225,13 @@ export class AgentRunner {
 
   /** Resumes turns after a restart, one at a time, so a restart doesn't hit every provider at once. */
   resumeAll(checkpoints: RunCheckpoint[], gapMs = 2000) {
-    checkpoints.forEach((checkpoint, index) => {
+    // A turn pi durable was running (after a switch back to this runtime) can't be continued here.
+    const pi = checkpoints.filter((checkpoint) => checkpoint.messages.startsWith('{"runtime":"pi"'));
+    for (const checkpoint of pi) {
+      this.store.deleteRun(checkpoint.id);
+      this.store.updateMessage(checkpoint.messageId, { status: "stopped", error: "Colony restarted while this reply was running." });
+    }
+    checkpoints.filter((checkpoint) => !pi.includes(checkpoint)).forEach((checkpoint, index) => {
       const timer = setTimeout(() => this.resume(checkpoint), index * gapMs);
       timer.unref?.();
     });
@@ -502,7 +491,7 @@ export class AgentRunner {
         step.status = "interrupted";
         step.detail = "Asking again";
         notes.push(`"${step.title}" was waiting for the user's approval and did not run. If it's still needed, call the tool again; the user will be asked again.`);
-      } else if (SAFE_TO_REPEAT.has(step.tool)) {
+      } else if (replayOf(step.tool) === "safe") {
         if (!wasDone) { step.status = "interrupted"; step.detail = "Running again"; }
         notes.push(`"${step.title}" only reads; you never saw its result, so run it again if you still need it.`);
       } else if (wasDone) {

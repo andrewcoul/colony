@@ -48,6 +48,8 @@ export type ColonyTool<I = any, O = any> = {
   sdkTool?: Tool;
   /** How the result reads to the model, when it isn't plain JSON (e.g. a screenshot). */
   toModelOutput?: (output: O) => unknown;
+  /** What a restart that cut this tool off may do (default: by name, see replayOf in runner.ts). */
+  replay?: import("./runner.js").Replay;
 };
 
 const define = <I, O>(spec: ColonyTool<I, O>) => spec;

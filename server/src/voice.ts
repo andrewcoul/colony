@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
-import type { AgentRunner } from "./agent/run.js";
+import type { Runner } from "./agent/runner.js";
 import type { ToolRegistry } from "./agent/tools.js";
 import type { EventLog } from "./events.js";
 import { sendUserMessage } from "./send.js";
@@ -104,7 +104,7 @@ export class Calls {
   /** Sends a push notification (set by index.ts). */
   notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }) => void = () => {};
 
-  constructor(private store: Store, private events: EventLog, private runner: AgentRunner) {}
+  constructor(private store: Store, private events: EventLog, private runner: Runner) {}
 
   /**
    * A Bot rings you. Not during quiet hours, not more than every 30 minutes per Bot, and not

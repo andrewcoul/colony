@@ -13,7 +13,8 @@ import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
 import { checkDesktop, type DesktopVerdict } from "./agent/desktopCheck.js";
-import { defaultModelFactory, type AgentRunner, type ModelFactory } from "./agent/run.js";
+import { defaultModelFactory, type ModelFactory } from "./agent/run.js";
+import type { Runner } from "./agent/runner.js";
 import type { BrowserService } from "./computer/browser.js";
 import type { DesktopService } from "./computer/desktop.js";
 import type { ComputerService } from "./computer/docker.js";
@@ -31,7 +32,7 @@ import { revoke, type SignIns } from "./integrations/oauth.js";
 import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
 
 export type Services = {
-  store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner;
+  store: Store; events: EventLog; gate: ApprovalGate; runner: Runner;
   computer?: ComputerService; browser?: BrowserService; desktop?: DesktopService; routines?: RoutineScheduler; push?: PushService;
   updater?: Updater;
   /** The model client used by the desktop check (tests pass a scripted one). */

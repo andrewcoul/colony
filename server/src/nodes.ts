@@ -247,6 +247,8 @@ export function pcToolsFor(hub: NodeHub, store: Store, botId: string): ToolRegis
     const pcField = z.string().max(60).optional().describe(`Which PC (by name). Leave out to use ${offering.length === 1 ? offering[0].name : "the most recently used one"}.`);
     registry[name] = {
       ...spec,
+      // Reading never asks and can simply run again after a restart; the rest asks first.
+      replay: ask === "never" ? "safe" : "gated",
       inputSchema: (spec.inputSchema as z.ZodObject<z.ZodRawShape>).extend({ pc: pcField }),
       description: `${spec.description} PCs that allow this: ${offering.map((node) => node.name).join("; ")}.`,
       execute: async ({ pc, ...input }: Record<string, unknown>, ctx: ToolContext) => {
