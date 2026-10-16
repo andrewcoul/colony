@@ -322,3 +322,64 @@ describe("spending", () => {
     expect((await marija("GET", "/spending")).json.limit).toBeNull();
   });
 });
+
+describe("handing a Bot over", () => {
+  test("nothing changes until the recipient accepts; either side can back out while it waits", async () => {
+    const { andrew, marija, luke, ivy, marijaId } = await family();
+    expect((await andrew("POST", `/bots/${ivy.id}/give`, { toId: marijaId })).status).toBe(403);
+    expect((await andrew("POST", `/bots/${luke.id}/give`, { toId: "owner" })).status).toBe(400);
+    const offer = (await andrew("POST", `/bots/${luke.id}/give`, { toId: marijaId })).json;
+    expect(offer).toMatchObject({ botId: luke.id, fromId: "owner", toId: marijaId, keepMemory: true, status: "pending", bot: { name: "Luke" } });
+    expect((await andrew("POST", `/bots/${luke.id}/give`, { toId: marijaId })).status).toBe(409);
+    // Marija sees the offer (and Luke's name and face), not Luke himself yet.
+    const state = (await marija("GET", "/state")).json;
+    expect(state.transfers).toMatchObject([{ id: offer.id }]);
+    expect(state.bots.map((bot: { name: string }) => bot.name)).toEqual(["Ivy"]);
+    // Only Marija answers; only Andrew cancels.
+    expect((await andrew("POST", `/transfers/${offer.id}/accept`)).status).toBe(403);
+    expect((await marija("DELETE", `/transfers/${offer.id}`)).status).toBe(403);
+    expect((await marija("POST", `/transfers/${offer.id}/decline`)).json.status).toBe("declined");
+    expect((await marija("POST", `/transfers/${offer.id}/accept`)).status).toBe(409);
+    const again = (await andrew("POST", `/bots/${luke.id}/give`, { toId: marijaId })).json;
+    expect((await andrew("DELETE", `/transfers/${again.id}`)).json.status).toBe("cancelled");
+    expect((await andrew("GET", "/state")).json.transfers).toEqual([]);
+    expect((await andrew("PATCH", `/bots/${luke.id}`, { title: "Still mine" })).status).toBe(200);
+  });
+
+  test("accepting moves the Bot, its routines and (if chosen) a fresh memory; the giver keeps their chat, accounts and key", async () => {
+    const { store, andrew, marija, luke, marijaId } = await family();
+    const files = await import("./files.js");
+    files.addEntry(luke.id, "memory", "Andrew takes coffee black");
+    const routine = store.createRoutine({ botId: luke.id, chatId: luke.chatId, title: "Morning brief", prompt: "Brief me.", schedule: { type: "daily", time: "08:00", days: [] } });
+    // Luke runs on a key of Andrew's own, and is in a private topic and a shared one.
+    const own = (await andrew("POST", "/settings/providers", { name: "Andrew's own", baseURL: "http://andrew.invalid/v1", apiKey: "sk-andrew-000000000", models: ["gpt-andrew"], shared: false })).json.providers.find((provider: { name: string }) => provider.name === "Andrew's own");
+    await andrew("PATCH", `/bots/${luke.id}`, { model: `${own.id}::gpt-andrew` });
+    const secret = (await andrew("POST", "/topics", { title: "Birthday surprise", icon: "gift", memberIds: [luke.id] })).json;
+    const trip = (await andrew("POST", "/topics", { title: "Trip to Skopje", icon: "plane", memberIds: [luke.id] })).json;
+    await andrew("PATCH", `/chats/${trip.id}`, { peopleIds: [marijaId] });
+
+    const offer = (await andrew("POST", `/bots/${luke.id}/give`, { toId: marijaId, keepMemory: false })).json;
+    const { bot } = (await marija("POST", `/transfers/${offer.id}/accept`)).json;
+    expect(bot).toMatchObject({ id: luke.id, ownerId: marijaId, model: "env::mock-model" });
+    expect(bot.chatId).not.toBe(luke.chatId);
+    expect(store.getRoutine(routine.id)?.chatId).toBe(bot.chatId);
+    expect(files.readEntries(luke.id, "memory")).toEqual([]);
+    // Luke is Marija's: she sees the new chat but not Andrew's history with him.
+    const hers = (await marija("GET", "/state")).json;
+    expect(hers.chats.map((chat: { id: string }) => chat.id)).toContain(bot.chatId);
+    expect((await marija("GET", `/chats/${luke.chatId}/messages`)).status).toBe(403);
+    expect((await marija("PATCH", `/bots/${luke.id}`, { title: "Travel agent" })).status).toBe(200);
+    // Andrew keeps that history, archived, and can't drive Luke any more.
+    const his = (await andrew("GET", "/state")).json;
+    expect(his.chats.find((chat: { id: string }) => chat.id === luke.chatId)).toMatchObject({ kind: "topic", title: "Chat with Luke (now Marija's)", memberIds: [], archivedAt: expect.any(Number) });
+    expect(his.bots.map((item: { name: string }) => item.name)).toContain("Luke");
+    expect((await andrew("PATCH", `/bots/${luke.id}`, { title: "Mine" })).status).toBe(403);
+    // Luke leaves the topic Marija can't see and stays in the one she shares.
+    expect(store.getChat(secret.id)?.memberIds).toEqual([]);
+    expect(store.getChat(trip.id)?.memberIds).toEqual([luke.id]);
+    // What Luke costs from now on is Marija's.
+    await marija("POST", `/chats/${bot.chatId}/messages`, { text: "Hello, Luke" });
+    await until(() => store.listMessages(bot.chatId).find((message) => message.author === luke.id && message.status === "done"));
+    expect(store.listUsage(0).at(-1)).toMatchObject({ botId: luke.id, ownerId: marijaId });
+  });
+});

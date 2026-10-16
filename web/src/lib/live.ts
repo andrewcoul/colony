@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, PcNode, Person, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Artifact, Bot, BotTransfer, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, PcNode, Person, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
@@ -28,6 +28,8 @@ export type LiveState = {
   /** The household, and who you are in it (null until loaded). */
   people: Person[];
   me: Person | null;
+  /** Bots offered to you, or by you, waiting for an answer. */
+  transfers: BotTransfer[];
   /** Bots ringing you right now, by call id. */
   ringing: Record<string, RingingCall>;
   error: string | null;
@@ -35,7 +37,7 @@ export type LiveState = {
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], people: [], me: null, ringing: {}, error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], people: [], me: null, transfers: [], ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -91,6 +93,7 @@ function apply(event: ServerEvent) {
     case "settings.updated": return set({ models: event.models, defaultModel: event.defaultModel, configured: event.configured });
     case "accounts.updated": return set({ accounts: event.accounts, access: event.access });
     case "nodes.updated": return set({ nodes: event.nodes });
+    case "transfer.upserted": return set({ transfers: [...state.transfers.filter((item) => item.id !== event.transfer.id), ...(event.transfer.status === "pending" ? [event.transfer] : [])] });
     case "people.updated": return set({ people: event.people, me: event.people.find((person) => person.id === state.me?.id) ?? state.me });
   }
 }
@@ -127,7 +130,7 @@ async function loadState() {
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
     accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [],
-    people: snapshot.people ?? [], me: snapshot.me ?? null,
+    people: snapshot.people ?? [], me: snapshot.me ?? null, transfers: snapshot.transfers ?? [],
   });
 }
 

@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Person, Price, Routine, Schedule, SharedSpending, Spending, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, BotTransfer, Chat, ChatFile, Folder, Message, Person, Price, Routine, Schedule, SharedSpending, Spending, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -129,6 +129,10 @@ export const api = {
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
   spending: () => request<Spending>("GET", "/spending"),
+  giveBot: (botId: string, toId: string, keepMemory: boolean) => request<BotTransfer>("POST", `/bots/${encodeURIComponent(botId)}/give`, { toId, keepMemory }),
+  acceptTransfer: (id: string) => request<{ transfer: BotTransfer; bot: Bot }>("POST", `/transfers/${encodeURIComponent(id)}/accept`),
+  declineTransfer: (id: string) => request<BotTransfer>("POST", `/transfers/${encodeURIComponent(id)}/decline`),
+  cancelTransfer: (id: string) => request<BotTransfer>("DELETE", `/transfers/${encodeURIComponent(id)}`),
   sharedSpending: () => request<SharedSpending>("GET", "/spending/shared"),
   setSpendLimit: (personId: string, limit: number | null) => request<SharedSpending>("PUT", `/spending/limits/${encodeURIComponent(personId)}`, { limit }),
   addProvider: (input: ProviderInput & { shared?: boolean }) => request<Settings>("POST", "/settings/providers", input),

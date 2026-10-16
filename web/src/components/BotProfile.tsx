@@ -6,6 +6,7 @@ import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { MarkdownView } from "./MarkdownView";
 import { BotAccess } from "./BotAccess";
+import { GiveBotSection } from "./GiveBot";
 import { DesktopToggle } from "./DesktopToggle";
 import { ModelPicker } from "./ModelPicker";
 import { SidePanel } from "./SidePanel";
@@ -126,6 +127,8 @@ export function BotProfile({ bot, phone, onClose, onError }: { bot: Bot; phone: 
             </button>
           ))}
         </section>
+
+        <GiveBotSection bot={bot} onError={onError} />
       </div>
     </SidePanel>
   );

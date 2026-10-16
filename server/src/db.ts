@@ -269,6 +269,19 @@ const MIGRATIONS = [
   );
   CREATE INDEX usage_at ON usage (at);
   `,
+  // v17: Bots handed from one person to another.
+  `
+  CREATE TABLE bot_transfers (
+    id TEXT PRIMARY KEY,
+    bot_id TEXT NOT NULL,
+    from_id TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    keep_memory INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

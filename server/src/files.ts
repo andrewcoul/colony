@@ -154,3 +154,8 @@ export function saveSkill(botId: string, name: string, description: string, body
   write(path.join(skillsDir(botId), slug, "SKILL.md"), `---\nname: ${oneLine(name)}\ndescription: ${oneLine(description)}\n---\n\n${body.trim()}\n`);
   return slug;
 }
+
+/** "Start fresh": a Bot handed to someone new forgets what it had noted. */
+export function clearMemory(botId: string) {
+  write(memoryFile(botId), "");
+}

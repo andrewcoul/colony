@@ -26,6 +26,7 @@ import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
 import type { AppState, Chat, Person, TopicIcon } from "./shared/types.js";
 import { sharedSpending, spendingFor } from "./spending.js";
+import { handOver } from "./transfers.js";
 import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
@@ -142,7 +143,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const person = c.get("person");
     const chats = store.listChats().filter((chat) => canSee(person, chat));
     const visibleChats = new Set(chats.map((chat) => chat.id));
-    const bots = store.listBots().filter((bot) => bot.ownerId === person.id || chats.some((chat) => chat.memberIds.includes(bot.id)));
+    const bots = store.listBots().filter((bot) => bot.ownerId === person.id || chats.some((chat) => chat.memberIds.includes(bot.id)) || store.gaveAway(person.id, bot.id));
     const mine = new Set(bots.filter((bot) => bot.ownerId === person.id).map((bot) => bot.id));
     return c.json<AppState>({
       bots, chats,
@@ -158,8 +159,50 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       nodes: nodes?.list() ?? [],
       people: store.listPeople(),
       me: person,
+      transfers: store.listTransfers().filter((transfer) => transfer.fromId === person.id || transfer.toId === person.id),
       seq: events.latestSeq(),
     });
+  });
+
+  // ---------- Handing a Bot over ----------
+  /** Offers your Bot to someone in the family; nothing changes until they accept. */
+  api.post("/bots/:id/give", async (c) => {
+    const person = c.get("person");
+    const bot = store.getBot(c.req.param("id"));
+    if (!bot) return c.json({ error: "That Bot no longer exists." }, 404);
+    const { toId, keepMemory } = z.object({ toId: z.string().min(1), keepMemory: z.boolean().default(true) }).parse(await c.req.json());
+    const recipient = store.getPerson(toId);
+    if (!recipient || toId === person.id) return c.json({ error: "Pick someone else in the family." }, 400);
+    if (store.listTransfers().some((transfer) => transfer.botId === bot.id)) return c.json({ error: `${bot.name} is already waiting for an answer.` }, 409);
+    const transfer = store.createTransfer({ botId: bot.id, fromId: person.id, toId, keepMemory });
+    void push?.notify({ title: `${person.name} wants to give you ${bot.name}`, body: "Accept or decline in Colony.", chatId: null, tag: `transfer-${transfer.id}` }, { force: true, personId: toId });
+    return c.json(transfer, 201);
+  });
+  /** The recipient takes the Bot: it moves to them, with what goes with it. */
+  api.post("/transfers/:id/accept", (c) => {
+    const person = c.get("person");
+    const transfer = store.getTransfer(c.req.param("id"));
+    if (!transfer || transfer.status !== "pending") return c.json({ error: "That offer isn't open any more." }, 409);
+    if (transfer.toId !== person.id) return c.json({ error: "Only the person it's offered to can accept." }, 403);
+    const accepted = handOver(store, transfer, { integrations, stopBot: (botId) => runner.stopBot(botId) });
+    void push?.notify({ title: `${person.name} took ${transfer.bot.name}`, body: `${transfer.bot.name} is ${person.name}'s now. Your chat with it is archived in your topics.`, chatId: null, tag: `transfer-${transfer.id}` }, { force: true, personId: transfer.fromId });
+    return c.json({ transfer: accepted, bot: store.getBot(transfer.botId) });
+  });
+  api.post("/transfers/:id/decline", (c) => {
+    const person = c.get("person");
+    const transfer = store.getTransfer(c.req.param("id"));
+    if (!transfer || transfer.status !== "pending") return c.json({ error: "That offer isn't open any more." }, 409);
+    if (transfer.toId !== person.id) return c.json({ error: "Only the person it's offered to can decline." }, 403);
+    const declined = store.setTransferStatus(transfer.id, "declined");
+    void push?.notify({ title: `${person.name} said no to ${transfer.bot.name}`, body: `${transfer.bot.name} stays yours.`, chatId: null, tag: `transfer-${transfer.id}` }, { force: true, personId: transfer.fromId });
+    return c.json(declined);
+  });
+  /** The giver changes their mind while it waits. */
+  api.delete("/transfers/:id", (c) => {
+    const transfer = store.getTransfer(c.req.param("id"));
+    if (!transfer || transfer.status !== "pending") return c.json({ error: "That offer isn't open any more." }, 409);
+    if (transfer.fromId !== c.get("person").id) return c.json({ error: "Only the person who offered it can cancel." }, 403);
+    return c.json(store.setTransferStatus(transfer.id, "cancelled"));
   });
 
   /** Who's in the family, how many Bots each has (counts only: the Bots stay private) and which PCs they've lent. */
