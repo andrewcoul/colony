@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, Loader2, Volume2 } from "lucide-react";
 import { api, type Settings, type VoiceSettings } from "../lib/api";
-import { useLive, useIsHost, useMyId } from "../lib/live";
+import { useLive } from "../lib/live";
 import { Face } from "./Face";
 import { Button } from "./ui/button";
 import { Field, Input } from "./ui/input";
@@ -12,10 +12,7 @@ const VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "ony
 /** Settings › Voice: who transcribes and speaks, each Bot's voice, and when Bots may ring you. */
 export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: Settings; onBack: () => void; onSaved: (settings: Settings) => void }) {
   const botMap = useLive((s) => s.bots);
-  // You pick voices for your own Bots; the provider and the default voice are the host's.
-  const myId = useMyId();
-  const host = useIsHost();
-  const bots = useMemo(() => Object.values(botMap).filter((bot) => bot.ownerId === myId), [botMap, myId]);
+  const bots = useMemo(() => Object.values(botMap), [botMap]);
   const [voice, setVoice] = useState(settings.voice);
   const [error, setError] = useState("");
   const [trying, setTrying] = useState<string | null>(null);
@@ -59,9 +56,8 @@ export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: S
         Any provider with OpenAI-style audio works, including local Whisper and Kokoro servers.
       </p>
 
-      {host && <>
       <label className="flex flex-col gap-1.5">
-        <span className="text-label text-muted">Provider (for everyone)</span>
+        <span className="text-label text-muted">Provider</span>
         <select value={voice.providerId ?? ""} onChange={(event) => void save({ providerId: event.target.value || null })}
           className="h-[42px] w-full rounded-lg border border-rule bg-ground px-3 text-sm text-ink outline-none">
           <option value="">Off</option>
@@ -80,13 +76,12 @@ export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: S
             onBlur={(event) => { const value = event.target.value.trim(); if (value && value !== voice.speechModel) void save({ speechModel: value }); }} />
         </Field>
       </div>
-      </>}
 
       <datalist id="voice-names">{VOICES.map((name) => <option key={name} value={name} />)}</datalist>
       <div className="flex flex-col gap-1.5">
-        <span className="text-label text-muted">{host ? "Voices" : "Your Bots' voices"}</span>
+        <span className="text-label text-muted">Voices</span>
         <div className="flex flex-col divide-y divide-rule rounded-xl border border-rule">
-          {host && (
+          {(
             <div className="flex items-center gap-3 px-3.5 py-2.5">
               <span className="flex-1 text-sm">Every Bot, unless set below</span>
               <Input list="voice-names" defaultValue={voice.voice} aria-label="Default voice" className="h-9 w-32"
@@ -94,7 +89,6 @@ export function VoiceSettingsEditor({ settings, onBack, onSaved }: { settings: S
               <TryButton name={voice.voice} id="default" />
             </div>
           )}
-          {!host && bots.length === 0 && <p className="m-0 px-3.5 py-3 text-meta text-muted">Make a Bot to give it a voice.</p>}
           {bots.map((bot) => (
             <div key={bot.id} className="flex items-center gap-3 px-3.5 py-2.5">
               <Face seed={bot.faceSeed} size={26} />

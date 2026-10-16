@@ -4,16 +4,16 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
 import type { ColonyTool, ToolContext, ToolRegistry } from "./agent/tools.js";
 import type { EventLog } from "./events.js";
-import type { PcCapability, PcNode, Person } from "./shared/types.js";
+import type { PcCapability, PcNode } from "./shared/types.js";
 import type { Store } from "./store.js";
 
 /*
- * This PC: the Colony desktop app lends a Bot the person's own computer. The app connects to
+ * This PC: the Colony desktop app lends your Bots your own computer. The app connects to
  * /api/nodes/connect and acts as an MCP server over that socket (JSON-RPC 2.0: initialize,
  * tools/list, tools/call); Colony is the client. Each switch (browser windows, screen, terminal,
  * files) is turned on in the desktop app and enforced there, so Colony can't grant itself more
- * than the PC allows. Here, each Bot gets the tools the PC offers up to the level you gave it,
- * and anything that acts on the PC asks you first.
+ * than the PC allows. Here, each Bot gets the tools the PC offers, and anything that acts on the
+ * PC asks you first.
  */
 
 const CAPABILITIES: PcCapability[] = ["browser", "screen", "shell", "files", "fullDisk"];
@@ -50,12 +50,12 @@ export class NodeHub {
     return this.connections.get(nodeId)?.tools ?? new Set<string>();
   }
 
-  /** A PC connecting: it belongs to whoever's login lent it. */
-  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, person: Person) {
-    this.sockets.handleUpgrade(request, socket, head, (ws) => this.accept(ws, person));
+  /** A PC connecting. */
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
+    this.sockets.handleUpgrade(request, socket, head, (ws) => this.accept(ws));
   }
 
-  private accept(ws: WebSocket, person: Person) {
+  private accept(ws: WebSocket) {
     let nodeId: string | null = null;
     const connection: Connection = { ws, tools: new Set(), pending: new Map(), nextId: 1, driving: null };
     // A PC that never says who it is gets dropped.
@@ -80,16 +80,13 @@ export class NodeHub {
         if (!params) { ws.close(1008, "Bad hello"); return; }
         clearTimeout(hello);
         if (nodeId && nodeId !== params.id) { ws.close(1008, "One PC per connection"); return; }
-        // A PC can't be taken over by someone else's login.
-        const known = this.store.listNodes().find((node) => node.id === params.id);
-        if (known && known.personId !== person.id) { ws.close(1008, "That PC is someone else's"); return; }
         if (!nodeId) {
           nodeId = params.id;
           // A newer connection from the same PC replaces the old one.
           this.connections.get(nodeId)?.ws.close(1000, "Replaced");
           this.connections.set(nodeId, connection);
         }
-        this.store.saveNode({ ...params, personId: person.id });
+        this.store.saveNode(params);
         void this.refresh(nodeId, connection);
         return;
       }
@@ -130,12 +127,12 @@ export class NodeHub {
   }
 
   /** Runs one tool on a PC, on behalf of a Bot (its name shows on the PC while it drives). */
-  async call(nodeId: string, name: string, args: Record<string, unknown>, bot: { id: string; name: string; owner?: string | null }, signal?: AbortSignal): Promise<CallResult> {
+  async call(nodeId: string, name: string, args: Record<string, unknown>, bot: { id: string; name: string }, signal?: AbortSignal): Promise<CallResult> {
     const connection = this.connections.get(nodeId);
     if (!connection) throw new Error("That PC isn't connected right now. Its Colony app needs to be open.");
     if (!connection.tools.has(name)) throw new Error("That's switched off on the PC.");
     connection.driving = bot.id;
-    const result = await this.request(connection, "tools/call", { name, arguments: args, _meta: { botId: bot.id, botName: bot.name, ownerName: bot.owner ?? null } }, signal) as CallResult;
+    const result = await this.request(connection, "tools/call", { name, arguments: args, _meta: { botId: bot.id, botName: bot.name } }, signal) as CallResult;
     if (result?.isError) throw new Error(textOf(result) || "The PC couldn't do that.");
     return result ?? {};
   }
@@ -222,57 +219,52 @@ export const PC_TOOLS: Record<string, PcTool> = {
 
 const host = (url: string) => { try { return new URL(url).host; } catch { return url; } };
 
-/** Picks the PC for a call: the one named, else the Bot's owner's own, else the only one there is. */
-function choosePc(offering: PcNode[], ownerId: string, pc: string | undefined) {
+/** Picks the PC for a call: the one named, else the most recently seen. */
+function choosePc(offering: PcNode[], pc: string | undefined) {
   if (pc) {
     const named = offering.find((node) => node.name.toLowerCase() === pc.trim().toLowerCase());
     if (!named) throw new Error(`No PC called "${pc}" allows this. These do: ${offering.map((node) => node.name).join(", ")}.`);
     return named;
   }
-  const own = offering.find((node) => node.personId === ownerId);
-  if (own) return own;
-  if (offering.length === 1) return offering[0];
+  if (offering.length) return offering[0];
   throw new Error(`Say which PC with "pc": ${offering.map((node) => node.name).join(", ")}.`);
 }
 
 /**
- * The PC tools a Bot has. Being family is the permission: any lent PC that's online, within
- * what its owner switched on there. Each call names its PC (or uses the Bot's owner's own),
- * and anything that acts on a PC asks that PC's owner.
+ * The PC tools a Bot has: any of your PCs that's online, within what you switched on there.
+ * Each call names its PC (or uses the most recently seen), and anything that acts on a PC asks you.
  */
 export function pcToolsFor(hub: NodeHub, store: Store, botId: string): ToolRegistry {
   const bot = store.getBot(botId);
   const online = hub.list().filter((node) => node.online);
   if (!bot || !online.length) return {};
-  const names = new Map(store.listPeople().map((person) => [person.id, person.name]));
-  const whose = (node: PcNode) => (node.personId === bot.ownerId ? "your owner's" : `${names.get(node.personId) ?? "someone"}'s`);
   // Tools are built fresh for each turn, so this is "they said yes to the browser on this PC this turn".
   const browserAllowed = new Set<string>();
   const registry: ToolRegistry = {};
   for (const [name, { ask, spec }] of Object.entries(PC_TOOLS)) {
     const offering = online.filter((node) => hub.offered(node.id).has(name));
     if (!offering.length) continue;
-    const pcField = z.string().max(60).optional().describe(`Which PC (by name). Leave out to use your owner's own PC${offering.length === 1 ? ` (here: ${offering[0].name})` : ""}.`);
+    const pcField = z.string().max(60).optional().describe(`Which PC (by name). Leave out to use ${offering.length === 1 ? offering[0].name : "the most recently used one"}.`);
     registry[name] = {
       ...spec,
+      // Reading never asks and can simply run again after a restart; the rest asks first.
+      replay: ask === "never" ? "safe" : "gated",
       inputSchema: (spec.inputSchema as z.ZodObject<z.ZodRawShape>).extend({ pc: pcField }),
-      description: `${spec.description} PCs that allow this: ${offering.map((node) => `${node.name} (${whose(node)})`).join("; ")}.`,
+      description: `${spec.description} PCs that allow this: ${offering.map((node) => node.name).join("; ")}.`,
       execute: async ({ pc, ...input }: Record<string, unknown>, ctx: ToolContext) => {
-        const node = choosePc(offering, bot.ownerId, pc as string | undefined);
-        const asker = node.personId === bot.ownerId ? ctx.botName : `${ctx.botName} (${names.get(bot.ownerId) ?? "someone"}'s)`;
+        const node = choosePc(offering, pc as string | undefined);
+        const asker = ctx.botName;
         if (ask === "always" || (ask === "once" && !browserAllowed.has(node.id))) {
           const ok = await ctx.gate.request({
             botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: name,
-            // The PC's owner decides what happens on it, whoever's Bot is asking.
-            approverId: node.personId,
             summary: ask === "once" ? `${asker} wants to use the browser on ${node.name}` : `${asker} wants to use ${node.name}`,
             detail: spec.action(input) + (ask === "once" ? "\n\nAllowing this lets it keep using browser windows on this PC for the rest of this task." : ""),
             reason: "Acts on your own PC",
           }, ctx.signal);
-          if (!ok) throw new Error(`${names.get(node.personId) ?? "The PC's owner"} said no.`);
+          if (!ok) throw new Error("The user said no.");
           if (ask === "once") browserAllowed.add(node.id);
         }
-        const result = await hub.call(node.id, name, input, { id: ctx.botId, name: ctx.botName, owner: node.personId === bot.ownerId ? null : names.get(bot.ownerId) ?? null }, ctx.signal);
+        const result = await hub.call(node.id, name, input, { id: ctx.botId, name: ctx.botName }, ctx.signal);
         const image = result.content?.find((part) => part.type === "image");
         if (image?.type === "image") return { shot: { data: image.data, mediaType: image.mimeType }, text: textOf(result) };
         return textOf(result) || "Done.";

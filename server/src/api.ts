@@ -1,4 +1,3 @@
-import { authorOf, canSee, eventFor, HOST_ID, identify, isHost, readAbout, readHousehold, refusal, writeAbout, writeHousehold } from "./people.js";
 import type { NodeHub } from "./nodes.js";
 import { speak, type Calls } from "./voice.js";
 import { sendUserMessage } from "./send.js";
@@ -14,7 +13,8 @@ import type { EventLog } from "./events.js";
 import * as files from "./files.js";
 import type { ApprovalGate } from "./agent/approvals.js";
 import { checkDesktop, type DesktopVerdict } from "./agent/desktopCheck.js";
-import { defaultModelFactory, type AgentRunner, type ModelFactory } from "./agent/run.js";
+import { defaultModelFactory, type ModelFactory } from "./agent/run.js";
+import type { Runner } from "./agent/runner.js";
 import type { BrowserService } from "./computer/browser.js";
 import type { DesktopService } from "./computer/desktop.js";
 import type { ComputerService } from "./computer/docker.js";
@@ -24,16 +24,15 @@ import { MIN_INTERVAL_MINUTES, parseTime } from "./shared/schedule.js";
 import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
-import type { AppState, Chat, Person, TopicIcon } from "./shared/types.js";
-import { sharedSpending, spendingFor } from "./spending.js";
-import { handOver } from "./transfers.js";
+import type { AppState, Chat, TopicIcon } from "./shared/types.js";
+import { spendingFor } from "./spending.js";
 import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
 import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
 
 export type Services = {
-  store: Store; events: EventLog; gate: ApprovalGate; runner: AgentRunner;
+  store: Store; events: EventLog; gate: ApprovalGate; runner: Runner;
   computer?: ComputerService; browser?: BrowserService; desktop?: DesktopService; routines?: RoutineScheduler; push?: PushService;
   updater?: Updater;
   /** The model client used by the desktop check (tests pass a scripted one). */
@@ -83,10 +82,10 @@ const botInput = z.object({
 });
 
 /** Why this combination can't drive a desktop, if it can't. */
-function desktopProblem(computer: boolean, desktop: boolean, model: string | undefined, ownerId: string) {
+function desktopProblem(computer: boolean, desktop: boolean, model: string | undefined) {
   if (!desktop) return null;
   if (!computer) return "The desktop needs the Bot's own computer.";
-  if (!settings.canDriveDesktop(settings.resolveModel(model, { ownerId }))) {
+  if (!settings.canDriveDesktop(settings.resolveModel(model))) {
     return "That model can't drive a desktop. Pick one marked for desktop use, or run the desktop check in Settings.";
   }
   return null;
@@ -109,16 +108,7 @@ async function fetchImage(url: string) {
 }
 
 export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
-  const api = new Hono<{ Variables: { person: Person } }>();
-
-  // Who's asking (from their Tailscale login), and whether it's theirs to touch: their own Bots,
-  // topics they can see, and (for the host) what the whole Colony shares.
-  api.use("*", async (c, next) => {
-    const person = identify(store, c.req.header("Tailscale-User-Login")?.toLowerCase());
-    c.set("person", person);
-    const why = refusal(store, person, c.req.method, c.req.path.replace(/^\/api(?=\/)/, ""));
-    return why ? c.json({ error: why }, 403) : next();
-  });
+  const api = new Hono();
 
   /** A mail-triggered routine must watch a mailbox its Bot can read. */
   const mailProblem = (botId: string, when: z.infer<typeof schedule>) => {
@@ -135,107 +125,23 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.json({ error: error.message || "Something went wrong." }, 500);
   });
 
-  /** Who you are to this Colony, and who runs it. */
-  api.get("/me", (c) => c.json({ me: c.get("person"), host: store.getPerson(HOST_ID)!.name }));
-
-  /** Everything this person can see: their own Bots, the topics they're in, and what they own. */
-  api.get("/state", (c) => {
-    const person = c.get("person");
-    const chats = store.listChats().filter((chat) => canSee(person, chat));
-    const visibleChats = new Set(chats.map((chat) => chat.id));
-    const bots = store.listBots().filter((bot) => bot.ownerId === person.id || chats.some((chat) => chat.memberIds.includes(bot.id)) || store.gaveAway(person.id, bot.id));
-    const mine = new Set(bots.filter((bot) => bot.ownerId === person.id).map((bot) => bot.id));
-    return c.json<AppState>({
-      bots, chats,
-      folders: store.listFolders().filter((folder) => folder.ownerId === person.id),
-      // Recent approvals of every status in chats you can see, so old cards can show "Approved"/"Denied".
-      approvals: store.listApprovals().filter((approval) => visibleChats.has(approval.chatId)),
-      routines: store.listRoutines().filter((routine) => mine.has(routine.botId) || visibleChats.has(routine.chatId)),
-      models: settings.modelOptions(person.id),
-      defaultModel: settings.defaultModel(person.id),
-      configured: settings.modelConfigured(person.id),
-      accounts: integrations?.accounts.list().filter((account) => account.personId === person.id) ?? [],
-      access: integrations?.accounts.listAccess().filter((grant) => mine.has(grant.botId)) ?? [],
-      nodes: nodes?.list() ?? [],
-      people: store.listPeople(),
-      me: person,
-      transfers: store.listTransfers().filter((transfer) => transfer.fromId === person.id || transfer.toId === person.id),
-      seq: events.latestSeq(),
-    });
-  });
-
-  // ---------- Handing a Bot over ----------
-  /** Offers your Bot to someone in the family; nothing changes until they accept. */
-  api.post("/bots/:id/give", async (c) => {
-    const person = c.get("person");
-    const bot = store.getBot(c.req.param("id"));
-    if (!bot) return c.json({ error: "That Bot no longer exists." }, 404);
-    const { toId, keepMemory } = z.object({ toId: z.string().min(1), keepMemory: z.boolean().default(true) }).parse(await c.req.json());
-    const recipient = store.getPerson(toId);
-    if (!recipient || toId === person.id) return c.json({ error: "Pick someone else in the family." }, 400);
-    if (store.listTransfers().some((transfer) => transfer.botId === bot.id)) return c.json({ error: `${bot.name} is already waiting for an answer.` }, 409);
-    const transfer = store.createTransfer({ botId: bot.id, fromId: person.id, toId, keepMemory });
-    void push?.notify({ title: `${person.name} wants to give you ${bot.name}`, body: "Accept or decline in Colony.", chatId: null, tag: `transfer-${transfer.id}` }, { force: true, personId: toId });
-    return c.json(transfer, 201);
-  });
-  /** The recipient takes the Bot: it moves to them, with what goes with it. */
-  api.post("/transfers/:id/accept", (c) => {
-    const person = c.get("person");
-    const transfer = store.getTransfer(c.req.param("id"));
-    if (!transfer || transfer.status !== "pending") return c.json({ error: "That offer isn't open any more." }, 409);
-    if (transfer.toId !== person.id) return c.json({ error: "Only the person it's offered to can accept." }, 403);
-    const accepted = handOver(store, transfer, { integrations, stopBot: (botId) => runner.stopBot(botId) });
-    void push?.notify({ title: `${person.name} took ${transfer.bot.name}`, body: `${transfer.bot.name} is ${person.name}'s now. Your chat with it is archived in your topics.`, chatId: null, tag: `transfer-${transfer.id}` }, { force: true, personId: transfer.fromId });
-    return c.json({ transfer: accepted, bot: store.getBot(transfer.botId) });
-  });
-  api.post("/transfers/:id/decline", (c) => {
-    const person = c.get("person");
-    const transfer = store.getTransfer(c.req.param("id"));
-    if (!transfer || transfer.status !== "pending") return c.json({ error: "That offer isn't open any more." }, 409);
-    if (transfer.toId !== person.id) return c.json({ error: "Only the person it's offered to can decline." }, 403);
-    const declined = store.setTransferStatus(transfer.id, "declined");
-    void push?.notify({ title: `${person.name} said no to ${transfer.bot.name}`, body: `${transfer.bot.name} stays yours.`, chatId: null, tag: `transfer-${transfer.id}` }, { force: true, personId: transfer.fromId });
-    return c.json(declined);
-  });
-  /** The giver changes their mind while it waits. */
-  api.delete("/transfers/:id", (c) => {
-    const transfer = store.getTransfer(c.req.param("id"));
-    if (!transfer || transfer.status !== "pending") return c.json({ error: "That offer isn't open any more." }, 409);
-    if (transfer.fromId !== c.get("person").id) return c.json({ error: "Only the person who offered it can cancel." }, 403);
-    return c.json(store.setTransferStatus(transfer.id, "cancelled"));
-  });
-
-  /** Who's in the family, how many Bots each has (counts only: the Bots stay private) and which PCs they've lent. */
-  api.get("/family", (c) => {
-    const bots = store.listBots();
-    const pcs = nodes?.list() ?? [];
-    return c.json(store.listPeople().map((person) => ({
-      person, bots: bots.filter((bot) => bot.ownerId === person.id).length,
-      pcs: pcs.filter((node) => node.personId === person.id).map(({ name, capabilities, online }) => ({ name, capabilities, online })),
-    })));
-  });
-
-  // ---------- You (name, color, what Bots know about you) ----------
-  const personPatch = z.object({
-    name: z.string().trim().min(1).max(40),
-    color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-  }).partial();
-  api.patch("/people/:id", async (c) => {
-    const person = store.updatePerson(c.req.param("id"), personPatch.parse(await c.req.json()));
-    return person ? c.json(person) : c.json({ error: "Not found." }, 404);
-  });
-  /** What Bots know about a person (their USER.md), and about the household (HOUSEHOLD.md). */
-  api.get("/people/:id/about", (c) => store.getPerson(c.req.param("id")) ? c.json({ text: readAbout(c.req.param("id")) }) : c.json({ error: "Not found." }, 404));
-  api.put("/people/:id/about", async (c) => {
-    if (!store.getPerson(c.req.param("id"))) return c.json({ error: "Not found." }, 404);
-    writeAbout(c.req.param("id"), z.object({ text: z.string().max(8000) }).parse(await c.req.json()).text);
-    return c.body(null, 204);
-  });
-  api.get("/household", (c) => c.json({ text: readHousehold() }));
-  api.put("/household", async (c) => {
-    writeHousehold(z.object({ text: z.string().max(8000) }).parse(await c.req.json()).text);
-    return c.body(null, 204);
-  });
+  /** Everything the app shows. */
+  api.get("/state", (c) => c.json<AppState>({
+    bots: store.listBots(),
+    chats: store.listChats(),
+    folders: store.listFolders(),
+    // Recent approvals of every status, so old cards can show "Approved"/"Denied".
+    approvals: store.listApprovals(),
+    routines: store.listRoutines(),
+    models: settings.modelOptions(),
+    defaultModel: settings.defaultModel(),
+    configured: settings.modelConfigured(),
+    accounts: integrations?.accounts.list() ?? [],
+    access: integrations?.accounts.listAccess() ?? [],
+    nodes: nodes?.list() ?? [],
+    persistent: Boolean(runner.compact),
+    seq: events.latestSeq(),
+  }));
 
   // ---------- Version and updates ----------
   api.get("/system", (c) => updater ? c.json(updater.info()) : c.json({ error: "Updates aren't available here." }, 404));
@@ -265,10 +171,9 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   // ---------- Bots ----------
   api.post("/bots", async (c) => {
     const input = botInput.parse(await c.req.json());
-    const problem = desktopProblem(input.computer, input.desktop, input.model, c.get("person").id);
+    const problem = desktopProblem(input.computer, input.desktop, input.model);
     if (problem) return c.json({ error: problem }, 400);
-    const ownerId = c.get("person").id;
-    const bot = store.createBot({ ...input, model: settings.resolveModel(input.model, { ownerId })?.ref ?? "", ownerId });
+    const bot = store.createBot({ ...input, model: settings.resolveModel(input.model)?.ref ?? "" });
     files.initBotFolder(bot);
     try { runner.start(bot.chatId, bot.id, { hiddenPrompt: INTRO_PROMPT }); } catch { /* no model yet: the Bot still exists */ }
     return c.json(bot, 201);
@@ -277,13 +182,11 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.patch("/bots/:id", async (c) => {
     const patch = botPatch.parse(await c.req.json());
     const current = store.getBot(c.req.param("id"))!;
-    // A Bot runs on shared models or its owner's own; nobody else's key.
-    const ownerId = current.ownerId;
-    if (patch.model && !settings.resolveModel(patch.model, { fallback: false, ownerId })) return c.json({ error: "That model isn't in Settings." }, 400);
+    if (patch.model && !settings.resolveModel(patch.model, { fallback: false })) return c.json({ error: "That model isn't in Settings." }, 400);
     const computerOn = patch.computer ?? current.computer;
-    const problem = desktopProblem(computerOn, computerOn && (patch.desktop ?? current.desktop), patch.model ?? current.model, ownerId);
+    const problem = desktopProblem(computerOn, computerOn && (patch.desktop ?? current.desktop), patch.model ?? current.model);
     if (problem) return c.json({ error: problem }, 400);
-    const bot = store.updateBot(c.req.param("id"), { ...patch, ...(patch.model ? { model: settings.resolveModel(patch.model, { ownerId })!.ref } : {}) });
+    const bot = store.updateBot(c.req.param("id"), { ...patch, ...(patch.model ? { model: settings.resolveModel(patch.model)!.ref } : {}) });
     return bot ? c.json(bot) : c.json({ error: "Bot not found." }, 404);
   });
 
@@ -442,37 +345,30 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     memberIds: z.array(z.string()).min(1).max(6),
     coordinatorId: z.string().optional(),
   };
-  /** Checks a topic's Bots and folder for this person; returns an error message, or null when they're fine. */
-  const topicProblem = (person: Person, input: { memberIds?: string[]; folderId?: string | null }, before: string[] = [], ownsTopic = true) => {
+  /** Checks a topic's Bots and folder; returns an error message, or null when they're fine. */
+  const topicProblem = (input: { memberIds?: string[]; folderId?: string | null }) => {
     if (input.memberIds?.some((id) => !store.getBot(id))) return "Unknown Bot in this topic.";
-    // You bring in only your own Bots. You take out your own, or anyone's from a topic you started.
-    const added = (input.memberIds ?? []).filter((id) => !before.includes(id));
-    const removed = input.memberIds ? before.filter((id) => !input.memberIds!.includes(id)) : [];
-    if (added.some((id) => store.getBot(id)?.ownerId !== person.id)) return "You can only add your own Bots.";
-    if (!ownsTopic && removed.some((id) => store.getBot(id)?.ownerId !== person.id)) return "You can only take out your own Bots.";
-    if (input.folderId && store.getFolder(input.folderId)?.ownerId !== person.id) return "That folder doesn't exist.";
+    if (input.folderId && !store.getFolder(input.folderId)) return "That folder doesn't exist.";
     return null;
   };
-  const createTopic = (person: Person, input: { title: string; icon?: TopicIcon; brief?: string; folderId?: string | null; memberIds: string[]; coordinatorId?: string }) => {
+  const createTopic = (input: { title: string; icon?: TopicIcon; brief?: string; folderId?: string | null; memberIds: string[]; coordinatorId?: string }) => {
     const coordinatorId = input.coordinatorId && input.memberIds.includes(input.coordinatorId) ? input.coordinatorId : input.memberIds[0];
-    return store.createChat({ kind: "topic", title: input.title, icon: input.icon ?? "chat", brief: input.brief ?? "", folderId: input.folderId ?? null, memberIds: input.memberIds, coordinatorId, ownerId: person.id });
+    return store.createChat({ kind: "topic", title: input.title, icon: input.icon ?? "chat", brief: input.brief ?? "", folderId: input.folderId ?? null, memberIds: input.memberIds, coordinatorId });
   };
 
   api.post("/topics", async (c) => {
     const input = z.object({ ...topicFields, icon: topicFields.icon.default("chat"), brief: topicFields.brief.default(""), folderId: topicFields.folderId.default(null) }).parse(await c.req.json());
-    const problem = topicProblem(c.get("person"), input);
+    const problem = topicProblem(input);
     if (problem) return c.json({ error: problem }, 400);
-    return c.json(createTopic(c.get("person"), input), 201);
+    return c.json(createTopic(input), 201);
   });
 
   api.patch("/chats/:id", async (c) => {
     const chat = store.getChat(c.req.param("id"));
     if (!chat) return c.json({ error: "Chat not found." }, 404);
     if (chat.kind !== "topic") return c.json({ error: "Only topics can be renamed, filed or archived." }, 400);
-    const patch = z.object({ ...topicFields, archived: z.boolean(), coordinatorId: z.string().nullable(), peopleIds: z.array(z.string()).max(20), everyone: z.boolean() }).partial().parse(await c.req.json());
-    // Anyone in a topic can bring their own Bots in or take them out; the rest is its owner's.
-    if (chat.ownerId !== c.get("person").id && Object.keys(patch).some((key) => key !== "memberIds")) return c.json({ error: "Only the person who started this topic can change that." }, 403);
-    const problem = topicProblem(c.get("person"), patch, chat.memberIds, chat.ownerId === c.get("person").id);
+    const patch = z.object({ ...topicFields, archived: z.boolean(), coordinatorId: z.string().nullable() }).partial().parse(await c.req.json());
+    const problem = topicProblem(patch);
     if (problem) return c.json({ error: problem }, 400);
     if (patch.memberIds && !patch.memberIds.length) return c.json({ error: "A topic needs at least one Bot." }, 400);
     const members = patch.memberIds ?? chat.memberIds;
@@ -484,7 +380,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
 
   api.post("/folders", async (c) => {
     const { title } = z.object({ title: z.string().trim().min(1).max(40) }).parse(await c.req.json());
-    return c.json(store.createFolder(title, c.get("person").id), 201);
+    return c.json(store.createFolder(title), 201);
   });
   api.patch("/folders/:id", async (c) => {
     const patch = z.object({ title: z.string().trim().min(1).max(40), position: z.number().int().min(0).max(10_000) }).partial().parse(await c.req.json());
@@ -507,9 +403,8 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (accept) {
       const proposal = { ...card.proposal, memberIds: card.proposal.memberIds.filter((id) => store.getBot(id)) };
       if (!proposal.memberIds.length) return c.json({ error: "The Bots in that suggestion are gone." }, 400);
-      if (proposal.folderId && store.getFolder(proposal.folderId)?.ownerId !== c.get("person").id) proposal.folderId = null;
-      proposal.memberIds = proposal.memberIds.filter((id) => store.getBot(id)?.ownerId === c.get("person").id);
-      chat = createTopic(c.get("person"), proposal);
+      if (proposal.folderId && !store.getFolder(proposal.folderId)) proposal.folderId = null;
+      chat = createTopic(proposal);
     }
     store.updateMessage(message.id, { cards: message.cards.map((item) => item === card ? { ...card, chatId: chat?.id ?? null, dismissed: !accept } : item) });
     return chat ? c.json(chat, 201) : c.body(null, 204);
@@ -544,7 +439,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (attached.length !== attachmentIds.length) return c.json({ error: "One of those files isn't in this chat any more." }, 400);
     if (!text && !attached.length) return c.json({ error: "Write something, or attach a file." }, 400);
     const attachments = attached.map((file) => ({ id: file!.id, name: file!.name, mime: file!.mime, size: file!.size }));
-    return c.json(sendUserMessage(store, runner, chat, { text, mode, attachments, author: authorOf(c.get("person")) }), 201);
+    return c.json(sendUserMessage(store, runner, chat, { text, mode, attachments }), 201);
   });
 
   // ---------- A topic's Doc ----------
@@ -578,7 +473,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (!(upload instanceof File)) return c.json({ error: "No file in that upload." }, 400);
     if (upload.size > MAX_FILE_BYTES) return c.json({ error: "That file is over 25 MB." }, 413);
     const bytes = new Uint8Array(await upload.arrayBuffer());
-    const file = store.addFile({ chatId: chat.id, name: safeName(upload.name), mime: upload.type || "application/octet-stream", size: bytes.byteLength, addedBy: authorOf(c.get("person")) });
+    const file = store.addFile({ chatId: chat.id, name: safeName(upload.name), mime: upload.type || "application/octet-stream", size: bytes.byteLength, addedBy: "user" });
     writeChatFile(file, bytes);
     shareWithComputers(file, chat, chat.memberIds.filter((id) => store.getBot(id)?.computer));
     return c.json(file, 201);
@@ -617,6 +512,15 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.body(hit.bytes);
   });
 
+  /** A new topic that carries a Bot's conversation up to this reply. */
+  api.post("/messages/:id/branch", async (c) => {
+    if (!runner.branch) return c.json({ error: "Bots here don't keep persistent conversations." }, 400);
+    const input = z.object({ title: z.string().trim().min(1).max(60), folderId: z.string().max(80).nullable().default(null) }).parse(await c.req.json());
+    if (input.folderId && !store.getFolder(input.folderId)) return c.json({ error: "That folder doesn't exist." }, 400);
+    try { return c.json({ chatId: await runner.branch(c.req.param("id"), input) }, 201); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "Couldn't branch." }, 400); }
+  });
+
   /** A queued message, sent to the running turn now instead of after it. */
   api.post("/messages/:id/steer", (c) => {
     if (!runner.steerNow(c.req.param("id"))) return c.json({ error: "That message isn't waiting any more." }, 409);
@@ -631,6 +535,30 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       return c.json({ error: "Only a message that's still waiting can be taken back." }, 409);
     }
     store.deleteMessage(message.id);
+    return c.body(null, 204);
+  });
+
+  /** Which of a chat's Bots a conversation action is for: the one named, or the chat's lead. */
+  const botIn = (chat: Chat, botId?: string) => (botId && chat.memberIds.includes(botId) ? botId : chat.coordinatorId && chat.memberIds.includes(chat.coordinatorId) ? chat.coordinatorId : chat.memberIds[0]);
+  api.post("/chats/:id/compact", async (c) => {
+    const chat = store.getChat(c.req.param("id"));
+    if (!chat) return c.json({ error: "Chat not found." }, 404);
+    if (!runner.compact) return c.json({ error: "Bots here don't keep persistent conversations." }, 400);
+    const { botId } = z.object({ botId: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+    const bot = botIn(chat, botId);
+    if (!bot) return c.json({ error: "There's no Bot in this chat." }, 400);
+    try { await runner.compact(chat.id, bot); } catch (error) { return c.json({ error: error instanceof Error ? error.message : "Couldn't compact." }, 409); }
+    return c.body(null, 204);
+  });
+  api.post("/chats/:id/fresh", async (c) => {
+    const chat = store.getChat(c.req.param("id"));
+    if (!chat) return c.json({ error: "Chat not found." }, 404);
+    if (!runner.startFresh) return c.json({ error: "Bots here don't keep persistent conversations." }, 400);
+    const { botId } = z.object({ botId: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+    const bot = botIn(chat, botId);
+    if (!bot) return c.json({ error: "There's no Bot in this chat." }, 400);
+    if (runner.isRunning(chat.id, bot)) return c.json({ error: "Stop the Bot first." }, 409);
+    await runner.startFresh(chat.id, bot);
     return c.body(null, 204);
   });
 
@@ -657,32 +585,16 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     /** Dollars per million tokens per model; null puts one back to the built-in price. */
     prices: z.record(z.string().max(200), z.object({ input: z.number().min(0).max(10_000), output: z.number().min(0).max(10_000), cached: z.number().min(0).max(10_000).optional() }).nullable()).optional(),
   });
-  /** Tells everyone's apps the models changed (each sees their own list), and returns this person's view. */
-  const settingsChanged = (personId: string) => {
+  /** Tells the app the models changed, and returns the new settings. */
+  const settingsChanged = () => {
     events.emit({ type: "settings.updated", models: settings.modelOptions(), defaultModel: settings.defaultModel(), configured: settings.modelConfigured() });
-    return settings.settingsView(personId);
+    return settings.settingsView();
   };
-  api.get("/settings", (c) => c.json(settings.settingsView(c.get("person").id)));
+  api.get("/settings", (c) => c.json(settings.settingsView()));
 
   // ---------- Spending ----------
   /** Your spending: this month by Bot and the last 30 days. */
-  api.get("/spending", (c) => c.json(spendingFor(store, c.get("person").id)));
-  /** The host's shared keys: this month by person and Bot, with limits. */
-  api.get("/spending/shared", (c) => c.json(sharedSpending(store)));
-  /** The host sets (or, with null, removes) someone's monthly limit on shared keys. */
-  api.put("/spending/limits/:personId", async (c) => {
-    const personId = c.req.param("personId");
-    if (!store.getPerson(personId)) return c.json({ error: "There's nobody like that in the family." }, 404);
-    if (personId === HOST_ID) return c.json({ error: "The shared keys are yours, so there's no limit for you." }, 400);
-    const { limit } = z.object({ limit: z.number().min(0).max(100_000).nullable() }).parse(await c.req.json());
-    settings.setSpendLimit(personId, limit);
-    return c.json(sharedSpending(store));
-  });
-  /** A provider this person may change: their own, or (the host) a shared one. */
-  const editable = (personId: string, providerId: string) => {
-    const provider = settings.providerById(providerId);
-    return provider && settings.canEditProvider(provider, personId) ? provider : null;
-  };
+  api.get("/spending", (c) => c.json(spendingFor(store)));
 
   // ---------- Voice ----------
   const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 22:00.");
@@ -696,24 +608,14 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     quietFrom: hhmm,
     quietTo: hhmm,
   }).partial();
-  /**
-   * Voice: the provider, its models and the default voice are the host's (shared); everyone sets
-   * their own call preferences and their own Bots' voices.
-   */
   api.put("/settings/voice", async (c) => {
-    const person = c.get("person");
     const patch = voicePatch.safeParse(await c.req.json());
     if (!patch.success) return c.json({ error: patch.error.issues[0]?.message ?? "Check the voice settings." }, 400);
-    const { providerId, transcribeModel, speechModel, voice, botVoices = {}, ...prefs } = patch.data;
-    const shared = { providerId, transcribeModel, speechModel, voice };
-    if (Object.values(shared).some((value) => value !== undefined) && !isHost(person)) return c.json({ error: "Only the person who runs this Colony can change the voice provider." }, 403);
-    if (Object.keys(botVoices).some((botId) => store.getBot(botId)?.ownerId !== person.id)) return c.json({ error: "You can only pick voices for your own Bots." }, 403);
-    if (providerId && settings.providerById(providerId)?.protocol !== "openai") {
+    if (patch.data.providerId && settings.providerById(patch.data.providerId)?.protocol !== "openai") {
       return c.json({ error: "Voice needs an OpenAI-compatible provider." }, 400);
     }
-    if (isHost(person)) settings.setVoiceSettings(Object.fromEntries(Object.entries(shared).filter(([, value]) => value !== undefined)));
-    settings.setCallPrefs(person.id, prefs, botVoices);
-    return c.json(settings.settingsView(person.id));
+    settings.setVoiceSettings(Object.fromEntries(Object.entries(patch.data).filter(([, value]) => value !== undefined)));
+    return c.json(settings.settingsView());
   });
   /** Says a line in a voice, to try it out in Settings. */
   api.post("/settings/voice/try", async (c) => {
@@ -726,7 +628,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     }
   });
   // ---------- This PC ----------
-  /** Forgets one of your PCs (it comes back if its app connects again). */
+  /** Forgets a PC (it comes back if its app connects again). */
   api.delete("/nodes/:id", (c) => {
     store.deleteNode(c.req.param("id"));
     nodes?.changed();
@@ -734,50 +636,42 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   });
 
   api.post("/calls/:id/decline", (c) => {
-    calls?.miss(c.req.param("id"), c.get("person").id);
+    calls?.miss(c.req.param("id"));
     return c.json({ ok: true });
   });
-  /** Adds a provider: your own, or (the host, with shared: true) one everyone's Bots can use. */
   api.post("/settings/providers", async (c) => {
-    const person = c.get("person");
-    // The host's providers are shared unless they say otherwise; everyone else's are their own.
-    const { shared: asked, ...input } = providerInput.extend({ shared: z.boolean().optional() }).parse(await c.req.json());
-    const shared = asked ?? isHost(person);
-    if (shared && !isHost(person)) return c.json({ error: "Only the person who runs this Colony can add shared models." }, 403);
-    settings.saveProvider(null, input, shared ? null : person.id);
-    return c.json(settingsChanged(person.id), 201);
+    settings.saveProvider(null, providerInput.parse(await c.req.json()));
+    return c.json(settingsChanged(), 201);
   });
   api.put("/settings/providers/:id", async (c) => {
-    if (settings.providerById(c.req.param("id")) && !editable(c.get("person").id, c.req.param("id"))) return c.json({ error: "That isn't yours to change." }, 403);
     try { settings.saveProvider(c.req.param("id"), providerInput.parse(await c.req.json())); }
     catch (failure) { if (failure instanceof z.ZodError) throw failure; return c.json({ error: (failure as Error).message }, 404); }
-    return c.json(settingsChanged(c.get("person").id));
+    return c.json(settingsChanged());
   });
   api.delete("/settings/providers/:id", (c) => {
-    if (!editable(c.get("person").id, c.req.param("id"))) return c.json({ error: "That isn't yours to change." }, 403);
     settings.deleteProvider(c.req.param("id"));
-    return c.json(settingsChanged(c.get("person").id));
+    return c.json(settingsChanged());
   });
-  /** Your default for new Bots (the host's is the shared default everyone falls back to). */
+  /** The default for new Bots. */
   api.put("/settings/default-model", async (c) => {
     const { model } = z.object({ model: z.string().max(300) }).parse(await c.req.json());
-    try { settings.setDefaultModel(model, c.get("person").id); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }
-    return c.json(settingsChanged(c.get("person").id));
+    try { settings.setDefaultModel(model); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }
+    return c.json(settingsChanged());
   });
   /** Tests which of a provider's models can drive a desktop, and records the verdicts. */
   api.post("/settings/providers/:id/desktop-check", async (c) => {
     const id = c.req.param("id");
-    const provider = editable(c.get("person").id, id);
+    const provider = settings.providerById(id);
     if (!provider) return c.json({ error: "That provider no longer exists." }, 404);
     const { models } = z.object({ models: z.array(z.string().max(200)).max(60).optional() }).parse(await c.req.json().catch(() => ({})));
     const queue = (models ?? provider.models).filter((model) => provider.models.includes(model));
     const results: DesktopVerdict[] = [];
     for (let start = 0; start < queue.length; start += 4) {
       results.push(...await Promise.all(queue.slice(start, start + 4).map((model) =>
-        checkDesktop(settings.resolveModel(settings.modelRef(id, model), { fallback: false, ownerId: provider.ownerId ?? HOST_ID })!, modelFactory))));
+        checkDesktop(settings.resolveModel(settings.modelRef(id, model), { fallback: false })!, modelFactory))));
     }
     settings.setDesktopModels(id, Object.fromEntries(results.filter((result) => !result.error).map((result) => [result.model, result.canDrive])));
-    return c.json({ results, settings: settingsChanged(c.get("person").id) });
+    return c.json({ results, settings: settingsChanged() });
   });
 
   api.post("/settings/providers/check", async (c) => {
@@ -787,10 +681,8 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       protocol: z.enum(["openai", "anthropic"]).default("openai"),
       apiKey: z.string().max(500).optional(),
     }).parse(await c.req.json());
-    // A saved key is only reused for a provider you may change.
-    const savedFor = providerId && editable(c.get("person").id, providerId) ? providerId : undefined;
     try {
-      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(savedFor, baseURL, apiKey), protocol) });
+      return c.json({ models: await settings.listProviderModels(baseURL, settings.keyFor(providerId, baseURL, apiKey), protocol) });
     } catch (failure) {
       return c.json({ error: failure instanceof Error ? failure.message : "Couldn't connect." }, 400);
     }
@@ -802,11 +694,9 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.get("/accounts", (c) => {
     if (!integrations) return c.json(unavailable, 503);
     const apps = integrations.accounts.apps();
-    const person = c.get("person");
     return c.json({
-      // Your accounts, and what your Bots may do with them.
-      accounts: integrations.accounts.list().filter((account) => account.personId === person.id),
-      access: integrations.accounts.listAccess().filter((grant) => store.getBot(grant.botId)?.ownerId === person.id),
+      accounts: integrations.accounts.list(),
+      access: integrations.accounts.listAccess(),
       // Client ids aren't secret; the Google client secret stays here.
       apps: { google: apps.google ? { clientId: apps.google.clientId } : null, microsoft: apps.microsoft ? { clientId: apps.microsoft.clientId } : null },
     });
@@ -820,14 +710,13 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       ? { clientId: input.clientId, clientSecret: input.clientSecret || (saved?.clientId === input.clientId ? saved.clientSecret : "") }
       : saved;
     if (!app?.clientId || !app.clientSecret) return c.json({ error: "Paste your Google client ID and client secret." }, 400);
-    // The app registration is shared; only the host replaces one that's already saved.
-    if (!saved || isHost(c.get("person"))) integrations.accounts.saveApp("google", app);
-    try { return c.json(await signIns.startGoogle(app, c.get("person").id)); } catch (error) { return c.json(failure(error, "Couldn't start the sign-in."), 500); }
+    integrations.accounts.saveApp("google", app);
+    try { return c.json(await signIns.startGoogle(app)); } catch (error) { return c.json(failure(error, "Couldn't start the sign-in."), 500); }
   });
   api.post("/accounts/google/finish", async (c) => {
     if (!signIns) return c.json(unavailable, 503);
     const { id, url } = z.object({ id: z.string().max(80), url: z.string().trim().min(1).max(4000) }).parse(await c.req.json());
-    try { return c.json(await signIns.finishGoogle(id, url, c.get("person").id)); } catch (error) { return c.json(failure(error, "Couldn't finish the sign-in."), 400); }
+    try { return c.json(await signIns.finishGoogle(id, url)); } catch (error) { return c.json(failure(error, "Couldn't finish the sign-in."), 400); }
   });
   api.post("/accounts/microsoft/start", async (c) => {
     if (!integrations || !signIns) return c.json(unavailable, 503);
@@ -835,15 +724,15 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const saved = integrations.accounts.apps().microsoft;
     const app = input.clientId ? { clientId: input.clientId } : saved;
     if (!app?.clientId) return c.json({ error: "Paste your Microsoft application (client) ID." }, 400);
-    if (!saved || isHost(c.get("person"))) integrations.accounts.saveApp("microsoft", app);
-    try { return c.json(await signIns.startMicrosoft(app, c.get("person").id)); } catch (error) { return c.json(failure(error, "Couldn't start the sign-in."), 502); }
+    integrations.accounts.saveApp("microsoft", app);
+    try { return c.json(await signIns.startMicrosoft(app)); } catch (error) { return c.json(failure(error, "Couldn't start the sign-in."), 502); }
   });
   api.get("/accounts/signin/:id", (c) => {
-    const status = signIns?.status(c.req.param("id"), c.get("person").id);
+    const status = signIns?.status(c.req.param("id"));
     return status ? c.json(status) : c.json({ error: "That sign-in has ended." }, 404);
   });
   api.post("/accounts/signin/:id/cancel", (c) => {
-    if (signIns?.status(c.req.param("id"), c.get("person").id)) signIns.cancel(c.req.param("id"));
+    if (signIns?.status(c.req.param("id"))) signIns.cancel(c.req.param("id"));
     return c.body(null, 204);
   });
   api.post("/accounts/onepassword", async (c) => {
@@ -858,7 +747,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     catch (error) { return c.json({ error: `1Password didn't accept that: ${error instanceof Error ? error.message : error}` }, 400); }
     if (!vaults.length) return c.json({ error: "1Password connected, but it reaches no vaults. Give the service account access to the vault your Bots should use." }, 400);
     const email = "token" in input ? vaults.map((vault) => vault.title).join(", ") : input.desktopAccount;
-    const account = integrations.accounts.connect({ kind: "onepassword", label: "1Password", email, personId: c.get("person").id },
+    const account = integrations.accounts.connect({ kind: "onepassword", label: "1Password", email },
       { kind: "onepassword", ...input, saveVaultId: vaults[0].id });
     integrations.vaults.forget(account.id);
     return c.json(account, 201);
@@ -866,7 +755,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.delete("/accounts/:id", async (c) => {
     if (!integrations) return c.json(unavailable, 503);
     const id = c.req.param("id");
-    if (integrations.accounts.get(id)?.personId !== c.get("person").id) return c.json({ error: "That isn't yours." }, 403);
+    if (!integrations.accounts.get(id)) return c.json({ error: "That account isn't connected." }, 404);
     await revoke(fetch, integrations.accounts.secret(id));
     // Routines watching this mailbox have nothing left to watch.
     for (const routine of store.listRoutines()) if (routine.schedule.type === "mail" && routine.schedule.accountId === id) store.deleteRoutine(routine.id);
@@ -882,8 +771,6 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       calendar: z.enum(["none", "read", "write"]).optional(),
       vault: z.enum(["none", "use", "save"]).optional(),
     }).parse(await c.req.json());
-    // Your Bots (checked by the route rules) and your accounts only.
-    if (integrations.accounts.get(c.req.param("accountId"))?.personId !== c.get("person").id) return c.json({ error: "That account isn't yours." }, 403);
     try { return c.json(integrations.accounts.setAccess(c.req.param("id"), c.req.param("accountId"), patch)); }
     catch (error) { return c.json(failure(error, "Couldn't change access."), 404); }
   });
@@ -928,7 +815,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   // ---------- Notifications ----------
   api.get("/push/key", (c) => push ? c.json({ publicKey: push.publicKey }) : c.json({ error: "Notifications are off." }, 503));
   api.post("/push/subscribe", async (c) => {
-    push?.subscribe(pushSubscription.parse(await c.req.json()), c.get("person").id);
+    push?.subscribe(pushSubscription.parse(await c.req.json()));
     return c.body(null, 204);
   });
   api.post("/push/unsubscribe", async (c) => {
@@ -940,7 +827,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.json({ subscribed: push?.isSubscribed(endpoint) ?? false });
   });
   api.post("/push/test", async (c) => {
-    const delivered = await push?.notify({ title: "Colony", body: "Notifications are on. Your Bots will ping you here.", chatId: null, tag: "test" }, { force: true, personId: c.get("person").id }) ?? 0;
+    const delivered = await push?.notify({ title: "Colony", body: "Notifications are on. Your Bots will ping you here.", chatId: null, tag: "test" }, { force: true }) ?? 0;
     return c.json({ delivered });
   });
   api.post("/focus", async (c) => {
@@ -965,20 +852,12 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const detach = () => { if (!released) { released = true; release?.(); } };
     const queue: { seq: number | null; event: unknown }[] = [];
     let wake: (() => void) | null = null;
-    // Members only hear about the topics shared with them.
-    const person = c.get("person");
-    const unsubscribe = events.subscribe((item) => {
-      const event = eventFor(person, item.event, store);
-      if (event) { queue.push({ ...item, event }); wake?.(); }
-    });
+    const unsubscribe = events.subscribe((item) => { queue.push(item); wake?.(); });
     stream.onAbort(() => { unsubscribe(); detach(); wake?.(); });
 
     const backlog = events.since(since);
     if (backlog === null) await stream.writeSSE({ event: "reset", data: "{}" });
-    else for (const item of backlog) {
-      const event = eventFor(person, item.event, store);
-      if (event) await stream.writeSSE({ id: String(item.seq), event: "event", data: JSON.stringify(event) });
-    }
+    else for (const item of backlog) await stream.writeSSE({ id: String(item.seq), event: "event", data: JSON.stringify(item.event) });
     let last = backlog?.at(-1)?.seq ?? since;
     // Flush headers right away so the client sees the connection open.
     await stream.writeSSE({ event: "ready", data: String(last) });

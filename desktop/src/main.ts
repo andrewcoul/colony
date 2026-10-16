@@ -61,7 +61,7 @@ async function probe(origin: string): Promise<string | null> {
   try {
     const response = await net.fetch(`${origin}/api/state`, { signal: AbortSignal.timeout(6000) });
     if (response.ok && (response.headers.get("content-type") ?? "").includes("json")) return null;
-    if (response.status === 403) return `${origin} turned this device away. If it limits who can connect, add your Tailscale login to COLONY_ALLOWED_USERS.`;
+    if (response.status === 403) return `${origin} turned this device away: it belongs to another Tailscale login. Sign in to Tailscale as its owner, or add your login to COLONY_ALLOWED_USERS on that PC.`;
     return `Something answered at ${origin}, but it isn't Colony (${response.status}).`;
   } catch {
     return `Couldn't reach Colony at ${origin}. Check that it's running, and that this PC is on your tailnet if it's on another computer.`;

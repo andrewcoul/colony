@@ -19,7 +19,6 @@ const { ApprovalGate } = await import("./agent/approvals.js");
 const { AgentRunner } = await import("./agent/run.js");
 const { coreTools } = await import("./agent/tools.js");
 const { NodeHub, pcToolsFor } = await import("./nodes.js");
-const { identify } = await import("./people.js");
 (await import("./settings.js")).loadSettings();
 
 const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
@@ -41,7 +40,7 @@ const model = new MockLanguageModelV4({
   doStream: async () => ({ stream: convertArrayToReadableStream(turns[Math.min(call++, turns.length - 1)] as never[]) }),
 });
 
-/** Andrew (the host) with Luke, Marija (family) with Ivy, and a server PCs connect to with their login. */
+/** Two Bots, Luke and Ivy, and a server your PCs connect to. */
 async function setup() {
   const db = openDb(":memory:");
   const events = new EventLog(db);
@@ -50,26 +49,24 @@ async function setup() {
   const hub = new NodeHub(store, events);
   const runner = new AgentRunner(store, events, gate, (botId) => ({ ...coreTools, ...pcToolsFor(hub, store, botId) }), () => model);
   hub.stopBot = (botId) => runner.stopBot(botId);
-  const andrew = identify(store, "andrew@example.com");
-  const marija = identify(store, "marija@example.com");
   const server = http.createServer();
-  server.on("upgrade", (request, socket, head) => hub.upgrade(request, socket, head, identify(store, String(request.headers["tailscale-user-login"]))));
+  server.on("upgrade", (request, socket, head) => hub.upgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/nodes/connect`;
-  const luke = store.createBot({ name: "Luke", title: "", description: "", model: "env::mock-model", computer: false, ownerId: andrew.id });
-  const ivy = store.createBot({ name: "Ivy", title: "", description: "", model: "env::mock-model", computer: false, ownerId: marija.id });
-  return { store, gate, hub, runner, andrew, marija, luke, ivy, url, close: () => server.close() };
+  const luke = store.createBot({ name: "Luke", title: "", description: "", model: "env::mock-model", computer: false });
+  const ivy = store.createBot({ name: "Ivy", title: "", description: "", model: "env::mock-model", computer: false });
+  return { store, gate, hub, runner, luke, ivy, url, close: () => server.close() };
 }
 
 /** A pretend desktop app lending a PC: an MCP server over the socket, with the switches given. */
-async function fakePc(url: string, login: string, id: string, name: string, capabilities: string[]) {
+async function fakePc(url: string, id: string, name: string, capabilities: string[]) {
   const calls: { name: string; arguments: unknown; meta: { botName?: string; ownerName?: string | null } }[] = [];
   const tools = () => [
     ...(capabilities.includes("browser") ? ["pc_browser_open", "pc_browser_read", "pc_browser_click", "pc_browser_type"] : []),
     ...(capabilities.includes("screen") ? ["pc_screenshot"] : []),
     ...(capabilities.includes("shell") ? ["pc_shell"] : []),
   ].map((tool) => ({ name: tool, inputSchema: { type: "object" } }));
-  const ws = new WebSocket(url, { headers: { "Tailscale-User-Login": login } });
+  const ws = new WebSocket(url);
   const closed = new Promise<number>((resolve) => ws.once("close", (code) => resolve(code)));
   ws.on("message", (data) => {
     const message = JSON.parse(String(data)) as { id: number; method: string; params: { name: string; arguments: unknown; _meta: { botName?: string; ownerName?: string | null } } };
@@ -103,18 +100,17 @@ async function until<T>(read: () => T | undefined | null | false, timeoutMs = 30
 
 afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-describe("PCs for the family", () => {
-  test("a lent PC is its lender's; every family Bot can use it within its switches", async () => {
-    const { store, hub, luke, ivy, marija, url, close } = await setup();
-    const laptop = await fakePc(url, "marija@example.com", "pc-marija-0001", "Marija's laptop", ["browser", "shell"]);
-    await until(() => hub.offered("pc-marija-0001").size > 0);
-    expect(hub.list()).toMatchObject([{ id: "pc-marija-0001", name: "Marija's laptop", personId: marija.id, online: true }]);
-    // Being family is the permission: Andrew's Bot and Marija's both get the tools.
+describe("This PC", () => {
+  test("every Bot can use a lent PC, within its switches", async () => {
+    const { store, hub, luke, ivy, url, close } = await setup();
+    const laptop = await fakePc(url, "pc-laptop-0001", "Laptop", ["browser", "shell"]);
+    await until(() => hub.offered("pc-laptop-0001").size > 0);
+    expect(hub.list()).toMatchObject([{ id: "pc-laptop-0001", name: "Laptop", online: true }]);
     expect(Object.keys(pcToolsFor(hub, store, luke.id))).toEqual(["pc_browser_open", "pc_browser_read", "pc_browser_click", "pc_browser_type", "pc_shell"]);
     expect(Object.keys(pcToolsFor(hub, store, ivy.id))).toContain("pc_shell");
     // The PC's switches win.
     laptop.setCapabilities(["browser"]);
-    await until(() => !hub.offered("pc-marija-0001").has("pc_shell"));
+    await until(() => !hub.offered("pc-laptop-0001").has("pc_shell"));
     expect(Object.keys(pcToolsFor(hub, store, luke.id))).not.toContain("pc_shell");
     laptop.ws.close();
     await until(() => !hub.list()[0].online);
@@ -122,10 +118,10 @@ describe("PCs for the family", () => {
     close();
   });
 
-  test("someone else's Bot asks the PC's owner: browser once per task, the terminal every time", async () => {
-    const { store, gate, hub, runner, luke, marija, url, close } = await setup();
-    const laptop = await fakePc(url, "marija@example.com", "pc-marija-0001", "Marija's laptop", ["browser", "shell"]);
-    await until(() => hub.offered("pc-marija-0001").size > 0);
+  test("a Bot asks you first: the browser once per task, the terminal every time", async () => {
+    const { store, gate, hub, runner, luke, url, close } = await setup();
+    const laptop = await fakePc(url, "pc-laptop-0001", "Laptop", ["browser", "shell"]);
+    await until(() => hub.offered("pc-laptop-0001").size > 0);
     call = 0;
     turns = [
       toolTurn("pc_browser_open", { url: "https://example.com" }, "a"),
@@ -133,40 +129,41 @@ describe("PCs for the family", () => {
       toolTurn("pc_shell", { command: "lp boarding.pdf" }, "c"),
       textTurn("Printed."),
     ];
-    store.createMessage({ chatId: luke.chatId, author: "user", text: "Print the boarding passes on Marija's printer" });
+    store.createMessage({ chatId: luke.chatId, author: "user", text: "Print the boarding passes" });
     runner.start(luke.chatId, luke.id);
 
     const first = await until(() => store.listApprovals("pending")[0]);
-    expect(first).toMatchObject({ approverId: marija.id, summary: "Luke (Andrew's) wants to use the browser on Marija's laptop" });
+    expect(first).toMatchObject({ summary: "Luke wants to use the browser on Laptop" });
     gate.resolve(first.id, true);
     const second = await until(() => store.listApprovals("pending")[0]);
-    expect(second).toMatchObject({ approverId: marija.id, summary: "Luke (Andrew's) wants to use Marija's laptop" });
+    expect(second).toMatchObject({ summary: "Luke wants to use Laptop" });
     expect(second.detail).toContain("Run: lp boarding.pdf");
     gate.resolve(second.id, true);
     await until(() => store.listMessages(luke.chatId).find((message) => message.author === luke.id && message.text === "Printed."));
     expect(laptop.calls.map((item) => item.name)).toEqual(["pc_browser_open", "pc_browser_click", "pc_shell"]);
-    // The pill on Marija's laptop says whose Bot it is.
-    expect(laptop.calls[0].meta).toMatchObject({ botName: "Luke", ownerName: "Andrew" });
+    // The pill on the laptop names the Bot.
+    expect(laptop.calls[0].meta).toMatchObject({ botName: "Luke" });
     laptop.ws.close();
     close();
   });
 
-  test("with several PCs, a Bot uses its owner's own unless it names another", async () => {
+  test("with several PCs, a Bot uses the most recent one unless it names another", async () => {
     const { store, gate, hub, runner, luke, url, close } = await setup();
-    const desktop = await fakePc(url, "andrew@example.com", "pc-andrew-0001", "Andrew's PC", ["shell"]);
-    const laptop = await fakePc(url, "marija@example.com", "pc-marija-0001", "Marija's laptop", ["shell"]);
-    await until(() => hub.offered("pc-andrew-0001").size > 0 && hub.offered("pc-marija-0001").size > 0);
+    const laptop = await fakePc(url, "pc-laptop-0001", "Laptop", ["shell"]);
+    await until(() => hub.offered("pc-laptop-0001").size > 0);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const desktop = await fakePc(url, "pc-desktop-0001", "Desktop", ["shell"]);
+    await until(() => hub.offered("pc-desktop-0001").size > 0);
     call = 0;
-    turns = [toolTurn("pc_shell", { command: "hostname" }, "a"), toolTurn("pc_shell", { command: "hostname", pc: "marija's LAPTOP" }, "b"), textTurn("Done.")];
+    turns = [toolTurn("pc_shell", { command: "hostname" }, "a"), toolTurn("pc_shell", { command: "hostname", pc: "LAPTOP" }, "b"), textTurn("Done.")];
     store.createMessage({ chatId: luke.chatId, author: "user", text: "Check both" });
     runner.start(luke.chatId, luke.id);
-    // Andrew approves on his own PC; Marija on hers.
-    const own = await until(() => store.listApprovals("pending")[0]);
-    expect(own.approverId).toBe("owner");
-    gate.resolve(own.id, true);
-    const theirs = await until(() => store.listApprovals("pending").find((approval) => approval.id !== own.id));
-    expect(theirs.approverId).not.toBe("owner");
-    gate.resolve(theirs.id, true);
+    const first = await until(() => store.listApprovals("pending")[0]);
+    expect(first.summary).toBe("Luke wants to use Desktop");
+    gate.resolve(first.id, true);
+    const second = await until(() => store.listApprovals("pending").find((approval) => approval.id !== first.id));
+    expect(second.summary).toBe("Luke wants to use Laptop");
+    gate.resolve(second.id, true);
     await until(() => store.listMessages(luke.chatId).find((message) => message.author === luke.id && message.text === "Done."));
     expect(desktop.calls.map((item) => item.arguments)).toEqual([{ command: "hostname" }]);
     expect(laptop.calls.map((item) => item.arguments)).toEqual([{ command: "hostname" }]);
@@ -175,10 +172,10 @@ describe("PCs for the family", () => {
     close();
   });
 
-  test("Stop on the PC stops whichever Bot is driving it, and a PC can't be claimed by another login", async () => {
+  test("Stop on the PC stops whichever Bot is driving it", async () => {
     const { store, gate, hub, runner, luke, url, close } = await setup();
-    const laptop = await fakePc(url, "marija@example.com", "pc-marija-0001", "Marija's laptop", ["browser", "shell"]);
-    await until(() => hub.offered("pc-marija-0001").size > 0);
+    const laptop = await fakePc(url, "pc-laptop-0001", "Laptop", ["browser", "shell"]);
+    await until(() => hub.offered("pc-laptop-0001").size > 0);
     call = 0;
     turns = [toolTurn("pc_browser_open", { url: "https://example.com" }), toolTurn("pc_shell", { command: "dir" }), textTurn("Done.")];
     store.createMessage({ chatId: luke.chatId, author: "user", text: "Go" });
@@ -188,9 +185,6 @@ describe("PCs for the family", () => {
     laptop.stop();
     await until(() => !runner.isBotRunning(luke.id));
     expect(laptop.calls.map((item) => item.name)).toEqual(["pc_browser_open"]);
-
-    const impostor = await fakePc(url, "andrew@example.com", "pc-marija-0001", "Marija's laptop", ["shell"]);
-    expect(await impostor.closed).toBe(1008);
     laptop.ws.close();
     close();
   });

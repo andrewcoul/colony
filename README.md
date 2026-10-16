@@ -9,6 +9,12 @@ has no accounts: your Tailscale network is the only way in.
 - **Bots**: a roster with live presence (thinking, working, needs you, blocked).
   Each Bot has a persona (`SOUL.md`), a memory it curates (`MEMORY.md`), shared
   knowledge about you (`USER.md`), and reusable skills it writes itself.
+- **Persistent conversations**: each Bot keeps one ongoing conversation per chat
+  (on [pi durable](https://github.com/earendil-works/pi/tree/main/packages/durable)).
+  It's summarised when it nears the model's context limit, instead of being cut to
+  the last few messages; you can compact it or start it fresh from the chat menu, or
+  branch a new topic from any reply. A turn Colony was in the middle of when it
+  stopped picks up where it was.
 - **Step log**: every tool call is a readable step ("Searched the web", "Ran
   `npm test` · 212 passed"), collapsed to one line when the work is done.
 - **A computer per Bot**: a hardened Docker container with a persistent
@@ -28,7 +34,7 @@ has no accounts: your Tailscale network is the only way in.
 
 ## Requirements
 
-- Windows, macOS or Linux with **Node.js 22.13+** (Colony uses the built-in `node:sqlite`)
+- Windows, macOS or Linux with **Node.js 22.19+** (Colony uses the built-in `node:sqlite`)
 - An **OpenAI-compatible API**: OpenRouter, xAI, OpenCode Go, a local server…
 - Optional: **Docker Desktop**, for Bot computers
 - Optional: **self-hosted Firecrawl** at `127.0.0.1:3002`, for web search and reading
@@ -36,7 +42,7 @@ has no accounts: your Tailscale network is the only way in.
 
 ## Install
 
-**The server** (Windows; needs Node.js 22.13+). In PowerShell:
+**The server** (Windows; needs Node.js 22.19+). In PowerShell:
 
 ```powershell
 irm https://github.com/andrewcoul/colony/releases/latest/download/install-colony-server.ps1 | iex
@@ -318,10 +324,12 @@ An installed server lives in `%LOCALAPPDATA%\Colony`:
 - `service.ps1`: the scheduled task's runner.
 - `.env`, `data/` and `logs/`.
 
-- **Server** (`server/`): Hono on Node, `node:sqlite`, and the Vercel AI SDK.
+- **Server** (`server/`): Hono on Node, `node:sqlite`, and pi durable with pi-ai for the
+  agent runtime (`agent/pi/`, conversations in `data/agent.db`). `COLONY_RUNTIME=ai-sdk`
+  switches back to the earlier Vercel AI SDK runtime.
   - Persistent state goes through `Store`, and every change is a sequenced event.
   - The app follows those events over a resumable SSE stream (`/api/events`).
-  - `AgentRunner` streams a Bot's turn into steps and presence.
+  - The runner (`PiRunner`) turns a Bot's turn into streamed text, steps and presence.
   - Tools sit in `agent/` and `computer/`; routines, push and access control
     each have a small module.
 - **Web** (`web/`): React 19, Vite and Tailwind v4.

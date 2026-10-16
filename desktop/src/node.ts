@@ -32,7 +32,7 @@ export const defaultNodeSettings = (): NodeSettings => ({
 });
 
 type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
-type Meta = { botId?: string; botName?: string; ownerName?: string | null };
+type Meta = { botId?: string; botName?: string };
 
 const MAX_TEXT = 20_000;
 const clip = (text: string, max = MAX_TEXT) => (text.length > max ? `${text.slice(0, max)}\n… (${text.length - max} more characters)` : text);
@@ -146,9 +146,8 @@ export class PcNode {
     // Checked on every call, whatever the server thinks is on.
     const needs = NEEDS[name];
     if (!needs || !this.settings[needs]) return reply({ isError: true, content: [{ type: "text", text: "That's switched off on this PC." }] });
-    // "Luke (Andrew's) is using this PC" when it's someone else's Bot.
     const meta = message.params?._meta;
-    this.showIndicator(meta?.ownerName ? `${meta.botName ?? "A Bot"} (${meta.ownerName}'s)` : meta?.botName ?? "A Bot");
+    this.showIndicator(meta?.botName ?? "A Bot");
     this.busy++;
     try {
       reply({ content: await this.run(name, args, message.params?._meta ?? {}) });

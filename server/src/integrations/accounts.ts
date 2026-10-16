@@ -26,7 +26,6 @@ const toAccount = (row: Row): Account => ({
   label: row.label as string,
   email: row.email as string,
   status: row.status as Account["status"],
-  personId: (row.person_id as string | undefined) ?? "owner",
   createdAt: row.created_at as number,
 });
 
@@ -63,6 +62,8 @@ export class Accounts {
 
   constructor(private db: Db, private events: EventLog, private file = path.join(config.dataDir, "accounts.json")) {
     this.secrets = this.read();
+    // Colony is single-user: accounts other people connected in the family build go, with their tokens.
+    for (const row of db.prepare("SELECT id FROM accounts WHERE person_id <> 'owner'").all() as Row[]) this.remove(row.id as string);
     events.subscribe(({ event }) => {
       if (event.type === "bot.deleted") this.forgetBot(event.botId);
     });
@@ -103,16 +104,14 @@ export class Accounts {
    * Adds an account, or reconnects it if the same mailbox (or 1Password account) is
    * already connected: its access settings stay, the new sign-in replaces the old.
    */
-  connect(input: { kind: AccountKind; label: string; email: string; personId?: string }, secret: AccountSecret): Account {
-    // An account belongs to whoever connected it; the same mailbox connected by two people is two accounts.
-    const personId = input.personId ?? "owner";
-    const existing = this.db.prepare("SELECT id FROM accounts WHERE kind = ? AND lower(email) = lower(?) AND person_id = ?").get(input.kind, input.email, personId) as Row | undefined;
+  connect(input: { kind: AccountKind; label: string; email: string }, secret: AccountSecret): Account {
+    const existing = this.db.prepare("SELECT id FROM accounts WHERE kind = ? AND lower(email) = lower(?)").get(input.kind, input.email) as Row | undefined;
     const id = (existing?.id as string | undefined) ?? randomUUID();
     if (existing) {
       this.db.prepare("UPDATE accounts SET label = ?, email = ?, status = 'ok' WHERE id = ?").run(input.label, input.email, id);
     } else {
-      this.db.prepare("INSERT INTO accounts (id, kind, label, email, status, person_id, created_at) VALUES (?, ?, ?, ?, 'ok', ?, ?)")
-        .run(id, input.kind, input.label, input.email, personId, Date.now());
+      this.db.prepare("INSERT INTO accounts (id, kind, label, email, status, created_at) VALUES (?, ?, ?, ?, 'ok', ?)")
+        .run(id, input.kind, input.label, input.email, Date.now());
     }
     this.secrets.accounts[id] = secret;
     this.persist();

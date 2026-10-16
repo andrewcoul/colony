@@ -80,7 +80,7 @@ function setup() {
 /** Serves the call socket the way index.ts does. */
 async function callServer(calls: InstanceType<typeof Calls>) {
   const server = http.createServer();
-  server.on("upgrade", (request, socket, head) => calls.upgrade(request, socket, head, { id: "owner", login: null, name: "You", color: "#FFE07A", role: "host", createdAt: 0 }));
+  server.on("upgrade", (request, socket, head) => calls.upgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
 }

@@ -282,6 +282,40 @@ const MIGRATIONS = [
     decided_at INTEGER
   );
   `,
+  // v18: Colony is single-user again. Other people, what was shared with them, their PCs, push
+  // subscriptions and spending go (their Bots, topics and accounts are removed at startup, with
+  // their files). The family columns stay unused for now, so an older Colony can still open this.
+  `
+  DELETE FROM bot_transfers;
+  DELETE FROM chat_people;
+  UPDATE chats SET everyone = 0;
+  DELETE FROM nodes WHERE person_id <> 'owner';
+  DELETE FROM push_subscriptions WHERE person_id IS NOT NULL AND person_id <> 'owner';
+  DELETE FROM usage WHERE owner_id <> 'owner';
+  DELETE FROM people WHERE id <> 'owner';
+  UPDATE approvals SET approver_id = 'owner';
+  `,
+  // v19: persistent Bots (pi durable). Each Bot keeps one conversation per chat in data/agent.db;
+  // these link them, note which chat messages each has taken in, and where a reply ended in it.
+  `
+  CREATE TABLE IF NOT EXISTS conversations (
+    chat_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, bot_id)
+  );
+  CREATE TABLE IF NOT EXISTS conversation_seen (
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, message_id)
+  );
+  CREATE TABLE IF NOT EXISTS message_entries (
+    message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    entry_id TEXT NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

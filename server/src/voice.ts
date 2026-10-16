@@ -2,14 +2,12 @@ import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
-import type { AgentRunner } from "./agent/run.js";
+import type { Runner } from "./agent/runner.js";
 import type { ToolRegistry } from "./agent/tools.js";
 import type { EventLog } from "./events.js";
 import { sendUserMessage } from "./send.js";
 import { voiceProvider, voiceSettings } from "./settings.js";
 import type { Store } from "./store.js";
-import { authorOf, canSee } from "./people.js";
-import type { Person } from "./shared/types.js";
 
 /*
  * Voice calls with a Bot, in the Colony app (no phone network: Colony stays on your tailnet).
@@ -103,18 +101,17 @@ export class Calls {
   private rings = new Map<string, Ring>();
   private lastRing = new Map<string, number>();
   private sockets = new WebSocketServer({ noServer: true });
-  /** Sends a push notification to one person (set by index.ts). */
-  notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }, personId: string) => void = () => {};
+  /** Sends a push notification (set by index.ts). */
+  notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }) => void = () => {};
 
-  constructor(private store: Store, private events: EventLog, private runner: AgentRunner) {}
+  constructor(private store: Store, private events: EventLog, private runner: Runner) {}
 
   /**
    * A Bot rings you. Not during quiet hours, not more than every 30 minutes per Bot, and not
    * if you've turned calls off. Unanswered after 45 s, the reason is posted in the chat instead.
    */
   ring(botId: string, chatId: string, reason: string, now = Date.now()): { ringing: boolean; why?: string } {
-    // A Bot rings its owner, on its owner's terms.
-    const settings = voiceSettings(this.store.getBot(botId)?.ownerId);
+    const settings = voiceSettings();
     if (!settings.allowCalls) return { ringing: false, why: "The user has turned calls from Bots off." };
     if (!voiceProvider()) return { ringing: false, why: "Voice isn't set up, so calls can't happen." };
     if (inQuietHours(settings, new Date(now))) return { ringing: false, why: `It's the user's quiet hours (${settings.quietFrom}–${settings.quietTo}).` };
@@ -126,16 +123,14 @@ export class Calls {
     timer.unref?.();
     this.rings.set(id, { id, botId, chatId, reason, timer });
     this.events.broadcast({ type: "call.ringing", callId: id, botId, chatId, reason });
-    // A Bot only ever rings its owner.
-    this.notify({ title: `${bot?.name ?? "A Bot"} is calling`, body: reason, chatId, tag: `call-${id}`, path: `${chatId}?call=${id}` }, bot?.ownerId ?? "owner");
+    this.notify({ title: `${bot?.name ?? "A Bot"} is calling`, body: reason, chatId, tag: `call-${id}`, path: `${chatId}?call=${id}` });
     return { ringing: true };
   }
 
-  /** Not answered (or declined by the Bot's owner): the reason goes in the chat as the Bot's message. */
-  miss(callId: string, personId?: string) {
+  /** Not answered (or declined): the reason goes in the chat as the Bot's message. */
+  miss(callId: string) {
     const ring = this.rings.get(callId);
     if (!ring) return;
-    if (personId && this.store.getBot(ring.botId)?.ownerId !== personId) return;
     clearTimeout(ring.timer);
     this.rings.delete(callId);
     this.events.broadcast({ type: "call.ended", callId });
@@ -143,25 +138,24 @@ export class Calls {
   }
 
   /** Handles the call socket: /api/chats/<id>/call (?answer=<ringing call id> to pick up). */
-  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, person: Person) {
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
     const url = new URL(request.url ?? "", "http://colony");
     const chatId = /^\/api\/chats\/([\w-]+)\/call$/.exec(url.pathname)?.[1];
     const chat = chatId ? this.store.getChat(chatId) : null;
-    if (!chat || chat.kind === "thread" || !canSee(person, chat)) { socket.destroy(); return; }
-    // You call your own Bots: the one that rang you, or yours in this chat (the lead if it's yours).
+    if (!chat || chat.kind === "thread") { socket.destroy(); return; }
+    // The Bot that rang you, or the chat's lead.
     const ring = url.searchParams.get("answer") ? this.rings.get(url.searchParams.get("answer")!) : undefined;
-    const mine = chat.memberIds.filter((id) => this.store.getBot(id)?.ownerId === person.id);
-    const botId = ring && this.store.getBot(ring.botId)?.ownerId === person.id ? ring.botId : mine.includes(chat.coordinatorId ?? "") ? chat.coordinatorId! : mine[0];
+    const botId = ring && chat.memberIds.includes(ring.botId) ? ring.botId : chat.memberIds.includes(chat.coordinatorId ?? "") ? chat.coordinatorId! : chat.memberIds[0];
     if (!botId) { socket.destroy(); return; }
     if (ring?.botId === botId) {
       clearTimeout(ring.timer);
       this.rings.delete(ring.id);
       this.events.broadcast({ type: "call.ended", callId: ring.id });
     }
-    this.sockets.handleUpgrade(request, socket, head, (ws) => this.call(ws, chat.id, botId, authorOf(person), ring?.botId === botId ? ring.reason : undefined));
+    this.sockets.handleUpgrade(request, socket, head, (ws) => this.call(ws, chat.id, botId, ring?.botId === botId ? ring.reason : undefined));
   }
 
-  private call(ws: WebSocket, chatId: string, botId: string, author: string, opening?: string) {
+  private call(ws: WebSocket, chatId: string, botId: string, opening?: string) {
     const settings = voiceSettings();
     const voice = settings.botVoices[botId] ?? settings.voice;
     const send = (data: object) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(data)); };
@@ -229,7 +223,7 @@ export class Calls {
         if (!text) { send({ type: "state", state: "listening" }); return; }
         send({ type: "heard", text });
         const current = this.store.getChat(chatId);
-        if (current) sendUserMessage(this.store, this.runner, current, { text, via: "voice", author });
+        if (current) sendUserMessage(this.store, this.runner, current, { text, via: "voice" });
       }).catch((error) => send({ type: "error", message: error instanceof Error ? error.message : "Couldn't hear that." }));
     });
     ws.on("close", () => unsubscribe());

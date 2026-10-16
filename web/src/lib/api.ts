@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, BotTransfer, Chat, ChatFile, Folder, Message, Person, Price, Routine, Schedule, SharedSpending, Spending, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -28,9 +28,8 @@ export type FileEntry = { name: string; path: string; type: "file" | "dir"; size
 
 /** "openai": OpenAI-compatible chat completions; "anthropic": Anthropic's Messages API (Claude). */
 export type Protocol = "openai" | "anthropic";
-/** `ownerId` null: shared (the host's key, usable by everyone's Bots); otherwise one person's own. */
 /** `prices`: each model's price per million tokens, set by hand or built in (models without one aren't listed). */
-export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null; ownerId: string | null; prices: Record<string, Price> };
+export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null; prices: Record<string, Price> };
 /** `prices`: changed ones only; null puts a model back to its built-in price. */
 export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[]; prices?: Record<string, Price | null> };
 export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
@@ -45,7 +44,7 @@ export type VoiceSettings = {
   quietFrom: string;
   quietTo: string;
 };
-export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings; host: boolean };
+export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings };
 
 /** The server's version and updates (server/src/updates.ts). */
 export type SystemInfo = {
@@ -119,8 +118,13 @@ export const api = {
     return response.json() as Promise<ChatFile>;
   },
   steerNow: (messageId: string) => request<void>("POST", `/messages/${messageId}/steer`),
+  /** A new topic carrying the Bot's conversation up to this reply. */
+  branch: (messageId: string, title: string, folderId: string | null = null) => request<{ chatId: string }>("POST", `/messages/${messageId}/branch`, { title, folderId }),
   unqueue: (messageId: string) => request<void>("DELETE", `/messages/${messageId}`),
   stop: (chatId: string) => request<void>("POST", `/chats/${chatId}/stop`),
+  /** Persistent conversations: summarise the older part now, or start the Bot afresh here. */
+  compact: (chatId: string) => request<void>("POST", `/chats/${chatId}/compact`, {}),
+  startFresh: (chatId: string) => request<void>("POST", `/chats/${chatId}/fresh`, {}),
   markRead: (chatId: string) => request<void>("POST", `/chats/${chatId}/read`),
   decide: (approvalId: string, approve: boolean) => request<void>("POST", `/approvals/${approvalId}`, { approve }),
   terminal: (botId: string) => request<{ text: string }>("GET", `/bots/${botId}/terminal`),
@@ -129,13 +133,7 @@ export const api = {
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
   spending: () => request<Spending>("GET", "/spending"),
-  giveBot: (botId: string, toId: string, keepMemory: boolean) => request<BotTransfer>("POST", `/bots/${encodeURIComponent(botId)}/give`, { toId, keepMemory }),
-  acceptTransfer: (id: string) => request<{ transfer: BotTransfer; bot: Bot }>("POST", `/transfers/${encodeURIComponent(id)}/accept`),
-  declineTransfer: (id: string) => request<BotTransfer>("POST", `/transfers/${encodeURIComponent(id)}/decline`),
-  cancelTransfer: (id: string) => request<BotTransfer>("DELETE", `/transfers/${encodeURIComponent(id)}`),
-  sharedSpending: () => request<SharedSpending>("GET", "/spending/shared"),
-  setSpendLimit: (personId: string, limit: number | null) => request<SharedSpending>("PUT", `/spending/limits/${encodeURIComponent(personId)}`, { limit }),
-  addProvider: (input: ProviderInput & { shared?: boolean }) => request<Settings>("POST", "/settings/providers", input),
+  addProvider: (input: ProviderInput) => request<Settings>("POST", "/settings/providers", input),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),
   setDefaultModel: (model: string) => request<Settings>("PUT", "/settings/default-model", { model }),
@@ -146,14 +144,6 @@ export const api = {
     if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: string } | null)?.error ?? "Couldn't play that voice.");
     return response.blob();
   },
-  me: () => request<{ me: Person; host: string }>("GET", "/me"),
-  family: () => request<{ person: Person; bots: number; pcs: { name: string; capabilities: string[]; online: boolean }[] }[]>("GET", "/family"),
-  updatePerson: (id: string, patch: Partial<Pick<Person, "name" | "color">>) => request<Person>("PATCH", `/people/${encodeURIComponent(id)}`, patch),
-  personAbout: (id: string) => request<{ text: string }>("GET", `/people/${encodeURIComponent(id)}/about`),
-  setPersonAbout: (id: string, text: string) => request<void>("PUT", `/people/${encodeURIComponent(id)}/about`, { text }),
-  household: () => request<{ text: string }>("GET", "/household"),
-  setHousehold: (text: string) => request<void>("PUT", "/household", { text }),
-  shareTopic: (chatId: string, patch: { peopleIds?: string[]; everyone?: boolean }) => request<Chat>("PATCH", `/chats/${encodeURIComponent(chatId)}`, patch),
   forgetNode: (nodeId: string) => request<{ ok: true }>("DELETE", `/nodes/${encodeURIComponent(nodeId)}`),
   declineCall: (callId: string) => request<{ ok: true }>("POST", `/calls/${encodeURIComponent(callId)}/decline`),
   checkProvider: (input: { providerId?: string; baseURL: string; protocol: Protocol; apiKey?: string }) => request<{ models: string[] }>("POST", "/settings/providers/check", input),
