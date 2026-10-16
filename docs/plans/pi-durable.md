@@ -1,315 +1,391 @@
-# Plan: Move the agent runtime to pi durable
+# Plan: Single-user Colony on pi durable, with persistent Bots
 
-Status: plan only, 2026-10-15, on branch `pi-durable`. Nothing is built yet. Phase 0 is a spike that ends in a go/no-go decision.
+Status: plan only, 2026-10-15, on branch `pi-durable`. Nothing is built yet.
 
-Follows `pip-parity.md` (section 0 explains why we stayed on the AI SDK) and `family.md`. Colony is in use again, so this plan also covers moving runs that are in flight on the live server when the new version is installed.
+Follows `pip-parity.md` (section 0 explains why we stayed on the AI SDK) and `family.md`. Colony is in use again, so the plan also covers runs that are in flight on the live server when the new version is installed.
 
-## Summary
+## What changes
 
-Pi durable (`@earendil-works/pi-durable`) is a durable agent harness: model turns, tool calls and steering are committed to storage before anything is shown, and reopening the storage resumes the work. Colony already has its own version of the parts we needed (steering through `prepareStep`, per-step checkpoints in `runs`, `resumeAll`, a re-run allowlist, approvals that reattach after a restart). The port would replace about 600 lines we own with a library we don't, and give us a few things we don't have: durable Bot-to-Bot calls, crash recovery inside a model call, compaction, forks and deferred (batch) responses.
+1. **Colony becomes single-user again.** The family build (`family.md`) and the people model (`pip-parity.md` section 5) are removed: no people, owners, shared keys, approver routing, hand-overs or per-person settings. Only your tailnet login gets in. Multi-user can come back later from `v0.2.0`.
+2. **Bots become long-running and persistent.** Each Bot keeps one ongoing conversation per chat or topic. When the conversation nears the model's context limit it is compacted (summarised) instead of being cut to the last 40 messages, as happens today. It can be forked ("branch from here").
+3. **The agent runtime moves from the Vercel AI SDK to pi durable** (`@earendil-works/pi-durable`, with `pi-ai` as the provider layer). Pi durable provides the persistence, compaction, forks, steering and crash recovery.
 
-It also has real gaps for Colony. There is no built-in way to pause a tool for a human approval across a restart. There is no per-person API key hook. Anthropic's computer-use toolset isn't supported. Live text arrives in commits at most every 100 ms through an API marked experimental. And the package is still labelled "Experimental. The API changes without notice": version 1.3.0 shipped today, and 4 of its last 8 releases broke something.
+### Why pi durable now
 
-**Recommendation:** run Phase 0 (a contained spike, about a day) before committing to the port. If every Phase 0 check passes, port behind a runtime switch (Phases 1–6) and remove the AI SDK only after a release on pi has run cleanly (Phase 7). If the per-person key check or the approval check fails, stop and stay on the AI SDK.
+Last time (`pip-parity.md` section 0) the only things we needed were steering and resuming after a restart, and those were cheap to build on the AI SDK. Long-running Bots need more:
+
+- **Compaction.** It is triggered by tokens, done by the Bot's own model, keeps recent turns verbatim and keeps old entries in storage.
+- **Forks.** A forked conversation shares the parent's history up to the fork point without copying it.
+- **One durable transcript per conversation** that survives crashes in the middle of a tool call or a model call.
+
+Building those ourselves is a project of its own. Pi durable has them, and single-user removes the gap that mattered most last time (choosing an API key per person).
+
+### The catches
+
+- **The API isn't stable.** Pi durable 1.3.0 shipped today. The README says "Experimental. The API changes without notice", and 4 of its last 8 releases broke something. We pin exact versions and keep every pi call in one folder.
+- **Approvals.** Nothing built in pauses a tool for a person across a restart. We add a small effect ledger (section 3.4).
+- **Computer use.** pi-ai doesn't support Anthropic's computer-use toolset, so Claude uses Colony's own `desktop_*` tools on the Bot's computer (measured in Phase 6).
+- **Storage.** There's no API to delete a conversation, so `agent.db` only grows (section 4).
 
 ---
 
 ## 1. Where pi durable is now
 
-Researched 2026-10-15 from the npm tarballs (`.d.ts`, compiled `dist/`, README, CHANGELOG), the GitHub repo `earendil-works/pi` (`packages/durable`) and the launch post (earendil.com/posts/pi-durable).
+Researched 2026-10-15 from the npm tarballs (`.d.ts`, compiled `dist/`, README, CHANGELOG), the repo `earendil-works/pi` (`packages/durable`) and the launch post (earendil.com/posts/pi-durable).
 
 ### 1.1 Version and stability
 
-- **Latest:** `@earendil-works/pi-durable` 1.3.0, published 2026-10-15. 1.0.0 came out around 2026-10-02, and the run continued 1.0.3/1.0.4 (10-05), 1.1.0 (10-07), 1.2.0 (10-12) and 1.3.0 (10-15). (Section 0 of `pip-parity.md` saw 0.0.1 → 1.2.0 in three weeks.)
-- **Exact dependency pins:** it pins `@earendil-works/pi-ai`, `@earendil-works/chord` and `@earendil-works/pi-codemode` to exactly 1.3.0, so the four move together. Other dependencies are `typebox` 1.3.x, `diff` and `@silvia-odwyer/photon`.
-- **Stability:** the README still opens with "Experimental. The API changes without notice between releases." There is no semver policy; 1.x doesn't mean stable.
+- **Releases:** latest is 1.3.0 (2026-10-15). 1.0.0 came out around 10-02, then 1.0.3/1.0.4 (10-05), 1.1.0 (10-07), 1.2.0 (10-12) and 1.3.0 (10-15).
+- **Pins:** it pins `pi-ai`, `chord` and `pi-codemode` to exactly 1.3.0, so the four move together. Other dependencies are `typebox` 1.3.x, `diff` and `@silvia-odwyer/photon`.
+- **Stability:** "Experimental. The API changes without notice between releases." There's no semver policy, so 1.x doesn't mean stable.
 - **Breaking changes:**
   - 1.0.3: `FileSystem`/`BinaryReader` contracts.
   - 1.0.4: watch behaviour.
   - 1.1.0: `order` on `Storage`; `TaskRuntime.context`.
-  - 1.2.0: tagged unions; tool result `content` → `output`; storage errors; `StorageRejected` removed.
-  - 1.3.0: none listed.
-- **Open upstream changes that affect us:** #10858 (`ToolControl` `terminate` type change in progress) and #11014 (storage commit errors missing from summaries).
-- **Runtime requirements:** Node `>=22.19.0` and ESM only. Colony is ESM and this PC runs Node 22.23.2, but Colony's `engines` and `scripts/install.ps1` say 22.13, so both need raising. MIT licence.
+  - 1.2.0: tagged unions; tool result `content` → `output`; storage errors.
+  - 1.3.0: none.
+- **Open upstream changes:** #10858 (`ToolControl` `terminate` type change) and #11014 (storage commit errors missing from summaries).
+- **Runtime requirements:** Node `>=22.19.0` and ESM only. Colony is ESM, and this PC runs 22.23.2, but Colony's `engines` and `scripts/install.ps1` say 22.13, so both get raised. MIT licence.
 
 ### 1.2 The Node/TypeScript API (1.3.0)
 
 | Area | API |
 |---|---|
-| Open | `openNodeSqliteStorage(path)` (uses `node:sqlite` `DatabaseSync`, the same driver as `colony.db`); then `Harness.open(storage, options, context)`. `HarnessOptions`: `models`, `registry`, `settings`, `env`, `conversationCreated`, `now`, `onReport`. |
-| Conversations | `harness.createConversation(options, ctx)`, `harness.conversation(id, ctx)`, `harness.resume()` restarts durable work after open. |
-| Turns | `conversation.submit({ type: "input", content, whenBusy: "steer" \| "followUp" \| "reject", requestId? }, ctx)`. Resubmitting the same `requestId` finds the existing submission. |
-| Model | Agent state: `ModelRef = { provider, modelId }` plus the thinking level, set with `conversation.configure(change, ctx)` and read on every generation. |
-| Tools | `defineTool({ name, description, parameters /* TypeBox */, execute(args, api, ctx), replay?: "safe" \| "unsafe", executionMode?, structuredOutputSchema? })`. The result `output` is pi-ai `(TextContent \| ImageContent)[]`, so images can go back to the model in a tool result. `api` offers `createTask`, `waitForTask`, `output(chunk)`, `details(...)`. |
-| Hooks | `beforeTool` can block a call with a message. `beforeRequest` can replace the messages sent to the model. |
-| Steering | A busy `submit` goes to the `pi.inbox` document. Steers are placed after tool results, before the next model call (`postTools`), and at the final answer. Follow-ups wait for the end of the turn. |
-| Events | `watchEvents(harness, conversationId, ctx)` (marked experimental) produces `message_update` (`text_delta`, `thinking_delta`, `toolcall_delta`) and `usage_changed`. Events are derived from commits. Partial output is committed at most every `progress.partialIntervalMs` (default 100 ms). |
-| Usage | `Usage { input, output, cacheRead, cacheWrite, cost }` per assistant message; `harness.usage(ctx)` gives totals per model and per tool. |
-| Abort | `submission.abort`, `conversation.abort`, `harness.abortSubmission`, `harness.abortTask`. Tools get an `AbortSignal`. |
-| Tasks | Durable state machines (`pending → running → waiting → completing`, with terminal `faulted` and `orphaned`). A tool can start child tasks and wait on them. Sub-agents are child tasks. On restart, `running` tasks go back to `pending` and continue from their checkpoint. |
-| Forks | `prepareForkDocumentCopies(storage, parentId, at, childId, ctx)` copies a conversation's documents at a point in its transcript. |
-| Compaction | `createCompaction` and `selectCut(view, keepRecentTokens)`. Older entries stay in storage. |
-| Deferred | Provider batch responses (`stopReason: "deferred"`), polled with a window of 15 m, 1 h or 24 h. |
-| Context | Every call takes a chord `Context` (`abortSignal`, `value(key)`). Use `BACKGROUND_CONTEXT` as the root and derive per-request contexts with `withAbortSignal`. |
+| Open | `openNodeSqliteStorage(path)` (`node:sqlite`, the same driver as `colony.db`), then `Harness.open(storage, options, ctx)`. Options: `models`, `registry`, `settings`, `env`, `conversationCreated`, `now`, `onReport`. |
+| Conversations | `harness.createConversation(options, ctx)`, `harness.conversation(id, ctx)`. `harness.resume()` restarts durable work after open. |
+| Turns | `conversation.submit({ type: "input", content, whenBusy: "steer" \| "followUp" \| "reject", requestId? }, ctx)`. The same `requestId` finds the existing submission. |
+| Context without a turn | `submit({ type: "write", kind, data, model })`. With `model` content it enters the model's context without running the model (for other Bots' messages in a topic). Without it, it's display-only. |
+| Agent config | `conversation.configure(change)`: model (`{ provider, modelId }`), thinking level, tools, instructions. The system prompt is rendered before each request, and a change is appended as a `pi.system` diff entry, so it can change every turn. |
+| Tools | `defineTool({ name, description, parameters /* TypeBox */, execute(args, api, ctx), replay?: "safe" \| "unsafe" })`. `output` is `(TextContent \| ImageContent)[]`, so screenshots can be tool results. `api` offers `createTask`, `waitForTask`, `output`, `details`. |
+| Hooks | `beforeTool` can block a call with a message. `beforeRequest` can replace the outgoing messages. `beforeCompact` can decline a compaction or supply its own summary. |
+| Steering | A busy `submit` goes to the `pi.inbox` document. Steers are placed after a tool round, before the next model call, and at the final answer. Follow-ups wait for the turn to end. An inbox item can be withdrawn (`Submissions.abort`). |
+| Compaction | Automatic. Defaults are `{ enabled: true, reserveTokens: 16384, keepRecentTokens: 20000, backgroundTokens: 32768 }`. It runs in the background from `contextWindow − reserve − background` and blocks at `contextWindow − reserve`. It also compacts and retries once if the provider says the request is too long. The summary is written by the conversation's own model with no tools; its sections are Goal, Constraints & Preferences and Progress. The model then sees "The conversation history before this point was compacted into the following summary: …". Old entries stay in storage. `conversation.compact(instructions)` compacts by hand. |
+| Forks | `conversation.fork(entryId, { ownership }, ctx)`. The fork sees the parent's entries up to `entryId` (shared, not copied) and the agent config as of that point. Documents are copied by policy (`asOf`/`current`/`initial`); tasks aren't. |
+| Events | `watchEvents(harness, conversationId, ctx)` (marked experimental): `message_update` (`text_delta`, `thinking_delta`, `toolcall_delta`) and `usage_changed`. Events are derived from commits, with partial output committed at most every 100 ms (`progress.partialIntervalMs`). |
+| Usage | `Usage { input, output, cacheRead, cacheWrite, cost }` per assistant message. `harness.usage(ctx)` gives totals per model and per tool. |
+| Abort | `conversation.abort`, `submission.abort`, `harness.abortTask`. Tools get an `AbortSignal`. |
+| Tasks | Durable state machines (`pending → running → waiting → completing`; terminal `faulted`, `orphaned`). Child tasks and sub-agents. Running tasks go back to `pending` on restart and continue from their checkpoint. |
+| Context | Every call takes a chord `Context`. Use `BACKGROUND_CONTEXT` as the root and `withAbortSignal` per request. |
 
-### 1.3 Crash and resume semantics
+### 1.3 Crash and resume
 
 - **Tool calls** are checkpointed in phases:
   - A call cut off before it ran is resolved again and not executed.
   - A call cut off while it ran is re-run if `replay: "safe"` (the default is `"unsafe"`).
-  - Otherwise the call is settled as interrupted, "may have partially run", and the model sees that.
-- **A model call** cut off mid-stream keeps its committed partial output as an aborted entry, and the request is sent again.
-- **Storage:** one process owns a storage at a time, with no cross-process lock. SQLite runs in WAL with `synchronous = NORMAL`. The schema is versioned (`durableSchema`, with migrations in one transaction), and an older library refuses to open a newer file.
+  - Otherwise the call is settled as interrupted, "may have partially run".
+- **A model call** cut off mid-stream keeps its committed partial output as an aborted entry, and the request is re-sent.
+- **Storage:** one process owns a storage, with no cross-process lock. SQLite runs in WAL with `synchronous = NORMAL`. The schema is versioned (`durableSchema`), and an older library refuses a newer file.
+- **Missing:** I found no API that deletes or prunes conversations.
 
-### 1.4 pi-ai, the provider layer
+### 1.4 pi-ai
 
-- **Providers:** `createProvider({ id, baseUrl, auth, models, api })`, where `api` is `anthropicMessagesApi()`, `openAICompletionsApi()`, `openAIResponsesApi()` and others. Model ids are free strings. A `Models` collection holds providers and is changed with `setProvider`. OpenAI-compatible endpoints are tuned with compat flags (`supportsDeveloperRole`, `maxTokensField`, `thinkingFormat`…).
-- **API keys:** in pi-ai, a per-call `apiKey` wins over the provider's own auth. Pi durable's generation never passes one, though. It passes only `settings.stream` (harness-wide), `signal`, `sessionId` and `reasoning`, and it doesn't pass the conversation id to `Models`. So **a key can only be chosen per provider**, through the provider's `auth.apiKey.resolve`.
-- **Anthropic:** thinking (budget, interleaved), prompt caching (`cacheRetention`), images, and beta headers set automatically. Server or provider-defined tools aren't supported at all: there's no computer use and no `web_search`. pi-ai has `onPayload` for raw payload edits, but durable doesn't pass it through.
-- **Cost:** per-million prices come from static JSON bundled in the package, and `calculateCost(model, usage)` uses them.
+- **Providers:** `createProvider({ id, baseUrl, auth, models, api })`, with `anthropicMessagesApi()`, `openAICompletionsApi()` (compat flags such as `supportsDeveloperRole`, `maxTokensField`, `thinkingFormat`), `openAIResponsesApi()` and others. Model ids are free strings. Providers are added and replaced on a `Models` collection with `setProvider`.
+- **Keys:** pi durable passes no per-call key, so each provider's `auth.apiKey.resolve` supplies it. That's fine single-user: one pi-ai provider per Colony provider row.
+- **Anthropic:** thinking (budget, interleaved), prompt caching (`cacheRetention`), images, and beta headers set automatically. **No server or provider-defined tools** (no computer use, no `web_search`).
+- **Cost:** prices come from static JSON bundled in the package. We keep Colony's own editable prices (`prices.ts`).
 
 ---
 
-## 2. What we'd gain
+## 2. What we gain
 
-Measured against what Colony already has in-house:
+| Today | With pi durable |
+|---|---|
+| The model sees the last 40 messages (`historyMessages`) plus `MEMORY.md`, so anything older drops out silently | **One persistent conversation per Bot per chat, compacted automatically.** A Bot can run for months and keep the thread. |
+| No branching | **Forks:** "Branch from here" starts a new topic that carries the context up to that message. |
+| Steering via `prepareStep` and an in-memory inbox, lost on a crash | Steers and follow-ups persisted in `pi.inbox` |
+| Checkpoint per step; a crash mid-model-call loses that step's partial text | Partial output kept and the request re-sent |
+| `SAFE_TO_REPEAT` name list plus `restore()` | `replay` per tool, with interrupted calls settled by the harness |
+| `message_bot` cut off on restart ("check before retrying") | Durable child work: both sides resume |
+| About 600 lines in `run.ts` we maintain | The loop is maintained upstream, but it's an experimental API we have to track |
+| Screenshots as a separate user message for OpenAI-compatible models | Image tool results for every provider |
 
-| Today (in-house) | With pi durable | Gain |
-|---|---|---|
-| Steering via `prepareStep` + `inbox`, queue via `followUp` | `whenBusy: "steer" \| "followUp"`, persisted in `pi.inbox` | Small. Same placement (before the next model call). Steers survive a crash; today a steer in the inbox at crash time is lost. |
-| Checkpoint per step in `runs`; a crash mid-model-call loses that step's partial text | Partial output committed every 100 ms and the request re-sent | Small. |
-| `SAFE_TO_REPEAT` name list + `restore()` classification | `replay` per tool, with interrupted calls settled by the harness | Small. We'd keep our ledger for approvals anyway (section 3.4). |
-| `consult()` nests a run with `depth + 1`; on restart the asking Bot's `message_bot` call is cut off and gets "check before retrying" | `message_bot` becomes a durable child task: both sides resume and the answer arrives | **Real.** Bot-to-Bot help survives restarts. |
-| `historyMessages: 40`, a fixed window | Compaction (`selectCut`) | Real, but only if pi owns history (deferred; see section 3.1). |
-| Nothing | Forks at a transcript point | New feature option: "branch this topic from here". |
-| Nothing | Deferred (batch) responses | Cheaper routines that don't need an answer within minutes. |
-| ~600 lines in `run.ts` we maintain | Upstream maintains the loop | Less code of ours, but we'd now track an experimental API that changes every few days. |
-| AI SDK (`ai` 7, `@ai-sdk/anthropic`, `@ai-sdk/openai-compatible`) | pi-ai | Image tool results on every provider, which would remove the "screenshot as a separate user message" workaround for OpenAI-compatible models (to verify in Phase 0). |
-
-Bottom line: the durable parts we needed are already built. The gains that are actually new are durable Bot-to-Bot calls, compaction, forks and batch responses.
+Not planned now, but possible later: deferred (batch) responses for routines that aren't urgent.
 
 ---
 
 ## 3. Feature by feature
 
-### 3.1 Shape of the port
+### 3.1 The shape of the port
 
-Three decisions shape the rest:
-
-- **One pi conversation per run, not per chat.**
-  - Colony's `messages` table stays the source of truth for the transcript, the UI, topics, groups, people, hand-over and visibility. Each run builds its history the same way it does now (`historyFor`) and seeds a fresh pi conversation with it: through conversation creation options if they allow it, otherwise through a `beforeRequest` hook (Phase 0 decides).
-  - This matches today's `runs` row (one checkpoint per run). It keeps group topics simple (other Bots' and people's messages are already attributed in `historyFor`), and the system prompt is rebuilt every turn as now.
-  - The cost: no compaction or forks yet. "Conversation per chat" can come later (section 6, "later").
-- **One pi-ai provider per Colony provider row.** The provider id is `colony:<providerId>`. `auth.apiKey.resolve` reads that row's key from `colony.db`. The Bot's resolved model becomes `ModelRef { provider: "colony:<id>", modelId }`. Shared and personal keys are then just different providers, so the per-provider key hook is enough.
-- **Colony keeps its own wire protocol.** The web app keeps consuming SSE `ServerEvent`/`EphemeralEvent`. An event bridge maps harness events onto `message.delta`, `message.upserted` and steps. Neither the web app nor the desktop app changes, apart from Phase 5's desktop work.
+- **One pi conversation per (chat, Bot).** A Bot's own chat is one long-lived conversation. A topic with three Bots has three conversations, one per member Bot.
+  - **`colony.db` and `agent.db`.** `messages` in `colony.db` stays the record of what you see (transcript, cards, steps, artifacts). The pi conversation is what the model sees. A new table links the two: `conversations(chat_id, bot_id, conversation_id, created_at, PK(chat_id, bot_id))`.
+  - **What goes into a conversation.** Your messages are submitted as `input`, with photos as image content. What other Bots say in a shared topic is added to each member's conversation as a `write` with model content, attributed by name, the way `historyFor` attributes it today. Routine and intro prompts are submitted as `input` with their existing hidden marker.
+  - **System prompt.** The system prompt (`prompt.ts`) is set through `configure` before each turn, so routines, team, topic, desktop state and time stay current.
+  - **Long-term memory.** `MEMORY.md` stays: memory shared across a Bot's topics. Compaction covers one conversation.
+- **One pi-ai provider per Colony provider row** (`colony:<providerId>`), with its key read from `colony.db` on each request. A Bot's model is `configure`d as `{ provider: "colony:<id>", modelId }`.
+- **Colony keeps its wire protocol.** The web app keeps consuming SSE `ServerEvent`/`EphemeralEvent`. An event bridge maps harness events onto `message.delta`, `message.upserted` and steps.
 
 ### 3.2 Mapping
 
 | Feature | Today | On pi durable | Lost or changed |
 |---|---|---|---|
-| **Streaming deltas** | `fullStream` `text-delta` / `reasoning-delta` → ephemeral `message.delta` (`run.ts:417-473`) | `watchEvents` `message_update` → the same `message.delta`. If 100 ms is too coarse, a `Models` wrapper can tap pi-ai's event stream before the harness. | Deltas batched at ≤100 ms. `watchEvents` is experimental. |
-| **Steps** (step log) | `tool-call` / `tool-result` parts → `Step` rows in `messages.steps` | Tool-call entries and tool execution start/settle → the same `Step`s. `interrupted` comes from the harness's interrupted settlement. | None expected. |
-| **Steering** | `deliver` → `inbox` → `prepareStep` (`run.ts:364-386`); a steer splits the reply | `deliver` → `submit({ whenBusy: "steer" })`. Inbox consumption drives the reply split and `steered_at`. | Pickup now happens only after a tool round or at the final answer. Today `prepareStep` also runs before the first step, so a steer that arrives during the first model call (before any tool) waits for that call. Same in practice. |
-| **Queue / Steer now / Cancel** | Colony `delivery: "queued"` + `followUp` | Keep Colony's queue. Queued messages are only submitted when the run ends. "Steer now" submits with `"steer"`. | None. |
-| **Stop, turn timeout** | `AbortController`, `"stopped"` / `"timeout"` | `conversation.abort` plus a Colony timer. The reason is kept on the Colony side for the error text. | None. |
-| **Step cap** (`maxSteps` 25 / desktop 80) | `stopWhen: stepCountIs` | A `beforeTool` hook counts tool rounds and blocks past the cap, then the model is told to finish. Phase 0 confirms the model then answers. | Possibly one extra model call at the cap. |
-| **Checkpoint / resume** | `runs` rows, `resumeAll`, `restore()` | `harness.resume()` on boot. Colony's `runs` table becomes `pi_runs(run_id, conversation_id, message_id, …)` linking a run to its conversation. | The "Colony restarted · picked up at step N" note stays, driven by Colony on boot. |
-| **Re-run flags** | `SAFE_TO_REPEAT` set (`run.ts:57-60`) | `ColonyTool.replay: "safe" \| "check"` (as `pip-parity.md` 2.3 meant) → `replay: "safe" \| "unsafe"`. Phase 1 also moves `artifact_read` and `chat_files` (read) to safe. | None. |
-| **Approvals** (`ApprovalGate`, `approverId`) | `gate.request` awaits inside `execute`. On restart `adopt` reattaches by messageId + tool + detail and keeps the deadline. | Gated tools become `replay: "safe"` and stay idempotent through an **effect ledger** (section 3.4): on re-run they find the pending approval and wait again, or return the recorded result. `approverId` routing, the 6 h timeout, push and the cards stay Colony code. | None if the ledger works. This is a Phase 0 go/no-go check. |
-| **Per-person models** (shared vs own keys) | `resolveModel(ref, { ownerId })` → `defaultModelFactory` | `resolveModel` unchanged. A factory registers or updates `colony:<id>` providers in one `Models` whenever providers change. | The key is chosen per provider row rather than per call. This is equivalent, because a person's key is its own row. |
-| **Usage and cost** (`spending.ts`) | `finish-step` → `usageEntry(LanguageModelUsage)` → `usage` row with `payerId` | Each settled assistant message's `Usage` → `usageEntry`. Map `input`/`cacheRead`/`cacheWrite`/`output`: pi-ai's `input` excludes cache reads, the AI SDK's includes them, so the mapping is tested. Prices stay Colony's (`prices.ts`, editable); pi-ai's catalog cost is ignored. | None. |
-| **Monthly limit** | Checked at turn start (`run.ts:323-327`) | Same check before `submit`. | None. |
-| **Anthropic provider** | `@ai-sdk/anthropic` + `anthropicCompat.ts` fetch patch; adaptive thinking with `drop_block` | `anthropicMessagesApi()` with thinking and `cacheRetention`. The `toolset_name` patch goes away with the computer toolset. | `prefixMismatchBehavior: "drop_block"` has no direct option. pi-ai drops thinking blocks when the model changes, which covers the case we added it for. |
-| **OpenAI-compatible** | `@ai-sdk/openai-compatible` `chatModel` | `openAICompletionsApi()` with compat flags per provider; "Responses" as an option later | Some endpoints may need compat flags set (Ollama, LM Studio, OpenRouter). Phase 2 tests each kind we list. |
-| **Desktop / computer use** (the Bot's Linux computer) | Claude: `anthropic.tools.computerToolset_20260801` (provider-defined). Others: `desktop_*` tools + screenshot as an extra user message (`prepareDesktopMessages`) | Every model uses the `desktop_*` tools, with screenshots as image tool results. `prepareDesktopMessages` becomes a `beforeRequest` hook (keeps the newest two images). | **Loss:** Claude no longer uses Anthropic's trained computer-use tool, so precision may drop. Phase 5 measures it with `desktopCheck`. The workaround (a custom provider injecting the toolset) is fragile and not planned. |
-| **Computer tools** (`shell`, files), **browser tools** | AI SDK `tool()` via `toToolSet` | `toPiTools`: zod → JSON Schema (`z.toJSONSchema`) wrapped as TypeBox `Type.Unsafe`. Execute parses with the same zod schema and scrubs secrets as now. | None. |
-| **PC tools over the node hub** (`nodes.ts`) | `pcToolsFor` builds tools with `toModelOutput` for screenshots; approvals go to the PC's owner | Same tools through `toPiTools`. Screenshots become image output. The 120 s call timeout and "The PC disconnected" stay. `replay` follows the table in `pip-parity.md` 2.3. | None. |
-| **`message_bot` / consult** | `consult()` starts a nested run and awaits `onFinish` | Phase 3: the same nested Colony run. Phase 4: the asking side waits on the answering run durably (a child task, or a ledger entry keyed by tool call id that reattaches to the thread run on restart). Depth limit 1 stays. | None. This is a gain after Phase 4. |
-| **Voice calls** (`voice.ts`) | `sendUserMessage(via: "voice")` → a normal run; barge-in = steer | Unchanged: it goes through `send.ts`. Sentences for TTS come from the same `message.delta` stream. | The 100 ms batching may add up to 100 ms before the first sentence. |
-| **`call_user`** | Tool that rings and ends the turn | Through `toPiTools`. | None. |
-| **Routines** (`routines.ts`) | `start` with a hidden prompt; `onFinish` sets `lastStatus` | Unchanged API (`AgentRunner.start`). Later: deferred responses for routines marked "not urgent". | None. |
-| **Hand-over** (`transfers.ts`) | `stopBot`, move, reset grants, switch model if on the giver's key | Unchanged: `stopBot` aborts the pi conversation. Pending approvals expire with it, as now. | None. |
-| **Desktop check** (`desktopCheck.ts`) | `generateText` with an image | `models.complete` (pi-ai) with an image part. | None. |
-| **Provider connection check** | Plain `GET /models` | Unchanged. | None. |
-| **Photos in chat** | `ImagePart` for vision models | pi-ai `ImageContent` in seeded history | None. |
+| **History** | `historyFor`: last 40 messages, rebuilt each turn | The persistent conversation. The first turn after the upgrade seeds it from the last 40 messages, so nothing is lost relative to today. | Context now grows until compaction rather than being cut at 40. |
+| **Compaction** | None | Automatic, with pi's defaults. The step log shows "Compacted earlier conversation" with the summary expandable. The chat menu gets **Compact now**. `beforeCompact` adds Colony's instruction to keep names, decisions and open tasks. | New |
+| **"Start fresh"** | None | A chat menu item that starts a new conversation for that Bot. The old one stays in `agent.db`. | New |
+| **Forks** | None | **Branch from here** on a message: `conversation.fork(entryId)`, then a new topic with that Bot, titled by you. | New |
+| **Streaming deltas** | `fullStream` → ephemeral `message.delta` | `watchEvents` `message_update` → the same `message.delta` | Deltas batched at ≤100 ms. That doesn't matter for voice (section 3.5). |
+| **Steps** (step log) | `tool-call` / `tool-result` parts → `Step` rows | Tool entries and their settlement → the same `Step`s. Interrupted calls → `interrupted`. | None |
+| **Steering** | `deliver` → inbox → `prepareStep`; a steer splits the reply | `submit({ whenBusy: "steer" })`. Inbox consumption drives the split and `steered_at`. | A steer sent during the very first model call (before any tool) waits for that call to finish. |
+| **Queue / Steer now / Cancel** | Colony `delivery: "queued"` + `followUp` | `whenBusy: "followUp"`. **Steer now** withdraws the inbox item and resubmits it as a steer. **Cancel** withdraws it. | None |
+| **Stop, turn timeout** | `AbortController` (`"stopped"` / `"timeout"`) | `conversation.abort`, plus Colony's timer and reason | None |
+| **Step cap** (25, or 80 on the desktop) | `stopWhen: stepCountIs` | A `beforeTool` hook counts tool rounds and blocks past the cap, then the model gives its answer. | Possibly one extra model call at the cap |
+| **Restart / resume** | `runs` checkpoints, `resumeAll`, `restore()` | `harness.resume()` on boot. The "Colony restarted · picked up at step N" note stays. | The `runs` table retires (Phase 9). |
+| **Re-run flags** | `SAFE_TO_REPEAT` (`run.ts:57-60`) | `ColonyTool.replay: "safe" \| "check"` → `"safe" \| "unsafe"`. `artifact_read` and `chat_files` (read) become safe. | None |
+| **Approvals** | `ApprovalGate`; `adopt` reattaches after a restart | Gated tools wrapped by the effect ledger (3.4). The cards, push, 6 h timeout and fail-closed behaviour stay. Every approval goes to you. | `approverId` routing goes away with multi-user. |
+| **Models and keys** | `resolveModel(ref, { ownerId })` → `defaultModelFactory` | `resolveModel(ref)` → `colony:<id>` provider. One list of providers, all yours. | Shared vs own keys go (multi-user). |
+| **Usage and cost** | `finish-step` → `usageEntry` with payer and owner | Each settled assistant message → `usageEntry(bot, model, usage)`. pi-ai's `input` excludes cache reads (the AI SDK's includes them), so the mapping is tested. Prices stay Colony's. | Shared-key limits go. Settings › Spending shows your month and each Bot, with the 30-day chart. |
+| **Anthropic** | `@ai-sdk/anthropic`, `anthropicCompat.ts`, adaptive thinking with `drop_block` | `anthropicMessagesApi()` with thinking and `cacheRetention: "long"` for persistent conversations | `anthropicCompat.ts` goes. pi-ai drops thinking blocks when the model changes. |
+| **OpenAI-compatible** | `@ai-sdk/openai-compatible` | `openAICompletionsApi()` with compat flags per provider | Ollama, LM Studio and OpenRouter may need flags; Phase 3 tests each. |
+| **Bot computer: desktop** | Claude uses `computerToolset_20260801`; others use `desktop_*` plus an extra user message per screenshot | All models use `desktop_*` with image tool results. `prepareDesktopMessages` (keep the newest 2 images) becomes a `beforeRequest` hook. | **Claude loses the trained computer-use tool.** Measured in Phase 6. |
+| **Bot computer: shell, files, browser** | `toToolSet` | `toPiTools`: zod → `z.toJSONSchema` → TypeBox `Type.Unsafe`. Arguments are parsed with zod and secrets scrubbed, as now. | None |
+| **PC tools** (node hub) | `pcToolsFor`, `toModelOutput` for screenshots | Same tools through `toPiTools`, screenshots as image output. The 120 s timeout stays. | Owner and person checks go (it's your PC). |
+| **`message_bot`** | `consult()`: a nested run in a thread chat | The thread chat gets its own persistent conversation (so the helper Bot remembers past consults). The asking tool waits durably and reattaches after a restart. Depth limit stays 1. | Gain |
+| **Voice calls** | `sendUserMessage(via: "voice")`; barge-in = steer | Unchanged (through `send.ts`); see 3.5 | None |
+| **`call_user`, routines** | `AgentRunner.start` with a hidden prompt | Unchanged API. A routine runs in its chat's persistent conversation, so it sees earlier runs. | Gain |
+| **Hand-over** | `transfers.ts` | Removed with multi-user | Gone (Phase 1) |
+| **Desktop check** | `generateText` with an image | `models.complete` with an image part | None |
 
-### 3.3 What would be lost, in one place
+### 3.3 What would be lost
 
-1. Anthropic's native computer-use toolset for Claude on the Bot's computer (section 3.2, desktop row).
-2. Token-by-token deltas: they'd arrive in batches of up to 100 ms, unless we tap pi-ai's stream in a `Models` wrapper.
-3. `drop_block` thinking behaviour on Anthropic (expected harmless).
-4. A stable dependency: we'd be tracking an experimental package by pinned versions.
+1. Claude's native computer-use toolset on the Bot's computer.
+2. Token-by-token deltas (they'd arrive in batches of up to 100 ms).
+3. `drop_block` thinking behaviour on Anthropic (expected to be harmless).
+4. A stable dependency: we'd be tracking an experimental package through exact pins.
+5. Everything multi-user, on purpose (Phase 1).
 
 ### 3.4 The effect ledger (approvals and "check" tools)
 
-Pi durable either re-runs a cut-off tool (`safe`) or settles it as interrupted (`unsafe`). Colony needs a third case: a tool waiting on a person hasn't done anything yet, so after a restart it should ask again, not report "may have partially run".
+Pi durable either re-runs a cut-off tool (`safe`) or settles it as interrupted (`unsafe`). A tool waiting on your approval hasn't done anything yet, so after a restart it should ask again.
 
-- **Migration:** `tool_effects(call_id PK, run_id, tool, phase TEXT, result TEXT, updated_at)`, where `phase` is `approval | acting | done`.
+- **Migration:** `tool_effects(call_id PK, conversation_id, tool, phase TEXT, result TEXT, updated_at)`, where `phase` is `approval | acting | done`.
 - Gated tools (`shell`, `mail_send`, `calendar_*`, `vault_save`, `browser_login`, PC tools that ask) are declared `replay: "safe"` and wrapped:
-  1. If the ledger says `done`, return the stored result. Don't run it again.
-  2. If it says `acting`, return "Colony restarted while this was running. It may or may not have happened; check before trying again." This is today's text.
-  3. Otherwise go to the approval step. `gate.request` already reattaches to the pending approval (`adopt`) and keeps its deadline.
-  4. On approval, write `acting`, run the effect, then write `done` with the result.
-- This needs a stable tool call id inside `execute`. If 1.3.0 doesn't expose one, the ledger keys on run id + tool + a hash of the arguments, the same as `adopt` does today. Phase 0 checks which.
+  1. `done`: return the stored result.
+  2. `acting`: return "Colony restarted while this was running. It may or may not have happened; check before trying again."
+  3. Otherwise ask (`gate.request` already reattaches to a pending approval and keeps its deadline). On approval write `acting`, run the effect, then write `done`.
+- The key is the tool call id, if `execute` can see it. If it can't, the key is the conversation, tool and a hash of the arguments, which is what `adopt` matches on today.
+
+### 3.5 Voice: keep the cascade
+
+- **What's standard:**
+  - The research (LiveKit, the OpenAI Agents SDK, Pipecat, Vapi; sources in the research notes) agrees that the cascade (speech-to-text → LLM → text-to-speech) is still the default for agents that use tools.
+  - Speech-to-speech realtime models are lower latency, but tool calling is "supported, but varies by provider; can be less reliable" (LiveKit), and they're billed per second of audio.
+  - Even LiveKit's GPT-Live setup hands tool calls to a separate text model.
+  - Colony already does the standard thing: a normal Bot turn, with the reply spoken sentence by sentence and barge-in as steering.
+- **The 100 ms batching doesn't matter.**
+  - TTS services flush at sentence boundaries (ElevenLabs and Cartesia both recommend it), so speech starts when the first sentence is complete, not on the first token.
+  - Good voice-to-voice latency is about 700 ms at p50 and under 1.4 s at p95, dominated by end-of-speech detection (LiveKit waits 0.5–3 s by default), model time-to-first-token and TTS.
+  - Up to 100 ms on the first sentence is small next to those.
+- **Not in this plan, but the usual next steps if calls feel slow:**
+  - streaming speech-to-text instead of transcribing each clip after it ends;
+  - a turn-detection model (Pipecat's Smart Turn, LiveKit's turn detector) instead of the energy detector;
+  - on barge-in, cutting the Bot's message to what was actually played.
 
 ---
 
 ## 4. Storage
 
-- **Where:** a separate file `data/agent.db` next to `colony.db`, opened with `openNodeSqliteStorage`.
-  - Not inside `colony.db`: pi runs its own schema migrations and refuses newer files, and keeping it separate means rollback is "delete one file".
-  - Both use `node:sqlite`, so there's no new native module.
-- **Ownership:** one process owns `agent.db`. The server opens the harness in `index.ts` after `openDb` and closes it on shutdown. The updater's restart (`updates.ts`) must close the old process's harness before the new one opens it. The launcher already starts the new version only after the old one exits, and Phase 3 adds a test for this order.
-- **Backups:** the updater's pre-update backup includes `agent.db` as well as `colony.db`.
-- **Growth:** finished conversations are deleted 24 h after the run ends, like `runs` rows today. If 1.3.0 has no delete, the fallback is to rotate `agent.db` when no run is active (checked in Phase 0).
-- **Durability:** `synchronous = NORMAL` can lose the last commits on power loss (not on a process crash). That's acceptable for a home server, and the same as `colony.db`.
-- **Changes to `colony.db`** are additive only, so an older Colony can still open it:
-  - `pi_runs(run_id PK, conversation_id, chat_id, bot_id, message_id, options TEXT, started_at)`;
-  - `tool_effects` (section 3.4).
-  - The old `runs` table stays until Phase 7.
+- **Where:** `data/agent.db` beside `colony.db`, opened with `openNodeSqliteStorage`. It's a separate file because pi runs its own schema migrations and refuses newer files. Both use `node:sqlite`, so there's no new native module.
+- **Ownership:** one process. The server opens the harness after `openDb` and closes it on shutdown. The updater's restart closes the old harness before the new process opens it, with a test for this order.
+- **Backups:** the updater's pre-update backup includes `agent.db`.
+- **Growth:**
+  - Conversations are now permanent, and old entries stay after compaction. A heavy chat might add a few MB a month. Images are the big item, so screenshots older than the newest two are stored as placeholders (as `runs` checkpoints do now).
+  - Since there's no delete API, deleting a Bot or topic just unlinks its conversations.
+  - Settings › This Colony shows the size of `agent.db`. If it ever matters, a maintenance step can copy only the live conversations into a fresh `agent.db` while no run is active.
+- **Durability:** `synchronous = NORMAL` can lose the last commits on power loss, not on a process crash. That's the same as `colony.db`.
+- **Changes to `colony.db`** are additive until the last phase, so an older Colony still opens it: `conversations`, `tool_effects`. The multi-user columns and the `runs` table are dropped only in Phase 9.
 
-### 4.1 Moving runs that are in flight at install time
+### 4.1 In-flight runs at install time
 
-Colony is live, so the release that switches the runtime has to handle runs that were going when it was installed:
-
-1. The updater already lets runs finish or offers "Update now; Bots will pick up where they left off". Nothing changes here.
-2. On first boot of the pi version, each remaining `runs` row (AI SDK `ModelMessage[]` snapshot) goes through today's `restore()` classification first: safe calls re-run, others are marked interrupted, approvals are re-asked. It is then converted (`ModelMessage` → pi-ai `Message`, images re-attached as placeholders the way checkpoints store them now) and seeded into a new pi conversation that continues the same reply message.
-3. A row that fails to convert is marked stopped with the existing "Colony restarted while this reply was running." text. Its pending approval expires, which is fail-closed.
-4. Converted rows are deleted from `runs`. The table is dropped in Phase 7.
-
-The converter is tested against fixture checkpoints captured from the AI SDK runtime: text, tool calls, images, an approval wait and a steered message.
+1. The updater already offers "Update now; Bots will pick up where they left off". No change there.
+2. On first boot of the pi runtime:
+   - each remaining `runs` row (an AI SDK `ModelMessage[]` snapshot) goes through today's `restore()` classification;
+   - it is converted to pi-ai messages and seeded as the start of that chat's new persistent conversation;
+   - it then continues into the same reply message.
+3. A row that can't be converted is marked stopped with the existing restart text, and its approval expires (fail-closed).
+4. Chats with no in-flight run are seeded lazily from their last 40 messages on their next turn.
+5. The converter is tested against fixture checkpoints: text, tool calls, images, an approval wait and a steered message.
 
 ---
 
-## 5. Phases
+## 5. Removing multi-user
+
+Done first, because it shrinks what the port has to carry.
+
+### 5.1 Who gets in
+
+- **The owner's login.** The owner is your tailnet login: `COLONY_ALLOWED_USERS` if set, otherwise the host login already recorded in `people`, otherwise the first login seen on a fresh install (shown in Settings with **Not you? Reset**, which only works from this PC).
+- **Requests.** Any other login gets 403. Requests with no login header are allowed only from loopback, and the server refuses to start on a non-loopback `COLONY_HOST` without an owner login. Funnel stays refused.
+
+Without this, removing `people.ts` would give every tailnet login full access.
+
+### 5.2 What goes
+
+- **Server:**
+  - `transfers.ts`;
+  - most of `people.ts` (`identify`, `canSee*`, `RULES`, `refusal`, `eventFor`; `authorOf` becomes `"user"`);
+  - shared-key limits and payer logic in `spending.ts`;
+  - provider ownership in `settings.ts` (`ownerId`, `ownModel`, `spendLimit`, per-person voice);
+  - the identity middleware and person filters in `api.ts`, `index.ts`, `push.ts` and `send.ts`;
+  - the `/family`, `/people`, `/household`, `/transfers`, `/bots/:id/give` and `/spending/shared` routes;
+  - `approverId` routing (every approval is yours).
+- **Web:**
+  - `People.tsx`, `GiveBot.tsx` and the shared-keys part of `Spending.tsx`;
+  - the You / This Colony split (back to one Settings);
+  - owner dots, "Waiting for {name}", the first-run family card;
+  - people pickers and "Everyone" in the topic dialog, and @Person.
+- **Desktop:** the owner name on the PC pill. The 403 text now points at the owner login.
+- **Types:** `Person`, `PersonRole`, `BotTransfer`, `SharedSpending`; owner and person fields on `Bot`, `Chat`, `Account`, `Approval`, `PcNode` and `Provider`.
+
+### 5.3 What stays
+
+- **Topics, folders, multi-Bot topics, routines, artifacts, files, voice, This PC.**
+- **USER.md** (`data/USER.md`). If `HOUSEHOLD.md` has content, it's appended to `USER.md` once.
+- **The usage log and a personal Spending page:** this month's total, each Bot, the 30-day chart and unpriced models.
+
+### 5.4 Data
+
+- **Migration v18:**
+  - Everything recorded as the host's stays.
+  - Other people's credentials (accounts, personal providers, lent PCs) and their Bots, topics and pending transfers are deleted. The updater's pre-update backup still has them. The migration logs the counts.
+  - Columns stay, unused, until Phase 9 drops them, so 0.2.0 can still open the database during rollback.
+  - Family shipped on 2026-10-15 and Colony was shelved the same day, so this is expected to be empty. The release notes still say what happens.
+- **Tests:** tests of removed features are deleted with them: the 13 in `people.test.ts`, and 2 of the 4 in `nodes.test.ts` (lent PC, someone else's Bot). Others are rewritten to the single-user rule (`access.test.ts`, 2 cases in `nodes.test.ts`, any person-routing asserts in `run.test.ts` and `voice.test.ts`). New tests cover the owner-only gate. The commit message records the count before and after.
+
+---
+
+## 6. Phases
 
 Rules for every phase:
 
-- One commit per phase on `pi-durable`; no pushes.
-- Each commit is gated by `npm run check` (root) and `npx vitest run` in `server`. The 145 existing server tests keep passing at every phase. Tests whose subject changes (for example the `.provider` string asserted in `settings.test.ts`) are updated in the same commit to assert the new equivalent, and the count never drops.
-- Manual checks run against a sandbox: `COLONY_DATA_DIR` set to a temp folder, `COLONY_PORT` set to a free port so it can't clash with the live server, and `COLONY_DESKTOP_DATA` for the desktop app. The real `colony\data`, `%APPDATA%\Colony` and the installed server are never touched. The Bot computer for tests is a fresh sandbox container, not `colony-13b2aaec`.
-- Pin `@earendil-works/pi-durable`, `pi-ai` and `chord` to exact versions (no `^`).
+- **Commits:** one commit per phase on `pi-durable`; no pushes. Each is gated by `npm run check` (root) and `npx vitest run` in `server`.
+- **Tests:** every existing test keeps passing, except tests of removed features (Phase 1) and tests whose subject moves (for example the `.provider` string in `settings.test.ts`), which are rewritten in the same commit to assert the new equivalent.
+- **Sandbox:** manual checks run with `COLONY_DATA_DIR` set to a temp folder, `COLONY_PORT` set to a free port (so there's no clash with the live server), `COLONY_DESKTOP_DATA` for the desktop app, and a fresh sandbox Bot computer, never `colony-13b2aaec`. The real `colony\data`, `%APPDATA%\Colony` and the installed server aren't touched.
+- **Pins:** exact versions for `@earendil-works/pi-durable`, `pi-ai` and `chord`.
 
-### Phase 0: Spike and go/no-go
+### Phase 1: Single-user
 
-The Phase 0 code (`server/src/agent/pi/spike.test.ts`) stays only while it earns its keep. It answers each question with a passing or failing test, using a scripted fake pi-ai provider (a custom `api` whose `stream` yields scripted events) and, where it matters, a real provider with a sandbox key.
+Section 5: owner-only access, removals, migration v18, tests.
 
-1. **Keys:** two `colony:<id>` providers with different keys, two concurrent conversations, and each request carries the right key. *(go/no-go)*
-2. **Approvals:** a `replay: "safe"` tool waiting on a promise, with the harness closed and reopened. The tool re-runs, finds the ledger entry, and waits again without a duplicate effect. A stable tool call id is or isn't available in `execute`. *(go/no-go)*
-3. **History:** a new conversation can be seeded with prior user/assistant/tool messages (creation options or `beforeRequest`).
-4. **Steering:** a steer submitted during a tool lands before the next model call.
-5. **Streaming:** `watchEvents` gives text deltas with run-to-run latency ≤100 ms; tapping a `Models` wrapper gives raw deltas.
-6. **Images:** image tool results reach Anthropic and an OpenAI-compatible endpoint.
-7. **Step cap:** a `beforeTool` block past N rounds ends the turn with a final answer.
-8. **Storage:** conversations can be deleted; `node:sqlite` on Windows with `agent.db` beside a WAL `colony.db`; harness close/reopen order.
-9. **Schemas:** zod → `z.toJSONSchema` → `Type.Unsafe` is accepted, and invalid arguments are rejected.
+Exit check:
+- On the sandbox, your login and loopback get in, and a second login (a fake `Tailscale-User-Login` header) gets 403.
+- A copy of a v17 test database with a host and one family member migrates to v18: host data kept, the member's gone, `USER.md` merged.
+- The web app has no Family or You / This Colony screens.
 
-Exit check: a short "Phase 0 findings" section appended to this file with each answer, and a go or no-go from you before Phase 1. If 1 or 2 fails, stop: section 0 of `pip-parity.md` stands and this branch keeps only the plan.
+### Phase 2: A runtime seam (no behaviour change)
 
-### Phase 1: A runtime seam (no behaviour change)
+- Split `AgentRunner` into the public runner (same methods) and a `Runtime` interface. Today's loop moves to `agent/runtime/aiSdk.ts`.
+- `ColonyTool.replay` replaces `SAFE_TO_REPEAT`.
+- A runtime switch: `COLONY_RUNTIME=ai-sdk|pi` (default `ai-sdk`).
 
-- Split `AgentRunner` (`run.ts`) into the public runner (the same methods: `start`, `deliver`, `steerNow`, `unqueue`, `stop`, `stopBot`, `consult`, `resume`, `resumeAll`) and a `Runtime` interface. The current code moves to `agent/runtime/aiSdk.ts`.
-- `ColonyTool` gets `replay: "safe" | "check"`, replacing `SAFE_TO_REPEAT`. Adapters stay per runtime (`toToolSet` for the AI SDK).
-- A runtime switch: `COLONY_RUNTIME=ai-sdk|pi` (env, default `ai-sdk`).
+Exit check: all tests pass untouched, and the sandbox chats, steers and resumes after a kill as before.
 
-Exit check: the 145 tests pass untouched, and the sandbox server chats, steers and resumes after a kill exactly as before.
+### Phase 3: Provider layer on pi-ai
 
-### Phase 2: Provider layer on pi-ai
+- `agent/pi/models.ts`: one `Models`, one `colony:<id>` provider per provider row, kept in sync on add, edit and remove.
+- `usageEntry` accepts pi-ai `Usage`.
+- `desktopCheck` runs through pi-ai under the pi runtime.
+- Node raised to 22.19 in `engines` and `install.ps1`.
 
-- `agent/pi/models.ts`: one `Models` with a `colony:<id>` provider per provider row (Anthropic → `anthropicMessagesApi`, OpenAI-compatible → `openAICompletionsApi` plus compat flags). It is kept in sync when providers are added, edited, removed or handed over, and keys are read on each request.
-- `usageEntry` accepts pi-ai `Usage` as well as AI SDK usage.
-- `desktopCheck` runs through pi-ai when `COLONY_RUNTIME=pi`.
-- Bump `engines` and `install.ps1` to Node 22.19.
+Exit check: tests for provider sync, the right key on each request, and the usage mapping (cache reads and writes priced as today). One live call each to Anthropic and an OpenAI-compatible endpoint on the sandbox.
 
-Exit check: new tests for provider sync, key isolation (person A's Bot never sends person B's key), and the usage mapping (cache reads and writes priced as today). Existing tests pass.
-
-### Phase 3: Pi runtime core, behind the switch
+### Phase 4: Pi runtime with persistent conversations, behind the switch
 
 - `agent/runtime/pi.ts`:
-  - harness on `data/agent.db`, one conversation per run, seeded history;
-  - `toPiTools` for the core, doc, computer, browser, mail and vault tools;
-  - the event bridge (deltas, steps, presence);
-  - stop and timeout, step cap, steering, Colony's queue;
-  - usage rows and the monthly-limit check;
-  - `consult` as a nested run.
-- `run.test.ts` is parameterized over both runtimes: the AI SDK mock as now, and the fake pi-ai provider for pi.
+  - the harness on `data/agent.db`;
+  - the `conversations` table, with lazy seeding from the last 40 messages;
+  - `write` entries for other Bots in topics;
+  - the per-turn system prompt;
+  - `toPiTools`;
+  - the event bridge;
+  - stop and timeout, step cap, steer, follow-up, Steer now and Cancel;
+  - usage rows.
+- Compaction: pi defaults plus Colony's `beforeCompact` instruction, a step-log marker, and **Compact now** and **Start fresh** in the chat menu.
+- `run.test.ts` is parameterized over both runtimes, with a scripted fake pi-ai provider for pi.
 
 Exit check:
 - `run.test.ts` passes on both runtimes.
-- On the sandbox with `COLONY_RUNTIME=pi`: a chat with tool steps streams, steer mid-run changes course, a queued message runs after, Stop stops it, and a shared-key Bot over the limit is stopped before the model call.
+- A test drives a conversation past a small fake context window: it compacts, the summary is in the next request, and old entries are still in storage.
+- On the sandbox:
+  - a Bot remembers something from 60 messages back;
+  - a topic Bot sees another Bot's reply;
+  - steer, queue, Steer now, Cancel and Stop all work;
+  - Compact now shows the marker.
 
-### Phase 4: Durability and approvals on pi
+### Phase 5: Durability and approvals on pi
 
-- `tool_effects` ledger and gated-tool wrapper (section 3.4).
-- `resumeAll` → `harness.resume()` plus the restart notes.
-- Durable consult (section 3.2).
-- The legacy `runs` → pi converter (section 4.1).
+- The `tool_effects` ledger and gated-tool wrapper (3.4).
+- `harness.resume()` on boot, plus the restart notes.
+- Durable `message_bot`.
+- The legacy `runs` converter (4.1).
 
-Exit check: the `pip-parity.md` phase 2 check, repeated on pi. Kill the sandbox server:
+Exit check: kill the sandbox server:
 - during a read: it re-runs;
 - during a write: the model is told to check;
-- while waiting on an approval: the same card is still answerable, and approving runs the action once;
-- during a `message_bot` consult: the answer still arrives.
+- while waiting on an approval: the same card still works, and approving runs the action once;
+- during a `message_bot` consult: the answer still arrives;
+- mid-stream: the reply continues.
 
 Also, a fixture AI SDK checkpoint converts and continues. Automated equivalents go in `run.test.ts`.
 
-### Phase 5: Desktop, computer and PC tools
+### Phase 6: Bot computer, desktop and PC tools
 
-- The `desktop_*` tools for all models, with image tool results.
-- `prepareDesktopMessages` as a `beforeRequest` hook.
-- PC tools from `nodes.ts` through `toPiTools`.
-- `anthropicCompat.ts` is no longer used by the pi runtime.
+- `desktop_*` for all models, with image tool results; `prepareDesktopMessages` as a `beforeRequest` hook.
+- PC tools through `toPiTools`.
+- `anthropicCompat.ts` unused under pi.
 
 Exit check:
 - `desktop.test.ts` and `nodes.test.ts` pass on both runtimes.
 - `desktopCheck` passes for Claude and one OpenAI-compatible vision model.
-- On the sandbox, a Bot on its sandbox computer completes the click-through task we used for 0.2.0, and a dev desktop app (`COLONY_DESKTOP_DATA`) lends the PC: browser, screenshot and shell, with each approval going to the PC's owner.
-- Claude's success on the desktop task is recorded against the AI SDK runtime. If it's clearly worse, stop and decide before Phase 6.
+- On the sandbox, Claude does the 0.2.0 click-through task on its sandbox computer, under both runtimes, and the success and step count are recorded here.
+- A dev desktop app (`COLONY_DESKTOP_DATA`) lends the PC: browser, screenshot, shell, each with its approval.
+- If Claude is clearly worse without the native toolset, stop and decide before Phase 8.
 
-### Phase 6: Everything else end to end; pi becomes the default
+### Phase 7: Forks
 
-- Voice call with barge-in, `call_user`, a routine (scheduled and mail-triggered), hand-over (accept with a pending approval: it expires), and family approval routing (mail → account owner, PC → PC owner, Bot computer → Bot owner), all on the sandbox with two logins.
-- The default switches to `COLONY_RUNTIME=pi`. The AI SDK runtime stays in the build as the fallback for one release.
+- **Branch from here** on any Bot message: `fork(entryId)`, then a new topic (title and folder from the dialog) linked to the fork.
+- A small "Branched from {chat} · {date}" line at the top of the new topic, linking back.
 
-Exit check: the whole `family.md` section 11 list passes on pi, plus a release candidate installed into a sandbox `COLONY_HOME` and updated from 0.2.0 while a run is in flight.
+Exit check: a test that a fork's first request contains the parent's context up to the branch point and nothing after. On the sandbox, branching mid-chat gives a topic that knows the earlier discussion, and the original chat is unchanged.
 
-### Phase 7: Remove the AI SDK (a later release, after a clean week on pi)
+### Phase 8: End to end; pi becomes the default
 
-- Delete `runtime/aiSdk.ts`, `anthropicCompat.ts`, `ai`, `@ai-sdk/*` and the `runs` table (a migration drops it after the converter has run).
-- Port the tests that used `MockLanguageModelV4` to the fake pi-ai provider, keeping each assertion. The server test count stays at or above 145 plus what earlier phases added.
+- On the sandbox under pi: a voice call with barge-in, `call_user`, routines (scheduled and mail-triggered, each seeing its earlier runs), mail, calendar and vault approvals, artifacts and files.
+- `COLONY_RUNTIME` defaults to `pi`. The AI SDK runtime stays for one release as the fallback.
 
-Exit check: no `ai`/`@ai-sdk` imports remain, and all tests pass.
+Exit check: everything above passes, and a release candidate installed into a sandbox `COLONY_HOME` updates from 0.2.0 while a run is in flight and continues it.
 
-### Later (not in this plan)
+### Phase 9: Cleanup (a later release, after a clean week on pi)
 
-- Conversation per chat with compaction, instead of a fixed `historyMessages` window.
-- "Branch from here" for topics using forks.
-- Deferred (batch) responses for non-urgent routines.
+- Remove `runtime/aiSdk.ts`, `anthropicCompat.ts`, `ai` and `@ai-sdk/*`.
+- Migration v19 drops `runs`, `bot_transfers`, `chat_people`, `people` and the owner, person, approver and payer columns.
+- Port the tests that used `MockLanguageModelV4` to the fake pi-ai provider, keeping each assertion.
+
+Exit check: no `ai` / `@ai-sdk` imports, and all tests pass.
 
 ---
 
-## 6. Risks
+## 7. Risks
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Upstream breaks the API again (4 of 8 recent releases did) | High | Exact pins, upgrades on purpose only, and the Phase 0 spike tests kept as a contract suite run on each upgrade. All pi calls stay in `agent/pi/` and `runtime/pi.ts`. |
-| Wrong key used for a person (billing someone else) | Low, high impact | One provider per key row; isolation test in Phase 2; concurrency test in Phase 0. |
-| Approvals duplicate or vanish across restarts | Medium | Effect ledger (3.4); Phase 0 go/no-go; Phase 4 kill tests. |
-| Claude computer use gets worse without the native toolset | Medium | Measured in Phase 5 before the default flips. |
-| `watchEvents` (experimental) changes or lags | Medium | The event bridge is one file. The `Models`-wrapper tap is the fallback. |
-| Two stores disagree (`messages` vs `agent.db`) | Medium | `messages` is the only source of truth for what people see. `agent.db` holds only in-flight runs and is disposable. |
-| Two processes open `agent.db` during an update | Low | Close-before-open order in the launcher, with a test. |
-| `agent.db` grows | Low | Delete finished conversations after 24 h, with rotation as the fallback. |
-| Node version | Low | Engines and installer raised to 22.19. This PC has 22.23.2. |
+| Upstream breaks the API again | High | Exact pins and deliberate upgrades. All pi calls live in `agent/pi/` and `runtime/pi.ts`. The fake-provider tests act as a contract suite on each upgrade. |
+| Another tailnet login gets in after the people code goes | Medium if missed | Owner-only gate is Phase 1's first item, with tests. |
+| Approvals duplicate or vanish across restarts | Medium | Effect ledger (3.4) and the Phase 5 kill tests |
+| Compaction loses something important | Medium | Colony's `beforeCompact` instruction, `MEMORY.md` for durable facts, the summary visible in the step log, and the full history kept in storage |
+| Persistent conversations raise cost (longer contexts) | Medium | Compaction keeps them under the context window. `cacheRetention: "long"` on Anthropic. Spending shows each Bot. A per-Bot `keepRecentTokens` could be lowered if needed. |
+| Claude computer use gets worse | Medium | Measured in Phase 6 before the default flips |
+| `watchEvents` (experimental) changes | Medium | The event bridge is one file. A `Models` wrapper that taps pi-ai's stream is the fallback. |
+| `agent.db` grows with no delete API | Low | Placeholders for old screenshots, the size shown in Settings, a copy-live-conversations maintenance step |
+| Two processes open `agent.db` during an update | Low | Close-before-open order in the launcher, with a test |
 
-## 7. Rollback
+## 8. Rollback
 
-- **Phases 1–6:** set `COLONY_RUNTIME=ai-sdk` and restart. `colony.db` only gained additive tables, and the AI SDK runtime ignores `agent.db`. Runs in flight on pi at that moment are marked stopped with the restart text, and their approvals expire (fail-closed).
-- **After Phase 7:** install the previous version from `%LOCALAPPDATA%\Colony\versions` (versions sit side by side). `colony.db` still opens because the changes are additive, apart from the dropped `runs` table, which the old version recreates empty. `agent.db` is ignored and can be deleted. If needed, restore the updater's pre-update backup.
-- **Before any phase ships:** the branch can be abandoned with nothing merged. `main` stays on the AI SDK.
+- **Phases 2–8:** set `COLONY_RUNTIME=ai-sdk` and restart. `colony.db` only gained tables, and the AI SDK runtime goes back to `historyFor` (last 40 messages), which still works because `messages` is complete. `agent.db` is ignored. Runs in flight on pi at that moment are marked stopped with the restart text, and their approvals expire.
+- **Phase 1 (single-user):** install 0.2.0 from `%LOCALAPPDATA%\Colony\versions`. It opens the v18 database because the columns are still there. Deleted family data comes back only by restoring the pre-update backup.
+- **After Phase 9:** install the previous release from `versions`. Its database expectations match v18 or v19 except for the dropped `runs` table, which it recreates empty. If needed, restore the updater's pre-update backup.
+- **Before anything ships:** `main` stays on 0.2.0 and this branch can be dropped.
 
 ## Open questions
 
-1. Is a ~100 ms delta cadence acceptable for chat and voice, or should Phase 3 tap the raw stream from the start?
-2. If Claude is measurably worse on the Bot computer without the native toolset (Phase 5), do we stop, or accept it for the durability gains?
-3. Is "conversation per run" fine for v1, with compaction and forks left for later?
+1. If Claude is measurably worse on its computer without the native toolset (Phase 6), do we stop there, or accept it for persistent Bots?
+2. Should other people's data be deleted by migration v18 (as planned, with the backup as the safety net), or should the upgrade refuse until you confirm?
