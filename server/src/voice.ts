@@ -8,6 +8,8 @@ import type { EventLog } from "./events.js";
 import { sendUserMessage } from "./send.js";
 import { voiceProvider, voiceSettings } from "./settings.js";
 import type { Store } from "./store.js";
+import { authorOf, canSee } from "./people.js";
+import type { Person } from "./shared/types.js";
 
 /*
  * Voice calls with a Bot, in the Colony app (no phone network: Colony stays on your tailnet).
@@ -102,8 +104,8 @@ export class Calls {
   private rings = new Map<string, Ring>();
   private lastRing = new Map<string, number>();
   private sockets = new WebSocketServer({ noServer: true });
-  /** Sends a push notification (set by index.ts). */
-  notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }) => void = () => {};
+  /** Sends a push notification to one person (set by index.ts). */
+  notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }, personId: string) => void = () => {};
 
   constructor(private store: Store, private events: EventLog, private runner: AgentRunner) {}
 
@@ -124,14 +126,16 @@ export class Calls {
     timer.unref?.();
     this.rings.set(id, { id, botId, chatId, reason, timer });
     this.events.broadcast({ type: "call.ringing", callId: id, botId, chatId, reason });
-    this.notify({ title: `${bot?.name ?? "A Bot"} is calling`, body: reason, chatId, tag: `call-${id}`, path: `${chatId}?call=${id}` });
+    // A Bot only ever rings its owner.
+    this.notify({ title: `${bot?.name ?? "A Bot"} is calling`, body: reason, chatId, tag: `call-${id}`, path: `${chatId}?call=${id}` }, bot?.ownerId ?? "owner");
     return { ringing: true };
   }
 
-  /** Not answered (or declined): the reason goes in the chat as the Bot's message. */
-  miss(callId: string) {
+  /** Not answered (or declined by the Bot's owner): the reason goes in the chat as the Bot's message. */
+  miss(callId: string, personId?: string) {
     const ring = this.rings.get(callId);
     if (!ring) return;
+    if (personId && this.store.getBot(ring.botId)?.ownerId !== personId) return;
     clearTimeout(ring.timer);
     this.rings.delete(callId);
     this.events.broadcast({ type: "call.ended", callId });
@@ -139,23 +143,25 @@ export class Calls {
   }
 
   /** Handles the call socket: /api/chats/<id>/call (?answer=<ringing call id> to pick up). */
-  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, person: Person) {
     const url = new URL(request.url ?? "", "http://colony");
     const chatId = /^\/api\/chats\/([\w-]+)\/call$/.exec(url.pathname)?.[1];
     const chat = chatId ? this.store.getChat(chatId) : null;
-    if (!chat || chat.kind === "thread" || !chat.memberIds.length) { socket.destroy(); return; }
+    if (!chat || chat.kind === "thread" || !canSee(person, chat)) { socket.destroy(); return; }
+    // You call your own Bots: the one that rang you, or yours in this chat (the lead if it's yours).
     const ring = url.searchParams.get("answer") ? this.rings.get(url.searchParams.get("answer")!) : undefined;
-    if (ring) {
+    const mine = chat.memberIds.filter((id) => this.store.getBot(id)?.ownerId === person.id);
+    const botId = ring && this.store.getBot(ring.botId)?.ownerId === person.id ? ring.botId : mine.includes(chat.coordinatorId ?? "") ? chat.coordinatorId! : mine[0];
+    if (!botId) { socket.destroy(); return; }
+    if (ring?.botId === botId) {
       clearTimeout(ring.timer);
       this.rings.delete(ring.id);
       this.events.broadcast({ type: "call.ended", callId: ring.id });
     }
-    this.sockets.handleUpgrade(request, socket, head, (ws) => this.call(ws, chat.id, ring?.botId, ring?.reason));
+    this.sockets.handleUpgrade(request, socket, head, (ws) => this.call(ws, chat.id, botId, authorOf(person), ring?.botId === botId ? ring.reason : undefined));
   }
 
-  private call(ws: WebSocket, chatId: string, ringingBot?: string, opening?: string) {
-    const chat = this.store.getChat(chatId)!;
-    const botId = ringingBot ?? chat.coordinatorId ?? chat.memberIds[0];
+  private call(ws: WebSocket, chatId: string, botId: string, author: string, opening?: string) {
     const settings = voiceSettings();
     const voice = settings.botVoices[botId] ?? settings.voice;
     const send = (data: object) => { if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(data)); };
@@ -223,7 +229,7 @@ export class Calls {
         if (!text) { send({ type: "state", state: "listening" }); return; }
         send({ type: "heard", text });
         const current = this.store.getChat(chatId);
-        if (current) sendUserMessage(this.store, this.runner, current, { text, via: "voice" });
+        if (current) sendUserMessage(this.store, this.runner, current, { text, via: "voice", author });
       }).catch((error) => send({ type: "error", message: error instanceof Error ? error.message : "Couldn't hear that." }));
     });
     ws.on("close", () => unsubscribe());

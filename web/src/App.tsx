@@ -54,8 +54,6 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [connected]);
   const loadError = useLive((s) => s.error);
-  const waiting = useLive((s) => s.waiting);
-  const me = useLive((s) => s.me);
   const chats = useLive((s) => s.chats);
   const phone = usePhone();
   const [chatId, openChat] = useOpenChat();
@@ -90,20 +88,6 @@ export default function App() {
   }, [ready, chatId, chat, openChat]);
   // Tell the server what's on screen so it doesn't notify about it.
   useEffect(() => { setFocusedChat(chat?.id ?? null); }, [chat?.id]);
-
-  if (waiting) {
-    return (
-      <main className="flex h-dvh flex-col items-center justify-center gap-4 p-6 text-center">
-        <LogoMark size={56} mood="alive" />
-        <h1 className="m-0 text-xl font-semibold tracking-tight">{waiting.ignored ? "This Colony isn't shared with you" : `Waiting for ${waiting.owner} to add you`}</h1>
-        <p className="m-0 max-w-sm text-label leading-relaxed text-muted">
-          {waiting.ignored
-            ? `Ask ${waiting.owner} to add ${me?.login ?? "your login"} in Settings › People.`
-            : `${waiting.owner} runs this Colony. They'll see ${me?.login ?? "your login"} in Settings › People; once they add you, this page opens by itself.`}
-        </p>
-      </main>
-    );
-  }
 
   if (!ready) {
     return (

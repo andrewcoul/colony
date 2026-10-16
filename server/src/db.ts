@@ -235,6 +235,16 @@ const MIGRATIONS = [
   ALTER TABLE chats ADD COLUMN everyone INTEGER NOT NULL DEFAULT 0;
   ALTER TABLE push_subscriptions ADD COLUMN person_id TEXT;
   `,
+  // v13: everyone has their own Bots. What exists so far is the host's; members and waiting logins are family.
+  `
+  UPDATE people SET role = 'host' WHERE role = 'owner';
+  UPDATE people SET role = 'family' WHERE role IN ('member', 'pending');
+  DELETE FROM people WHERE role = 'ignored';
+  ALTER TABLE bots ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'owner';
+  ALTER TABLE chats ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'owner';
+  ALTER TABLE folders ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'owner';
+  ALTER TABLE approvals ADD COLUMN approver_id TEXT NOT NULL DEFAULT 'owner';
+  `,
 ];
 
 export type Db = DatabaseSync;

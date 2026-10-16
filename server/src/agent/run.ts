@@ -172,7 +172,7 @@ export class AgentRunner {
     const to = this.store.getBot(toId);
     if (!from || !to) throw new Error("That Bot no longer exists.");
     const thread = this.store.findThread(fromId, toId)
-      ?? this.store.createChat({ kind: "thread", title: `${from.name} & ${to.name}`, memberIds: [fromId, toId], coordinatorId: null });
+      ?? this.store.createChat({ kind: "thread", title: `${from.name} & ${to.name}`, memberIds: [fromId, toId], coordinatorId: null, ownerId: from.ownerId });
     if (this.isRunning(thread.id, toId)) throw new Error(`${to.name} is still answering an earlier message.`);
     this.store.createMessage({ chatId: thread.id, author: fromId, text });
     const reply = await new Promise<Message>((resolve, reject) => {
@@ -356,7 +356,7 @@ export class AgentRunner {
       if (desktopMode === "generic") Object.assign(registry, genericDesktopTools(this.desktop!, ctx));
       const result = streamText({
         model: this.modelFactory(target, `${chatId}:${botId}`),
-        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId), desktopMode, this.extras.guidance?.(botId) ?? "", (id) => this.store.getFolder(id)?.title, peopleNote(this.store, chat)),
+        system: systemPrompt(bot, chat, others, this.store.listRoutines(botId), options.depth ? [] : bots.filter((item) => item.id !== botId && item.ownerId === bot.ownerId), desktopMode, this.extras.guidance?.(botId) ?? "", (id) => this.store.getFolder(id)?.title, peopleNote(this.store, chat)),
         messages: history,
         tools: toToolSet(registry, ctx),
         // Before each step: add any steering messages (the override carries into later steps), and

@@ -4,7 +4,7 @@ import webpush from "web-push";
 import { config } from "./config.js";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
-import { canSee, OWNER_ID } from "./people.js";
+import { canSee, HOST_ID } from "./people.js";
 import { plainText, type Store } from "./store.js";
 import type { Message } from "./shared/types.js";
 
@@ -44,13 +44,13 @@ export class PushService {
         const bot = this.store.getBot(event.approval.botId);
         // A browser takeover opens straight into that Bot's browser.
         const path = event.approval.tool === "browser_takeover" ? `${bot?.chatId}/browser` : undefined;
-        if (bot) void this.notify({ title: `${bot.name} needs you`, body: event.approval.summary, chatId: event.approval.chatId, tag: `approval-${event.approval.id}`, path });
+        if (bot) void this.notify({ title: `${bot.name} needs you`, body: event.approval.summary, chatId: event.approval.chatId, tag: `approval-${event.approval.id}`, path }, { personId: event.approval.approverId });
       }
     });
   }
 
   /** A device's subscription, and whose device it is (they get only their notifications). */
-  subscribe(subscription: PushSubscriptionInput, personId = OWNER_ID) {
+  subscribe(subscription: PushSubscriptionInput, personId = HOST_ID) {
     this.db.prepare(`INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at, person_id) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, person_id = excluded.person_id`)
       .run(subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, Date.now(), personId);
@@ -105,9 +105,10 @@ export class PushService {
   async notify(notification: Notification, { force = false, personId }: { force?: boolean; personId?: string } = {}) {
     if (!force && notification.chatId && this.watching(notification.chatId)) return 0;
     const chat = notification.chatId && !notification.tag.startsWith("approval-") ? this.store.getChat(notification.chatId) : null;
-    const audience = new Set(personId ? [personId] : [OWNER_ID, ...(chat ? this.store.listPeople().filter((person) => canSee(person, chat)).map((person) => person.id) : [])]);
+    // A chat's news goes to whoever can see it; anything else (an approval, an account) to whoever it's for.
+    const audience = new Set(personId ? [personId] : chat ? this.store.listPeople().filter((person) => canSee(person, chat)).map((person) => person.id) : [HOST_ID]);
     const rows = (this.db.prepare("SELECT endpoint, p256dh, auth, person_id FROM push_subscriptions").all() as { endpoint: string; p256dh: string; auth: string; person_id: string | null }[])
-      .filter((row) => audience.has(row.person_id ?? OWNER_ID));
+      .filter((row) => audience.has(row.person_id ?? HOST_ID));
     const payload = JSON.stringify({ title: notification.title, body: notification.body, tag: notification.tag, url: notification.path || notification.chatId ? `/#/chat/${notification.path ?? notification.chatId}` : "/" });
     let delivered = 0;
     await Promise.all(rows.map(async (row) => {

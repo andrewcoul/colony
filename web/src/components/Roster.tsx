@@ -6,8 +6,8 @@ import { pending, useUpdates } from "../lib/updates";
 import type { Bot, Chat, Folder, Presence } from "@shared/types";
 import { api } from "../lib/api";
 import { shortTime } from "../lib/dates";
-import { useLive, useIsOwner } from "../lib/live";
-import { snappy, soft } from "../lib/motion";
+import { useIsHost, useLive, useMyId } from "../lib/live";
+import { rise, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { LogoMark, type LogoMood } from "./Logo";
@@ -45,14 +45,16 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
   phone: boolean;
 }) {
   const configured = useLive((s) => s.configured);
-  // Members see the topics shared with them; Bots, settings and new things are the owner's.
-  const owner = useIsOwner();
+  // Your Bots are yours; other people's only appear inside topics you share.
+  const myId = useMyId();
+  const host = useIsHost();
+  const myName = useLive((s) => s.me?.name ?? "");
   const botMap = useLive((s) => s.bots);
   const chatMap = useLive((s) => s.chats);
   const folderMap = useLive((s) => s.folders);
   const approvals = useLive((s) => s.approvals);
   const [storedTab, setTab] = useStored<"bots" | "topics">("colony.phoneTab", "bots");
-  const tab = owner ? storedTab : "topics";
+  const tab = storedTab;
   // A Bot waiting on you may be waiting in a topic or a thread, not its own chat.
   const chatFor = (bot: Bot) => Object.values(approvals).find((item) => item.botId === bot.id && item.status === "pending")?.chatId ?? bot.chatId;
   const [query, setQuery] = useState("");
@@ -65,14 +67,14 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
     const needle = query.trim().toLowerCase();
     const match = (text: string) => !needle || text.toLowerCase().includes(needle);
     const recency = (bot: Bot) => chatMap[bot.chatId]?.updatedAt ?? bot.createdAt;
-    const all = Object.values(botMap).sort((a, b) => recency(b) - recency(a));
+    const all = Object.values(botMap).filter((bot) => bot.ownerId === myId).sort((a, b) => recency(b) - recency(a));
     return {
       bots: all.filter((bot) => match(bot.name) || match(bot.title)),
       needsYou: all.filter((bot) => bot.presence === "waiting" || bot.presence === "blocked"),
       topics: Object.values(chatMap).filter((chat) => chat.kind === "topic" && !chat.archivedAt && match(chat.title)).sort((a, b) => b.updatedAt - a.updatedAt),
       archived: Object.values(chatMap).filter((chat) => chat.kind === "topic" && chat.archivedAt && match(chat.title)).sort((a, b) => b.updatedAt - a.updatedAt),
     };
-  }, [botMap, chatMap, query]);
+  }, [botMap, chatMap, query, myId]);
 
   return (
     <aside aria-label="Bots" className={cn("flex h-full flex-col bg-surface", phone ? "w-full" : "w-[290px] shrink-0 border-r border-rule")}>
@@ -80,25 +82,25 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
         <div className="flex items-center justify-between px-5 pt-[max(env(safe-area-inset-top),16px)] pb-4">
           <h1 className="m-0 text-[30px] font-semibold tracking-tight">{tab === "topics" ? "Topics" : "Bots"}</h1>
           <div className="flex gap-2.5">
-            {owner && <Button variant="outline" size="icon" className="size-10 bg-raised" aria-label="Settings" onClick={onSettings}><Settings size={18} /></Button>}
+            <Button variant="outline" size="icon" className="size-10 bg-raised" aria-label="Settings" onClick={onSettings}><Settings size={18} /></Button>
             <NotificationsMenu className="size-10 bg-raised" />
-            {owner && <Button variant="primary" size="icon" className="size-10" aria-label={tab === "topics" ? "New topic" : "New Bot"} onClick={tab === "topics" ? onNewTopic : onNewBot}>
+            <Button variant="primary" size="icon" className="size-10" aria-label={tab === "topics" ? "New topic" : "New Bot"} onClick={tab === "topics" ? onNewTopic : onNewBot}>
               <Plus size={19} strokeWidth={2.4} />
-            </Button>}
+            </Button>
           </div>
         </div>
       ) : (
         <div className="flex items-center justify-between px-3.5 pt-4 pb-3.5">
           <span className="flex items-center gap-2.5 text-lg font-semibold tracking-tight"><LogoMark size={26} mood={logoMood} />Colony</span>
           <div className="flex items-center gap-2">
-            {owner && <Button variant="ghost" size="icon" aria-label="Settings" onClick={onSettings}><Settings size={17} /></Button>}
+            <Button variant="ghost" size="icon" aria-label="Settings" onClick={onSettings}><Settings size={17} /></Button>
             <NotificationsMenu className="border-transparent" />
-            {owner && <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />New Bot</Button>}
+            <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />New Bot</Button>
           </div>
         </div>
       )}
 
-      {phone && owner && (
+      {phone && (
         <div className="mx-2.5 mb-3 flex rounded-full border border-rule bg-surface p-1" role="tablist" aria-label="Show">
           {(["bots", "topics"] as const).map((name) => (
             <button key={name} type="button" role="tab" aria-selected={tab === name} onClick={() => setTab(name)}
@@ -119,7 +121,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-2.5 pt-3.5 pb-3 [scrollbar-width:thin]">
-        {!configured && owner && (
+        {!configured && host && (
           <button type="button" onClick={onSettings}
             className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-lemon/30 bg-lemon/8 p-3.5 text-left">
             <KeyRound size={18} className="shrink-0 text-lemon" />
@@ -169,14 +171,20 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
           </section>
         )}
 
-        {owner && (!phone || tab === "bots") && (
+        {(!phone || tab === "bots") && (
           <>
-            <h2 className="m-0 px-2.5 pb-1.5 text-meta font-normal text-muted">Bots</h2>
-            {bots.length === 0 && (
-              <p className="px-2.5 py-6 text-label leading-relaxed text-muted">
-                {query ? "No Bots match." : "No Bots yet. Create your first teammate and give it something to do."}
-              </p>
+            {bots.length === 0 && !query ? (
+              <m.div variants={rise} initial="hidden" animate="shown" className="mb-2 flex flex-col gap-3 rounded-2xl border border-lilac/25 bg-lilac/8 p-4">
+                <span className="flex flex-col gap-0.5">
+                  <strong className="text-[15px]">{host ? "Make your first Bot" : `Welcome${myName ? `, ${myName}` : ""}`}</strong>
+                  <span className="text-meta text-soft">{host ? "A teammate that remembers, works on its own computer, and asks before anything leaves your PC." : "This is your Colony too. Make a Bot of your own: only you see its chat, memory and routines."}</span>
+                </span>
+                <Button variant="primary" size="pill" className="self-start" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />Make my first Bot</Button>
+              </m.div>
+            ) : (
+              <h2 className="m-0 px-2.5 pb-1.5 text-meta font-normal text-muted">{host ? "Bots" : "Your Bots"}</h2>
             )}
+            {bots.length === 0 && query && <p className="px-2.5 py-6 text-label leading-relaxed text-muted">No Bots match.</p>}
             {bots.map((bot) => (
               <BotRow key={bot.id} bot={bot} chat={chatMap[bot.chatId]} active={bot.chatId === activeChatId} onOpen={() => onOpen(chatFor(bot))} />
             ))}
@@ -185,7 +193,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
 
         {(!phone || tab === "topics") && (
           <TopicsSection topics={topics} archived={archived} folders={folderMap} bots={botMap} activeChatId={activeChatId}
-            onOpen={onOpen} onNew={owner ? onNewTopic : undefined} phone={phone} searching={Boolean(query)} />
+            onOpen={onOpen} onNew={onNewTopic} myId={myId} phone={phone} searching={Boolean(query)} />
         )}
       </nav>
     </aside>
@@ -242,17 +250,18 @@ function BotRow({ bot, chat, active, onOpen }: { bot: Bot; chat: Chat | undefine
  * Topics, filed in folders (or grouped by Bot). Folders fold away and remember it; on desktop a
  * topic can be dragged onto a folder to file it. Archived topics wait at the bottom.
  */
-function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, onNew, phone, searching }: {
+function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, onNew, phone, searching, myId }: {
   topics: Chat[];
   archived: Chat[];
   folders: Record<string, Folder>;
   bots: Record<string, Bot>;
   activeChatId: string | null;
   onOpen: (chatId: string) => void;
-  /** Missing for members, who can't start topics. */
-  onNew?: () => void;
+  onNew: () => void;
   phone: boolean;
   searching: boolean;
+  /** Topics other people started (and shared with you) get their own section. */
+  myId: string;
 }) {
   const [grouping, setGrouping] = useStored<"folder" | "bot">("colony.topicGrouping", "folder");
   const [closed, setClosed] = useStored<string[]>("colony.closedFolders", []);
@@ -271,11 +280,17 @@ function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, 
         .sort((a, b) => a.title.localeCompare(b.title));
     }
     const ordered = Object.values(folders).sort((a, b) => a.position - b.position);
-    const filed = ordered.map((folder) => ({ id: folder.id, title: folder.title, folderId: folder.id as string | null, items: topics.filter((topic) => topic.folderId === folder.id) }));
-    const loose = topics.filter((topic) => !topic.folderId || !folders[topic.folderId]);
-    // Empty folders still show (so you can drop topics into them), except while searching, or for members (who can't).
-    return [...filed.filter((section) => section.items.length || (!searching && onNew)), ...(loose.length ? [{ id: "loose", title: ordered.length ? "Not in a folder" : "", folderId: null, items: loose }] : [])];
-  }, [grouping, topics, folders, bots, searching, onNew]);
+    const mine = topics.filter((topic) => topic.ownerId === myId);
+    const shared = topics.filter((topic) => topic.ownerId !== myId);
+    const filed = ordered.map((folder) => ({ id: folder.id, title: folder.title, folderId: folder.id as string | null | undefined, items: mine.filter((topic) => topic.folderId === folder.id) }));
+    const loose = mine.filter((topic) => !topic.folderId || !folders[topic.folderId]);
+    // Empty folders still show (so you can drop topics into them), except while searching.
+    return [
+      ...(shared.length ? [{ id: "shared", title: "Shared with you", folderId: undefined, items: shared }] : []),
+      ...filed.filter((section) => section.items.length || !searching),
+      ...(loose.length ? [{ id: "loose", title: ordered.length || shared.length ? "Not in a folder" : "", folderId: null, items: loose }] : []),
+    ];
+  }, [grouping, topics, folders, bots, searching, myId]);
 
   const drop = (folderId: string | null) => ({
     onDragOver: (event: React.DragEvent) => {
@@ -307,14 +322,11 @@ function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, 
               </MenuRadioGroup>
             </MenuContent>
           </MenuRoot>
-          {!phone && onNew && <button type="button" onClick={onNew} aria-label="New topic" className="text-muted hover:text-ink"><MessageSquarePlus size={15} /></button>}
+          {!phone && <button type="button" onClick={onNew} aria-label="New topic" className="text-muted hover:text-ink"><MessageSquarePlus size={15} /></button>}
         </div>
       </div>
 
-      {topics.length === 0 && !searching && !onNew && (
-        <p className="mx-2.5 mb-2 text-meta leading-relaxed text-muted">Nothing's shared with you yet. Topics appear here when someone shares one.</p>
-      )}
-      {topics.length === 0 && !searching && onNew && (
+      {topics.length === 0 && !searching && (
         <button type="button" onClick={onNew} className="mx-1 mb-2 flex w-[calc(100%-8px)] items-center gap-3 rounded-xl border border-dashed border-rule p-3 text-left text-meta text-muted hover:text-ink">
           <TopicTile icon="sparkles" size={28} />Give an ongoing thing its own conversation: a trip, a renovation, a launch.
         </button>
@@ -341,7 +353,7 @@ function TopicsSection({ topics, archived, folders, bots, activeChatId, onOpen, 
                   exit={{ height: 0, opacity: 0, transition: { duration: 0.15 } }} transition={soft}>
                   {section.items.map((topic) => (
                     <TopicRow key={topic.id} topic={topic} bots={topic.memberIds.map((id) => bots[id]).filter(Boolean)} active={topic.id === activeChatId}
-                      onOpen={onOpen} draggable={!phone} phone={phone} />
+                      onOpen={onOpen} draggable={!phone && topic.ownerId === myId} phone={phone} />
                   ))}
                   {section.items.length === 0 && <p className="m-0 px-2.5 pb-1.5 pl-8 text-meta text-muted">{phone ? "Empty" : "Empty · drag a topic here"}</p>}
                 </m.div>

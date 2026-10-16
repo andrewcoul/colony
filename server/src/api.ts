@@ -1,4 +1,4 @@
-import { authorOf, canSee, eventFor, identify, memberRefusal, OWNER_ID, readAbout, readHousehold, writeAbout, writeHousehold } from "./people.js";
+import { authorOf, canSee, eventFor, HOST_ID, identify, isHost, readAbout, readHousehold, refusal, writeAbout, writeHousehold } from "./people.js";
 import type { NodeHub } from "./nodes.js";
 import { speak, type Calls } from "./voice.js";
 import { sendUserMessage } from "./send.js";
@@ -109,18 +109,13 @@ async function fetchImage(url: string) {
 export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, modelFactory = defaultModelFactory, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
   const api = new Hono<{ Variables: { person: Person } }>();
 
-  // Who's asking (from their Tailscale login), and whether they may: members only reach the topics shared with them.
+  // Who's asking (from their Tailscale login), and whether it's theirs to touch: their own Bots,
+  // topics they can see, and (for the host) what the whole Colony shares.
   api.use("*", async (c, next) => {
     const person = identify(store, c.req.header("Tailscale-User-Login")?.toLowerCase());
     c.set("person", person);
-    if (person.role === "owner") return next();
-    const route = c.req.path.replace(/^\/api(?=\/)/, "");
-    if (person.role !== "member") {
-      if (route === "/me") return next();
-      return c.json({ error: person.role === "pending" ? "Waiting for the owner to add you." : "This Colony isn't shared with you.", pending: person.role === "pending" }, 403);
-    }
-    const refusal = memberRefusal(store, person, c.req.method, route);
-    return refusal ? c.json({ error: refusal }, 403) : next();
+    const why = refusal(store, person, c.req.method, c.req.path.replace(/^\/api(?=\/)/, ""));
+    return why ? c.json({ error: why }, 403) : next();
   });
 
   /** A mail-triggered routine must watch a mailbox its Bot can read. */
@@ -138,52 +133,50 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.json({ error: error.message || "Something went wrong." }, 500);
   });
 
-  /** Who you are to this Colony (open to people still waiting to be added). */
-  api.get("/me", (c) => c.json({ me: c.get("person"), owner: store.getPerson(OWNER_ID)!.name }));
+  /** Who you are to this Colony, and who runs it. */
+  api.get("/me", (c) => c.json({ me: c.get("person"), host: store.getPerson(HOST_ID)!.name }));
 
-  api.get("/state", (c) => c.get("person").role !== "owner" ? c.json<AppState>(memberState(c.get("person"))) : c.json<AppState>({
-    bots: store.listBots(),
-    chats: store.listChats(),
-    folders: store.listFolders(),
-    // Recent approvals of every status, so old cards can show "Approved"/"Denied".
-    approvals: store.listApprovals(),
-    routines: store.listRoutines(),
-    models: settings.modelOptions(),
-    defaultModel: settings.defaultModel(),
-    configured: settings.modelConfigured(),
-    accounts: integrations?.accounts.list() ?? [],
-    access: integrations?.accounts.listAccess() ?? [],
-    nodes: nodes?.list() ?? [],
-    nodeAccess: store.listNodeAccess(),
-    people: store.listPeople(),
-    me: c.get("person"),
-    seq: events.latestSeq(),
-  }));
-  /** A member's view: the topics shared with them and their Bots; nothing of the owner's settings or accounts. */
-  const memberState = (person: Person): AppState => {
+  /** Everything this person can see: their own Bots, the topics they're in, and what they own. */
+  api.get("/state", (c) => {
+    const person = c.get("person");
     const chats = store.listChats().filter((chat) => canSee(person, chat));
-    const botIds = new Set(chats.flatMap((chat) => chat.memberIds));
-    return {
-      bots: store.listBots().filter((bot) => botIds.has(bot.id)), chats, folders: store.listFolders(), approvals: [], routines: [],
-      models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], nodeAccess: [],
-      people: store.listPeople().filter((item) => item.role === "owner" || item.role === "member"), me: person, seq: events.latestSeq(),
-    };
-  };
+    const visibleChats = new Set(chats.map((chat) => chat.id));
+    const bots = store.listBots().filter((bot) => bot.ownerId === person.id || chats.some((chat) => chat.memberIds.includes(bot.id)));
+    const mine = new Set(bots.filter((bot) => bot.ownerId === person.id).map((bot) => bot.id));
+    const host = isHost(person);
+    return c.json<AppState>({
+      bots, chats,
+      folders: store.listFolders().filter((folder) => folder.ownerId === person.id),
+      // Recent approvals of every status in chats you can see, so old cards can show "Approved"/"Denied".
+      approvals: store.listApprovals().filter((approval) => visibleChats.has(approval.chatId)),
+      routines: store.listRoutines().filter((routine) => mine.has(routine.botId) || visibleChats.has(routine.chatId)),
+      models: settings.modelOptions(),
+      defaultModel: settings.defaultModel(),
+      configured: settings.modelConfigured(),
+      accounts: host ? integrations?.accounts.list() ?? [] : [],
+      access: host ? integrations?.accounts.listAccess() ?? [] : [],
+      nodes: nodes?.list() ?? [],
+      nodeAccess: store.listNodeAccess().filter((grant) => mine.has(grant.botId)),
+      people: store.listPeople(),
+      me: person,
+      seq: events.latestSeq(),
+    });
+  });
 
-  // ---------- People (the owner's) ----------
+  /** Who's in the family and how many Bots each has (counts only: the Bots stay private). */
+  api.get("/family", (c) => {
+    const bots = store.listBots();
+    return c.json(store.listPeople().map((person) => ({ person, bots: bots.filter((bot) => bot.ownerId === person.id).length })));
+  });
+
+  // ---------- You (name, color, what Bots know about you) ----------
   const personPatch = z.object({
     name: z.string().trim().min(1).max(40),
     color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-    role: z.enum(["member", "pending", "ignored"]),
   }).partial();
   api.patch("/people/:id", async (c) => {
     const person = store.updatePerson(c.req.param("id"), personPatch.parse(await c.req.json()));
     return person ? c.json(person) : c.json({ error: "Not found." }, 404);
-  });
-  api.delete("/people/:id", (c) => {
-    if (c.req.param("id") === OWNER_ID) return c.json({ error: "The owner can't be removed." }, 400);
-    store.deletePerson(c.req.param("id"));
-    return c.body(null, 204);
   });
   /** What Bots know about a person (their USER.md), and about the household (HOUSEHOLD.md). */
   api.get("/people/:id/about", (c) => store.getPerson(c.req.param("id")) ? c.json({ text: readAbout(c.req.param("id")) }) : c.json({ error: "Not found." }, 404));
@@ -228,7 +221,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const input = botInput.parse(await c.req.json());
     const problem = desktopProblem(input.computer, input.desktop, input.model);
     if (problem) return c.json({ error: problem }, 400);
-    const bot = store.createBot({ ...input, model: settings.resolveModel(input.model)?.ref ?? "" });
+    const bot = store.createBot({ ...input, model: settings.resolveModel(input.model)?.ref ?? "", ownerId: c.get("person").id });
     files.initBotFolder(bot);
     try { runner.start(bot.chatId, bot.id, { hiddenPrompt: INTRO_PROMPT }); } catch { /* no model yet: the Bot still exists */ }
     return c.json(bot, 201);
@@ -400,22 +393,27 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     memberIds: z.array(z.string()).min(1).max(6),
     coordinatorId: z.string().optional(),
   };
-  /** Checks a topic's Bots and folder; returns an error message, or null when they're fine. */
-  const topicProblem = (input: { memberIds?: string[]; folderId?: string | null }) => {
+  /** Checks a topic's Bots and folder for this person; returns an error message, or null when they're fine. */
+  const topicProblem = (person: Person, input: { memberIds?: string[]; folderId?: string | null }, before: string[] = [], ownsTopic = true) => {
     if (input.memberIds?.some((id) => !store.getBot(id))) return "Unknown Bot in this topic.";
-    if (input.folderId && !store.getFolder(input.folderId)) return "That folder doesn't exist.";
+    // You bring in only your own Bots. You take out your own, or anyone's from a topic you started.
+    const added = (input.memberIds ?? []).filter((id) => !before.includes(id));
+    const removed = input.memberIds ? before.filter((id) => !input.memberIds!.includes(id)) : [];
+    if (added.some((id) => store.getBot(id)?.ownerId !== person.id)) return "You can only add your own Bots.";
+    if (!ownsTopic && removed.some((id) => store.getBot(id)?.ownerId !== person.id)) return "You can only take out your own Bots.";
+    if (input.folderId && store.getFolder(input.folderId)?.ownerId !== person.id) return "That folder doesn't exist.";
     return null;
   };
-  const createTopic = (input: { title: string; icon?: TopicIcon; brief?: string; folderId?: string | null; memberIds: string[]; coordinatorId?: string }) => {
+  const createTopic = (person: Person, input: { title: string; icon?: TopicIcon; brief?: string; folderId?: string | null; memberIds: string[]; coordinatorId?: string }) => {
     const coordinatorId = input.coordinatorId && input.memberIds.includes(input.coordinatorId) ? input.coordinatorId : input.memberIds[0];
-    return store.createChat({ kind: "topic", title: input.title, icon: input.icon ?? "chat", brief: input.brief ?? "", folderId: input.folderId ?? null, memberIds: input.memberIds, coordinatorId });
+    return store.createChat({ kind: "topic", title: input.title, icon: input.icon ?? "chat", brief: input.brief ?? "", folderId: input.folderId ?? null, memberIds: input.memberIds, coordinatorId, ownerId: person.id });
   };
 
   api.post("/topics", async (c) => {
     const input = z.object({ ...topicFields, icon: topicFields.icon.default("chat"), brief: topicFields.brief.default(""), folderId: topicFields.folderId.default(null) }).parse(await c.req.json());
-    const problem = topicProblem(input);
+    const problem = topicProblem(c.get("person"), input);
     if (problem) return c.json({ error: problem }, 400);
-    return c.json(createTopic(input), 201);
+    return c.json(createTopic(c.get("person"), input), 201);
   });
 
   api.patch("/chats/:id", async (c) => {
@@ -423,8 +421,11 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (!chat) return c.json({ error: "Chat not found." }, 404);
     if (chat.kind !== "topic") return c.json({ error: "Only topics can be renamed, filed or archived." }, 400);
     const patch = z.object({ ...topicFields, archived: z.boolean(), coordinatorId: z.string().nullable(), peopleIds: z.array(z.string()).max(20), everyone: z.boolean() }).partial().parse(await c.req.json());
-    const problem = topicProblem(patch);
+    // Anyone in a topic can bring their own Bots in or take them out; the rest is its owner's.
+    if (chat.ownerId !== c.get("person").id && Object.keys(patch).some((key) => key !== "memberIds")) return c.json({ error: "Only the person who started this topic can change that." }, 403);
+    const problem = topicProblem(c.get("person"), patch, chat.memberIds, chat.ownerId === c.get("person").id);
     if (problem) return c.json({ error: problem }, 400);
+    if (patch.memberIds && !patch.memberIds.length) return c.json({ error: "A topic needs at least one Bot." }, 400);
     const members = patch.memberIds ?? chat.memberIds;
     const coordinatorId = patch.coordinatorId !== undefined || patch.memberIds
       ? (patch.coordinatorId && members.includes(patch.coordinatorId) ? patch.coordinatorId : members.includes(chat.coordinatorId ?? "") ? chat.coordinatorId : members[0])
@@ -434,7 +435,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
 
   api.post("/folders", async (c) => {
     const { title } = z.object({ title: z.string().trim().min(1).max(40) }).parse(await c.req.json());
-    return c.json(store.createFolder(title), 201);
+    return c.json(store.createFolder(title, c.get("person").id), 201);
   });
   api.patch("/folders/:id", async (c) => {
     const patch = z.object({ title: z.string().trim().min(1).max(40), position: z.number().int().min(0).max(10_000) }).partial().parse(await c.req.json());
@@ -457,8 +458,9 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (accept) {
       const proposal = { ...card.proposal, memberIds: card.proposal.memberIds.filter((id) => store.getBot(id)) };
       if (!proposal.memberIds.length) return c.json({ error: "The Bots in that suggestion are gone." }, 400);
-      if (proposal.folderId && !store.getFolder(proposal.folderId)) proposal.folderId = null;
-      chat = createTopic(proposal);
+      if (proposal.folderId && store.getFolder(proposal.folderId)?.ownerId !== c.get("person").id) proposal.folderId = null;
+      proposal.memberIds = proposal.memberIds.filter((id) => store.getBot(id)?.ownerId === c.get("person").id);
+      chat = createTopic(c.get("person"), proposal);
     }
     store.updateMessage(message.id, { cards: message.cards.map((item) => item === card ? { ...card, chatId: chat?.id ?? null, dismissed: !accept } : item) });
     return chat ? c.json(chat, 201) : c.body(null, 204);
@@ -576,7 +578,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   api.delete("/messages/:id", (c) => {
     const message = store.getMessage(c.req.param("id"));
     if (!message) return c.json({ error: "Message not found." }, 404);
-    if (message.author !== "user" || message.delivery !== "queued" || !runner.unqueue(message.id)) {
+    if (message.delivery !== "queued" || !runner.unqueue(message.id)) {
       return c.json({ error: "Only a message that's still waiting can be taken back." }, 409);
     }
     store.deleteMessage(message.id);
@@ -659,7 +661,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   });
 
   api.post("/calls/:id/decline", (c) => {
-    calls?.miss(c.req.param("id"));
+    calls?.miss(c.req.param("id"), c.get("person").id);
     return c.json({ ok: true });
   });
   api.post("/settings/providers", async (c) => {

@@ -3,7 +3,7 @@ import { AnimatePresence, m } from "motion/react";
 import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Phone, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
-import { loadArtifact, loadMessages, loadOlder, myAuthor, useIsOwner, useLive } from "../lib/live";
+import { loadArtifact, loadMessages, loadOlder, myAuthor, useLive, useMyId } from "../lib/live";
 import { PersonAvatar } from "./People";
 import { startCall, useCall } from "../lib/call";
 import { CallBar } from "./CallView";
@@ -36,12 +36,14 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
   onExpandCall?: () => void;
 }) {
   const call = useCall();
-  const owner = useIsOwner();
   const me = useLive((s) => s.me);
+  const myId = useMyId();
   const mine = myAuthor(me);
-  // Others in the household who can see this topic.
+  // The topic's owner can change it; anyone in it brings their own Bots in or out.
+  const ownsChat = chat.ownerId === myId;
+  // Others in the family who can see this topic.
   const peopleMap = useLive((s) => s.people);
-  const sharedWith = useMemo(() => chat.kind !== "topic" ? [] : peopleMap.filter((person) => person.id !== me?.id && (person.role === "owner" || (person.role === "member" && (chat.everyone || chat.peopleIds.includes(person.id))))), [peopleMap, chat, me?.id]);
+  const sharedWith = useMemo(() => chat.kind !== "topic" ? [] : peopleMap.filter((person) => person.id !== myId && (person.id === chat.ownerId || chat.everyone || chat.peopleIds.includes(person.id))), [peopleMap, chat, myId]);
   const botMap = useLive((s) => s.bots);
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
@@ -54,7 +56,10 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
   const bot = chat.kind === "bot" ? members[0] : undefined;
   const topic = chat.kind === "topic";
   // Who your messages go to: the Bot of its own chat, or a topic's only Bot.
-  const solo = bot ?? (topic && members.length === 1 ? members[0] : undefined);
+  // In a topic, your own Bot answers you by default (the lead, if it's yours); otherwise the lead does.
+  const myBotsHere = members.filter((member) => member.ownerId === (me?.id ?? "owner"));
+  const answerer = bot ?? (topic ? myBotsHere.find((member) => member.id === chat.coordinatorId) ?? myBotsHere[0] ?? members.find((member) => member.id === chat.coordinatorId) ?? members[0] : undefined);
+  const solo = bot ?? (topic && members.length === 1 ? members[0] : undefined) ?? answerer;
   const folder = useLive((s) => (chat.folderId ? s.folders[chat.folderId] : undefined));
   const [editing, setEditing] = useState(false);
   // A topic's side panel: its Doc, Files and Schedule.
@@ -149,15 +154,16 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
             <Monitor size={15} /><span className="max-sm:hidden">Computer</span>
           </Button>
         )}
-        {owner && chat.kind !== "thread" && members.length > 0 && !chat.archivedAt && call?.chatId !== chat.id && (
-          <Button size="icon" aria-label={`Call ${solo?.name ?? "the topic"}`} onClick={() => startCall(chat.id)}><Phone size={17} /></Button>
+        {/* You call your own Bots. */}
+        {chat.kind !== "thread" && members.some((member) => member.ownerId === myId) && !chat.archivedAt && call?.chatId !== chat.id && (
+          <Button size="icon" aria-label={`Call ${(solo?.ownerId === myId ? solo : members.find((member) => member.ownerId === myId))?.name ?? "your Bot"}`} onClick={() => startCall(chat.id)}><Phone size={17} /></Button>
         )}
-        {owner && <MenuRoot>
+        <MenuRoot>
           <MenuTrigger><Button size="icon" aria-label="Chat options"><MoreHorizontal size={18} /></Button></MenuTrigger>
           <MenuContent>
             {bot && <MenuItem onClick={() => setPanel("profile")}><IdCard size={15} />Profile, memory & skills</MenuItem>}
-            {topic && <MenuItem onClick={() => setEditing(true)}><Pencil size={15} />Edit topic</MenuItem>}
-            {topic && (
+            {topic && <MenuItem onClick={() => setEditing(true)}><Pencil size={15} />{ownsChat ? "Edit topic" : "Your Bots in this topic"}</MenuItem>}
+            {topic && ownsChat && (
               <MenuItem onClick={() => void api.updateTopic(chat.id, { archived: !chat.archivedAt }).catch(() => onError("Couldn't change that."))}>
                 {chat.archivedAt ? <><ArchiveRestore size={15} />Move out of the archive</> : <><Archive size={15} />Archive</>}
               </MenuItem>
@@ -166,13 +172,13 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
               <MenuItem className="text-danger" onClick={() => { if (confirm(`Delete ${bot.name}? Its memory, skills and workspace are removed.`)) void api.deleteBot(bot.id).then(onBack); }}>
                 <Trash2 size={15} />Delete {bot.name}
               </MenuItem>
-            ) : (
+            ) : ownsChat && (
               <MenuItem className="text-danger" onClick={() => { if (confirm(thread ? `Delete the thread between ${title}?` : `Delete the topic "${chat.title}" and its messages?`)) void api.deleteChat(chat.id).then(onBack); }}>
                 <Trash2 size={15} />{thread ? "Delete thread" : "Delete topic"}
               </MenuItem>
             )}
           </MenuContent>
-        </MenuRoot>}
+        </MenuRoot>
       </header>
       <AnimatePresence initial={false}>
         {call?.chatId === chat.id && <CallBar key="call" call={call} here onExpand={phone ? onExpandCall : undefined} onOpenChat={onOpenChat} />}
@@ -229,7 +235,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
           placeholder={solo ? (busy ? `Steer ${solo.name}…` : topic ? `Message ${solo.name} about ${chat.title}` : `Message ${solo.name}`) : "Message the topic"}
           hint={busy
             ? (phone ? "Sends now · hold Send to wait until it's done" : `${solo?.name ?? "A Bot"} is working · Enter steers now · Alt+Enter waits until ${solo ? `${solo.name} is` : "it's"} done`)
-            : topic && members.length > 1 ? "@Name to ask one Bot" : undefined}
+            : topic && members.length > 1 ? (answerer && myBotsHere.includes(answerer) && members.some((member) => member.ownerId !== answerer.ownerId) ? `${answerer.name} answers you by default · @Name for someone else's Bot` : "@Name to ask one Bot") : undefined}
           busy={busy}
           onSend={send}
           onStop={() => void api.stop(chat.id)}

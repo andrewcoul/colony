@@ -5,9 +5,9 @@ import { api, type DesktopVerdict, type Protocol, type ProviderView, type Settin
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
 import { VoiceSettingsEditor } from "./VoiceSettings";
 import { ThisPcSettings } from "./ThisPcSettings";
-import { PeopleSettings, PersonAvatar } from "./People";
+import { FamilySettings, PersonAvatar } from "./People";
 import { desktopApp } from "../lib/desktop";
-import { useLive } from "../lib/live";
+import { HOST_ID, useIsHost, useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
 import { pending, useUpdates, WEB_VERSION } from "../lib/updates";
 import { cn } from "../lib/utils";
@@ -52,7 +52,9 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [lending, setLending] = useState(false);
   const [peopleOpen, setPeopleOpen] = useState(false);
   const people = useLive((s) => s.people);
-  const waitingCount = people.filter((person) => person.role === "pending").length;
+  // Shared models, voice, accounts and updates are the host's to look after.
+  const host = useIsHost();
+  const hostName = people.find((person) => person.id === HOST_ID)?.name ?? "The host";
 
   useEffect(() => {
     if (!open) return;
@@ -69,12 +71,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "People" : "Settings"}
-      description={editing || voicing || lending || peopleOpen || connecting !== undefined ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add a provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "Family" : "Settings"}
+      description={editing || voicing || lending || peopleOpen || connecting !== undefined || !host ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
       ) : peopleOpen ? (
-        <PeopleSettings onBack={() => setPeopleOpen(false)} />
+        <FamilySettings onBack={() => setPeopleOpen(false)} />
       ) : lending ? (
         <ThisPcSettings onBack={() => setLending(false)} />
       ) : voicing && settings ? (
@@ -87,6 +89,16 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         />
       ) : (
         <div className="flex flex-col">
+          {!host && (
+            <div className="mb-4 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3">
+              {people.find((person) => person.id === HOST_ID) && <PersonAvatar person={people.find((person) => person.id === HOST_ID)!} size={26} />}
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <strong className="truncate text-sm font-medium">{hostName} runs this Colony</strong>
+                <span className="truncate text-meta text-muted">Shared models, voice and updates are looked after on {hostName}'s PC.</span>
+              </span>
+            </div>
+          )}
+          {host && <>
           {models.length > 0 && (
             <label className="mb-5 flex flex-col gap-1.5">
               <span className="text-label text-muted">Default model for new Bots</span>
@@ -122,21 +134,23 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           </div>
           <Button variant="outline" onClick={() => setEditing("new")}><Plus size={15} />Add provider</Button>
           <p className="m-0 mt-4 text-meta leading-relaxed text-muted">Keys stay on this PC; devices only see their last four characters. A key is only ever sent to the address it was saved for.</p>
+          </>}
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
-          <span className="mt-6 mb-1.5 text-label text-muted">Household</span>
+          <span className={cn("mb-1.5 text-label text-muted", host && "mt-6")}>Family</span>
           <button type="button" onClick={() => setPeopleOpen(true)}
-            className={cn("mb-2 flex items-center gap-3 rounded-xl border px-3.5 py-3 text-left hover:bg-hover", waitingCount ? "border-lemon/30 bg-lemon/8" : "border-rule")}>
+            className="mb-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
             <span className="flex shrink-0 -space-x-2">
-              {people.filter((person) => person.role === "owner" || person.role === "member").slice(0, 3).map((person) => <PersonAvatar key={person.id} person={person} size={22} className="rounded-full ring-2 ring-raised" />)}
+              {people.slice(0, 3).map((person) => <PersonAvatar key={person.id} person={person} size={22} className="rounded-full ring-2 ring-raised" />)}
             </span>
             <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <strong className="truncate text-sm font-medium">People</strong>
+              <strong className="truncate text-sm font-medium">Family</strong>
               <span className="truncate text-meta text-muted">
-                {waitingCount ? `${waitingCount} waiting to be added` : `${people.filter((person) => person.role === "member").length || "No"} other ${people.filter((person) => person.role === "member").length === 1 ? "person" : "people"} · share topics with your household`}
+                {people.length === 1 ? "Just you so far · anyone on the tailnet can join" : `${people.length} people · you, your name and what Bots know about you`}
               </span>
             </span>
             <ChevronRight size={16} className="shrink-0 text-muted" />
           </button>
+          {host && <>
           <span className="mt-4 mb-1.5 text-label text-muted">Voice</span>
           <button type="button" onClick={() => setVoicing(true)} disabled={!settings}
             className="flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
@@ -149,6 +163,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             </span>
             <ChevronRight size={16} className="shrink-0 text-muted" />
           </button>
+          </>}
           {desktopApp?.node && (
             <button type="button" onClick={() => setLending(true)}
               className="mt-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
@@ -160,7 +175,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               <ChevronRight size={16} className="shrink-0 text-muted" />
             </button>
           )}
-          <AccountsList onConnect={setConnecting} />
+          {host && <AccountsList onConnect={setConnecting} />}
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">
             <span>Colony {updates.system?.version ?? WEB_VERSION}</span>

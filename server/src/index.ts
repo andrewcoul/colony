@@ -34,7 +34,7 @@ import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
-import { identify } from "./people.js";
+import { identify, isHost } from "./people.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -101,7 +101,7 @@ routines.start();
 const poller = new MailPoller(store, integrations, routines);
 poller.start();
 const push = new PushService(db, store, events);
-calls.notify = (notification) => void push.notify(notification, { force: true });
+calls.notify = (notification, personId) => void push.notify(notification, { force: true, personId });
 // Pick up the turns that were running when Colony stopped, in the replies they were writing.
 runner.resumeAll(resumable);
 accounts.onNeedsReauth = (account) => void push.notify({
@@ -161,23 +161,23 @@ computer.onUse = (botId) => idle.touch(botId);
 idle.start();
 server.on("upgrade", (request, socket, head) => {
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
-  // Calls, lending a PC and watching a Bot's screen are the owner's.
-  if (allowed(header) || identify(store, header("Tailscale-User-Login")?.toLowerCase()).role !== "owner") { socket.destroy(); return; }
-  // The desktop app lending this PC to Bots.
+  if (allowed(header)) { socket.destroy(); return; }
+  const person = identify(store, header("Tailscale-User-Login")?.toLowerCase());
+  // The desktop app lending a PC to Bots (the host's, for now).
   if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
-    if (allowed(header)) { socket.destroy(); return; }
+    if (!isHost(person)) { socket.destroy(); return; }
     nodes.upgrade(request, socket, head);
     return;
   }
-  // A voice call: /api/chats/<id>/call.
+  // A voice call with one of your Bots: /api/chats/<id>/call.
   if (/^\/api\/chats\/[\w-]+\/call(\?|$)/.test(request.url ?? "")) {
-    if (allowed(header)) { socket.destroy(); return; }
-    calls.upgrade(request, socket, head);
+    calls.upgrade(request, socket, head, person);
     return;
   }
+  // Watching a Bot's screen: its owner's.
   const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
   const bot = match ? store.getBot(match[1]) : null;
-  if (!match || !bot?.computer || allowed(header)) { socket.destroy(); return; }
+  if (!match || !bot?.computer || bot.ownerId !== person.id) { socket.destroy(); return; }
   void computer.runningDesktopPort(bot.id).then((port) => {
     if (!port) { socket.destroy(); return; }
     const upstream = net.connect(port, "127.0.0.1", () => {
