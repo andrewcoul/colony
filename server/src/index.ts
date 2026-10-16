@@ -34,7 +34,7 @@ import { loadSettings, modelConfigured, resolveModel } from "./settings.js";
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
-import { identify, isHost } from "./people.js";
+import { identify } from "./people.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -163,10 +163,9 @@ server.on("upgrade", (request, socket, head) => {
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
   if (allowed(header)) { socket.destroy(); return; }
   const person = identify(store, header("Tailscale-User-Login")?.toLowerCase());
-  // The desktop app lending a PC to Bots (the host's, for now).
+  // The desktop app lending a PC to the family's Bots: it's whoever's login lent it.
   if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
-    if (!isHost(person)) { socket.destroy(); return; }
-    nodes.upgrade(request, socket, head);
+    nodes.upgrade(request, socket, head, person);
     return;
   }
   // A voice call with one of your Bots: /api/chats/<id>/call.

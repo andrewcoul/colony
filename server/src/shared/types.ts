@@ -250,10 +250,7 @@ export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk"
  * Someone's own PC, lent to Bots through the Colony desktop app.
  * `online`: its desktop app is connected now.
  */
-export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number };
-/** How far a Bot may use a PC: 1 browser windows and the screen, 2 also its terminal, 3 also its files. */
-export type PcLevel = 0 | 1 | 2 | 3;
-export type NodeAccess = { botId: string; nodeId: string; level: PcLevel };
+export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number; personId: string };
 
 export type AppState = {
   bots: Bot[];
@@ -270,9 +267,8 @@ export type AppState = {
   accounts: Account[];
   /** Every Bot's access to every account it has been given. */
   access: Access[];
-  /** PCs lent through the desktop app, and which Bots may use them. */
+  /** PCs lent through the desktop app: any family Bot may use them, within each PC's switches. */
   nodes: PcNode[];
-  nodeAccess: NodeAccess[];
   /** The household, and who's asking. */
   people: Person[];
   me: Person;
@@ -298,7 +294,7 @@ export type ServerEvent =
   | { type: "routine.upserted"; routine: Routine }
   | { type: "routine.deleted"; routineId: string }
   | { type: "accounts.updated"; accounts: Account[]; access: Access[] }
-  | { type: "nodes.updated"; nodes: PcNode[]; nodeAccess: NodeAccess[] }
+  | { type: "nodes.updated"; nodes: PcNode[] }
   | { type: "people.updated"; people: Person[] };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */

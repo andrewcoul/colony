@@ -155,17 +155,20 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       accounts: integrations?.accounts.list().filter((account) => account.personId === person.id) ?? [],
       access: integrations?.accounts.listAccess().filter((grant) => mine.has(grant.botId)) ?? [],
       nodes: nodes?.list() ?? [],
-      nodeAccess: store.listNodeAccess().filter((grant) => mine.has(grant.botId)),
       people: store.listPeople(),
       me: person,
       seq: events.latestSeq(),
     });
   });
 
-  /** Who's in the family and how many Bots each has (counts only: the Bots stay private). */
+  /** Who's in the family, how many Bots each has (counts only: the Bots stay private) and which PCs they've lent. */
   api.get("/family", (c) => {
     const bots = store.listBots();
-    return c.json(store.listPeople().map((person) => ({ person, bots: bots.filter((bot) => bot.ownerId === person.id).length })));
+    const pcs = nodes?.list() ?? [];
+    return c.json(store.listPeople().map((person) => ({
+      person, bots: bots.filter((bot) => bot.ownerId === person.id).length,
+      pcs: pcs.filter((node) => node.personId === person.id).map(({ name, capabilities, online }) => ({ name, capabilities, online })),
+    })));
   });
 
   // ---------- You (name, color, what Bots know about you) ----------
@@ -652,15 +655,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     }
   });
   // ---------- This PC ----------
-  /** How far a Bot may use a PC (0 takes it away). */
-  api.put("/bots/:id/pc/:nodeId", async (c) => {
-    const { level } = z.object({ level: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]) }).parse(await c.req.json());
-    if (!store.getBot(c.req.param("id")) || !nodes?.get(c.req.param("nodeId"))) return c.json({ error: "Not found." }, 404);
-    store.setNodeAccess(c.req.param("id"), c.req.param("nodeId"), level);
-    nodes.changed();
-    return c.json({ nodeAccess: store.listNodeAccess() });
-  });
-  /** Forgets a PC (it comes back if its app connects again; Bots lose access either way). */
+  /** Forgets one of your PCs (it comes back if its app connects again). */
   api.delete("/nodes/:id", (c) => {
     store.deleteNode(c.req.param("id"));
     nodes?.changed();
