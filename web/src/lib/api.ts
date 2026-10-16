@@ -118,6 +118,8 @@ export const api = {
     return response.json() as Promise<ChatFile>;
   },
   steerNow: (messageId: string) => request<void>("POST", `/messages/${messageId}/steer`),
+  /** A new topic carrying the Bot's conversation up to this reply. */
+  branch: (messageId: string, title: string, folderId: string | null = null) => request<{ chatId: string }>("POST", `/messages/${messageId}/branch`, { title, folderId }),
   unqueue: (messageId: string) => request<void>("DELETE", `/messages/${messageId}`),
   stop: (chatId: string) => request<void>("POST", `/chats/${chatId}/stop`),
   /** Persistent conversations: summarise the older part now, or start the Bot afresh here. */

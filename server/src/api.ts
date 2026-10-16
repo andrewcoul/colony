@@ -512,6 +512,15 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.body(hit.bytes);
   });
 
+  /** A new topic that carries a Bot's conversation up to this reply. */
+  api.post("/messages/:id/branch", async (c) => {
+    if (!runner.branch) return c.json({ error: "Bots here don't keep persistent conversations." }, 400);
+    const input = z.object({ title: z.string().trim().min(1).max(60), folderId: z.string().max(80).nullable().default(null) }).parse(await c.req.json());
+    if (input.folderId && !store.getFolder(input.folderId)) return c.json({ error: "That folder doesn't exist." }, 400);
+    try { return c.json({ chatId: await runner.branch(c.req.param("id"), input) }, 201); }
+    catch (error) { return c.json({ error: error instanceof Error ? error.message : "Couldn't branch." }, 400); }
+  });
+
   /** A queued message, sent to the running turn now instead of after it. */
   api.post("/messages/:id/steer", (c) => {
     if (!runner.steerNow(c.req.param("id"))) return c.json({ error: "That message isn't waiting any more." }, 409);

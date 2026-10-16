@@ -1,6 +1,6 @@
 import { useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, CircleHelp, Clock, Copy, CornerDownRight, FileText, Globe, Hand, Loader2, Mic, Paperclip, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
+import { CalendarClock, Check, ChevronDown, ChevronRight, CircleAlert, CircleDashed, CircleHelp, Clock, Copy, CornerDownRight, FileText, GitBranch, Globe, Hand, Loader2, Mic, Paperclip, Repeat, RotateCcw, ShieldCheck, X } from "lucide-react";
 import { describeSchedule } from "@shared/schedule";
 import type { Approval, Bot, Card, Message, Step } from "@shared/types";
 import { upcoming } from "../lib/dates";
@@ -105,6 +105,14 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
   const streaming = message.status === "streaming";
   const ran = message.cards.find((card) => card.type === "routine" && card.action === "ran");
   const { copied, copy } = useCopy();
+  const persistent = useLive((s) => s.persistent);
+  /** A new topic that carries this Bot's conversation up to this reply. */
+  async function branch() {
+    const title = prompt("Name the new topic. It starts from this reply, and the Bot remembers everything up to here.", `${bot?.name ?? "Branch"}: branch`);
+    if (!title?.trim()) return;
+    try { onOpenChat?.((await api.branch(message.id, title.trim().slice(0, 60))).chatId); }
+    catch (failure) { alert(failure instanceof Error ? failure.message : "Couldn't branch."); }
+  }
   // Cards already on the reply when it appeared don't animate; ones added while it runs pop in.
   const cardsAtMount = useRef(message.cards.length);
   const body = (
@@ -137,6 +145,11 @@ function BotMessage({ message, bot, showAuthor, onOpenRoutines, onOpenChat, onOp
       {message.text && !streaming && (
         <div className="-ml-1.5 flex opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100 max-sm:opacity-100">
           <Button size="icon-sm" aria-label={copied ? "Copied" : "Copy reply"} onClick={() => void copy(message.text)}>{copied ? <Check size={15} /> : <Copy size={15} />}</Button>
+          {persistent && bot && (
+            <Button size="icon-sm" aria-label="Branch from here" title="Branch from here: a new topic that remembers the conversation up to this reply" onClick={() => void branch()}>
+              <GitBranch size={15} />
+            </Button>
+          )}
         </div>
       )}
     </div>

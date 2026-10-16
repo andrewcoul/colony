@@ -437,6 +437,34 @@ describe("pi runtime: the Bot's desktop", () => {
   });
 });
 
+describe("pi runtime: branching", () => {
+  test("branch from a reply: a new topic whose Bot remembers up to there, and the original goes on unchanged", async () => {
+    const script = scripted.play([textTurn("Hi."), textTurn("Lisbon in May it is."), textTurn("Then Porto too."), textTurn("Sure, Seville instead.")]);
+    const { store, call } = await setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Tripp" });
+    await finished(store, bot.chatId, 1);
+    await call("POST", `/chats/${bot.chatId}/messages`, { text: "Let's go to Lisbon in May." });
+    const [, lisbon] = await finished(store, bot.chatId, 2);
+    await call("POST", `/chats/${bot.chatId}/messages`, { text: "Add Porto." });
+    await finished(store, bot.chatId, 3);
+
+    const { status, json } = await call("POST", `/messages/${lisbon.id}/branch`, { title: "Spain instead" });
+    expect(status).toBe(201);
+    const topic = store.getChat(json.chatId)!;
+    expect(topic).toMatchObject({ kind: "topic", title: "Spain instead", memberIds: [bot.id] });
+    expect(store.listMessages(topic.id)[0].text).toContain("Branched from Tripp");
+    await call("POST", `/chats/${topic.id}/messages`, { text: "Make it Seville instead." });
+    await finished(store, topic.id, 1);
+    const branched = promptText(script.prompts.at(-1));
+    expect(branched).toContain("Lisbon in May it is.");
+    expect(branched).toContain("Make it Seville instead.");
+    expect(branched).not.toContain("Add Porto.");
+    // The original chat's conversation still has Porto, and none of the branch.
+    expect(store.conversationOf(bot.chatId, bot.id)!.conversationId).not.toBe(store.conversationOf(topic.id, bot.id)!.conversationId);
+    expect((await call("POST", `/messages/${store.listMessages(topic.id)[0].id}/branch`, { title: "x" })).status).toBe(400);
+  });
+});
+
 describe("pi runtime: PC tools", () => {
   test("a PC's screenshot reaches the model as an image with its caption", async () => {
     const script = scripted.play([textTurn("Hi."), toolTurn("pc_screenshot", {}), textTurn("I can see your screen.")]);

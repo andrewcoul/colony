@@ -696,6 +696,30 @@ export class PiRunner implements Runner {
     this.store.createMessage({ chatId, author: "system", text: `${bot?.name ?? "The Bot"} starts fresh from here. Its memory and skills stay.` });
   }
 
+  /**
+   * A new topic that carries a Bot's conversation up to one of its replies (a fork: the history
+   * is shared, not copied). The original chat goes on unchanged.
+   */
+  async branch(messageId: string, topic: { title: string; folderId: string | null }) {
+    const message = this.store.getMessage(messageId);
+    const bot = message ? this.store.getBot(message.author) : null;
+    const source = message ? this.store.getChat(message.chatId) : null;
+    const at = this.store.messageEntry(messageId);
+    if (!message || !bot || !source) throw new Error("Only a Bot's reply can be branched.");
+    if (!at) throw new Error("This reply is from before Bots kept their conversations, so it can't be branched.");
+    const conversation = await this.conversation(Number(at.conversationId) as ConversationId);
+    if (!conversation) throw new Error("That conversation is gone.");
+    const fork = await conversation.fork(Number(at.entryId) as never, { ownership: { kind: "ownerless" } }, this.context);
+    const chat = this.store.createChat({
+      kind: "topic", title: topic.title, icon: "chat", folderId: topic.folderId, memberIds: [bot.id], coordinatorId: bot.id,
+      brief: `Branched from "${source.title}".`,
+    });
+    this.store.linkConversation(chat.id, bot.id, String(fork.id));
+    const when = new Date(message.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    this.store.createMessage({ chatId: chat.id, author: "system", text: `Branched from ${source.title} · ${when}. ${bot.name} remembers the conversation up to there.` });
+    return chat.id;
+  }
+
   // ---------- Bots asking each other ----------
 
   /**
