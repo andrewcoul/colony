@@ -46,7 +46,7 @@ function checkOrigin(browser: VaultBrowser, botId: string, title: string, websit
 async function allowOnce(services: Integrations, ctx: ToolContext, account: Account, item: VaultItem, url: string, username: string) {
   if (services.accounts.itemAllowed(ctx.botId, account.id, item.id)) return;
   const approved = await ctx.gate.request({
-    botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "vault_login",
+    botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "vault_login", approverId: account.personId,
     summary: `${ctx.botName} wants to sign in to ${hostOf(url)} with “${item.title}”`,
     detail: `1Password: ${item.title} (${item.vault})${username ? `\nUsername: ${username}` : ""}\nOn: ${url}\n\n${ctx.botName} never sees the password. Approving lets ${ctx.botName} use this login from now on.`,
     reason: "First use of this login · asks once",
@@ -157,7 +157,7 @@ export function vaultTools(browser: VaultBrowser, services: Integrations) {
       // Check the field before asking, so an approval never goes to waste.
       if ((await browser.fieldType(ctx.botId, passwordRef)).type !== "password") throw new Error(`${passwordRef} isn't a password field. Pick the new-password field's ref.`);
       const approved = await ctx.gate.request({
-        botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "vault_save",
+        botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "vault_save", approverId: account.personId,
         summary: `${ctx.botName} wants to save a new login for ${site.hostname}`,
         detail: `1Password: ${name} (${vault.title})\nUsername: ${username}\nWebsite: ${site.origin}\n\nColony makes a strong password, saves it, and types it in. ${ctx.botName} never sees it.`,
         reason: "Adds to your 1Password · always asks",
