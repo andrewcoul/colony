@@ -121,7 +121,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
       </div>
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-2.5 pt-3.5 pb-3 [scrollbar-width:thin]">
-        {!configured && host && (
+        {!configured && (
           <button type="button" onClick={onSettings}
             className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-lemon/30 bg-lemon/8 p-3.5 text-left">
             <KeyRound size={18} className="shrink-0 text-lemon" />
@@ -179,7 +179,10 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
                   <strong className="text-[15px]">{host ? "Make your first Bot" : `Welcome${myName ? `, ${myName}` : ""}`}</strong>
                   <span className="text-meta text-soft">{host ? "A teammate that remembers, works on its own computer, and asks before anything leaves your PC." : "This is your Colony too. Make a Bot of your own: only you see its chat, memory and routines."}</span>
                 </span>
-                <Button variant="primary" size="pill" className="self-start" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />Make my first Bot</Button>
+                <span className="flex flex-wrap gap-2">
+                  <Button variant="primary" size="pill" onClick={onNewBot}><Plus size={14} strokeWidth={2.4} />Make my first Bot</Button>
+                  {!host && <Button variant="outline" size="pill" onClick={onSettings}>Add my key</Button>}
+                </span>
               </m.div>
             ) : (
               <h2 className="m-0 px-2.5 pb-1.5 text-meta font-normal text-muted">{host ? "Bots" : "Your Bots"}</h2>

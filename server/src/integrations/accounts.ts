@@ -26,6 +26,7 @@ const toAccount = (row: Row): Account => ({
   label: row.label as string,
   email: row.email as string,
   status: row.status as Account["status"],
+  personId: (row.person_id as string | undefined) ?? "owner",
   createdAt: row.created_at as number,
 });
 
@@ -102,14 +103,16 @@ export class Accounts {
    * Adds an account, or reconnects it if the same mailbox (or 1Password account) is
    * already connected: its access settings stay, the new sign-in replaces the old.
    */
-  connect(input: { kind: AccountKind; label: string; email: string }, secret: AccountSecret): Account {
-    const existing = this.db.prepare("SELECT id FROM accounts WHERE kind = ? AND lower(email) = lower(?)").get(input.kind, input.email) as Row | undefined;
+  connect(input: { kind: AccountKind; label: string; email: string; personId?: string }, secret: AccountSecret): Account {
+    // An account belongs to whoever connected it; the same mailbox connected by two people is two accounts.
+    const personId = input.personId ?? "owner";
+    const existing = this.db.prepare("SELECT id FROM accounts WHERE kind = ? AND lower(email) = lower(?) AND person_id = ?").get(input.kind, input.email, personId) as Row | undefined;
     const id = (existing?.id as string | undefined) ?? randomUUID();
     if (existing) {
       this.db.prepare("UPDATE accounts SET label = ?, email = ?, status = 'ok' WHERE id = ?").run(input.label, input.email, id);
     } else {
-      this.db.prepare("INSERT INTO accounts (id, kind, label, email, status, created_at) VALUES (?, ?, ?, ?, 'ok', ?)")
-        .run(id, input.kind, input.label, input.email, Date.now());
+      this.db.prepare("INSERT INTO accounts (id, kind, label, email, status, person_id, created_at) VALUES (?, ?, ?, ?, 'ok', ?, ?)")
+        .run(id, input.kind, input.label, input.email, personId, Date.now());
     }
     this.secrets.accounts[id] = secret;
     this.persist();

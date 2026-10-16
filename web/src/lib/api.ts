@@ -28,7 +28,8 @@ export type FileEntry = { name: string; path: string; type: "file" | "dir"; size
 
 /** "openai": OpenAI-compatible chat completions; "anthropic": Anthropic's Messages API (Claude). */
 export type Protocol = "openai" | "anthropic";
-export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null };
+/** `ownerId` null: shared (the host's key, usable by everyone's Bots); otherwise one person's own. */
+export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null; ownerId: string | null };
 export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
 export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
 /** Voice calls (server/src/settings.ts VoiceSettings). */
@@ -42,7 +43,7 @@ export type VoiceSettings = {
   quietFrom: string;
   quietTo: string;
 };
-export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings };
+export type Settings = { providers: ProviderView[]; defaultModel: string; configured: boolean; source: "app" | "env"; voice: VoiceSettings; host: boolean };
 
 /** The server's version and updates (server/src/updates.ts). */
 export type SystemInfo = {
@@ -125,7 +126,7 @@ export const api = {
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
-  addProvider: (input: ProviderInput) => request<Settings>("POST", "/settings/providers", input),
+  addProvider: (input: ProviderInput & { shared?: boolean }) => request<Settings>("POST", "/settings/providers", input),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),
   setDefaultModel: (model: string) => request<Settings>("PUT", "/settings/default-model", { model }),

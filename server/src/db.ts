@@ -245,6 +245,8 @@ const MIGRATIONS = [
   ALTER TABLE folders ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'owner';
   ALTER TABLE approvals ADD COLUMN approver_id TEXT NOT NULL DEFAULT 'owner';
   `,
+  // v14: accounts belong to whoever connected them (so far, the host).
+  `ALTER TABLE accounts ADD COLUMN person_id TEXT NOT NULL DEFAULT 'owner';`,
 ];
 
 export type Db = DatabaseSync;

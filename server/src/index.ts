@@ -60,7 +60,7 @@ const resumable = store.recoverAfterRestart(config.limits.turnTimeoutMs);
 loadSettings();
 // Bots from before multiple providers stored a plain model id; point them at its provider.
 for (const bot of store.listBots()) {
-  const target = bot.model.includes("::") ? null : resolveModel(bot.model, { fallback: false });
+  const target = bot.model.includes("::") ? null : resolveModel(bot.model, { fallback: false, ownerId: bot.ownerId });
   if (target) store.updateBot(bot.id, { model: target.ref });
 }
 const gate = new ApprovalGate(store);
@@ -109,7 +109,7 @@ accounts.onNeedsReauth = (account) => void push.notify({
   body: `${account.email} stopped working for your Bots. Reconnect it in Settings → Accounts.`,
   chatId: null,
   tag: `reauth-${account.id}`,
-});
+}, { personId: account.personId });
 
 const app = new Hono();
 app.use(tailnetOnly(config.allowedUsers));
