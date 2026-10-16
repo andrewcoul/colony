@@ -10,6 +10,7 @@ import { useIsHost, useLive, useMyId } from "../lib/live";
 import { rise, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
+import { TransferOffers } from "./GiveBot";
 import { LogoMark, type LogoMood } from "./Logo";
 import { NotificationsMenu } from "./NotificationsMenu";
 import { TopicTile } from "./TopicIcon";
@@ -173,6 +174,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
 
         {(!phone || tab === "bots") && (
           <>
+            <TransferOffers />
             {bots.length === 0 && !query ? (
               <m.div variants={rise} initial="hidden" animate="shown" className="mb-2 flex flex-col gap-3 rounded-2xl border border-lilac/25 bg-lilac/8 p-4">
                 <span className="flex flex-col gap-0.5">

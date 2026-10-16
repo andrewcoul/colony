@@ -50,7 +50,7 @@ export function canSee(person: Pick<Person, "id">, chat: Chat) {
 export function canSeeBot(store: Store, person: Pick<Person, "id">, botId: string) {
   const bot = store.getBot(botId);
   if (!bot) return false;
-  if (bot.ownerId === person.id) return true;
+  if (bot.ownerId === person.id || store.gaveAway(person.id, botId)) return true;
   return store.listChats().some((chat) => chat.kind === "topic" && chat.memberIds.includes(botId) && canSee(person, chat));
 }
 
@@ -109,6 +109,8 @@ const RULES: Rule[] = [
   ["POST", /^\/messages\/([\w-]+)\/topics\/[\w-]+$/, (store, person, id) => { const message = store.getMessage(id); return message ? ownBot(store, person, message.author) : NOT_YOURS; }],
   ["POST", /^\/approvals\/([\w-]+)$/, (store, person, id) => (store.getApproval(id)?.approverId === person.id ? null : "Only the person it's waiting for can answer that.")],
   ["POST", /^\/calls\/([\w-]+)\/decline$/, anyone],
+  // A Bot offered to you, or by you: the route checks which side may do what.
+  ["*", /^\/transfers\/([\w-]+)(?:\/(?:accept|decline))?$/, (store, person, id) => { const transfer = store.getTransfer(id); return transfer && (transfer.fromId === person.id || transfer.toId === person.id) ? null : NOT_YOURS; }],
   // Your own PCs.
   ["DELETE", /^\/nodes\/([\w-]+)$/, (store, person, id) => (store.listNodes().find((node) => node.id === id)?.personId === person.id ? null : NOT_YOURS)],
 ];
@@ -141,6 +143,7 @@ export function eventFor(person: Person, event: ServerEvent | EphemeralEvent, st
     case "accounts.updated": return { ...event, accounts: event.accounts.filter((account) => account.personId === person.id), access: event.access.filter((grant) => store.getBot(grant.botId)?.ownerId === person.id) };
     case "computer.output": return store.getBot(event.botId)?.ownerId === person.id ? event : null;
     case "call.ringing": return store.getBot(event.botId)?.ownerId === person.id ? event : null;
+    case "transfer.upserted": return event.transfer.fromId === person.id || event.transfer.toId === person.id ? event : null;
     default: return event;
   }
 }

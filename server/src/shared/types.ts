@@ -250,6 +250,22 @@ export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk"
  * Someone's own PC, lent to Bots through the Colony desktop app.
  * `online`: its desktop app is connected now.
  */
+/**
+ * A Bot offered from one person to another. Nothing changes until the recipient accepts; the
+ * giver can cancel while it waits. `keepMemory` false: the Bot starts fresh.
+ */
+export type BotTransfer = {
+  id: string;
+  botId: string;
+  fromId: string;
+  toId: string;
+  keepMemory: boolean;
+  status: "pending" | "accepted" | "declined" | "cancelled";
+  /** What the recipient sees of the Bot before it's theirs. */
+  bot: { name: string; title: string; faceSeed: string };
+  createdAt: number;
+};
+
 /** A model's price in US dollars per million tokens: in, out, and cached in (falls back to in). */
 export type Price = { input: number; output: number; cached?: number };
 
@@ -296,6 +312,8 @@ export type AppState = {
   /** The household, and who's asking. */
   people: Person[];
   me: Person;
+  /** Bots offered to you, or by you, waiting for an answer. */
+  transfers: BotTransfer[];
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };
@@ -319,6 +337,7 @@ export type ServerEvent =
   | { type: "routine.deleted"; routineId: string }
   | { type: "accounts.updated"; accounts: Account[]; access: Access[] }
   | { type: "nodes.updated"; nodes: PcNode[] }
+  | { type: "transfer.upserted"; transfer: BotTransfer }
   | { type: "people.updated"; people: Person[] };
 
 /** Not persisted: streamed text and terminal output. Clients refetch on reconnect. */

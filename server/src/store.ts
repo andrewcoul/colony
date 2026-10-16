@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalRequest, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, PcCapability, PcNode, Person, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import type { Approval, ApprovalRequest, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, BotTransfer, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, PcCapability, PcNode, Person, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
 import { removeChatFolder } from "./chatFiles.js";
 
 type Row = Record<string, unknown>;
@@ -164,6 +164,7 @@ export class Store {
   deleteBot(id: string) {
     const bot = this.getBot(id);
     if (!bot) return;
+    for (const transfer of this.listTransfers().filter((item) => item.botId === id)) this.setTransferStatus(transfer.id, "cancelled");
     this.db.prepare("DELETE FROM bots WHERE id = ?").run(id);
     for (const routine of this.listRoutines(id)) this.deleteRoutine(routine.id);
     this.deleteChat(bot.chatId);
@@ -178,6 +179,66 @@ export class Store {
       if (updated) this.events.emit({ type: "chat.upserted", chat: updated });
     }
     this.events.emit({ type: "bot.deleted", botId: id });
+  }
+
+  // ---------- Handing a Bot over ----------
+  private toTransfer(row: Row): BotTransfer {
+    const bot = this.getBot(row.bot_id as string);
+    return {
+      id: row.id as string, botId: row.bot_id as string, fromId: row.from_id as string, toId: row.to_id as string,
+      keepMemory: Boolean(row.keep_memory), status: row.status as BotTransfer["status"],
+      bot: { name: bot?.name ?? "A Bot", title: bot?.title ?? "", faceSeed: bot?.faceSeed ?? "" }, createdAt: row.created_at as number,
+    };
+  }
+
+  createTransfer(input: { botId: string; fromId: string; toId: string; keepMemory: boolean }): BotTransfer {
+    const id = newId();
+    this.db.prepare("INSERT INTO bot_transfers (id, bot_id, from_id, to_id, keep_memory, status, created_at) VALUES (?, ?, ?, ?, ?, 'pending', ?)")
+      .run(id, input.botId, input.fromId, input.toId, input.keepMemory ? 1 : 0, Date.now());
+    const transfer = this.getTransfer(id)!;
+    this.events.emit({ type: "transfer.upserted", transfer });
+    return transfer;
+  }
+
+  getTransfer(id: string): BotTransfer | null {
+    const row = this.db.prepare("SELECT * FROM bot_transfers WHERE id = ?").get(id) as Row | undefined;
+    return row ? this.toTransfer(row) : null;
+  }
+
+  /** Hand-overs still waiting for an answer. */
+  listTransfers(): BotTransfer[] {
+    return (this.db.prepare("SELECT * FROM bot_transfers WHERE status = 'pending' ORDER BY created_at").all() as Row[]).map((row) => this.toTransfer(row));
+  }
+
+  setTransferStatus(id: string, status: BotTransfer["status"]) {
+    this.db.prepare("UPDATE bot_transfers SET status = ?, decided_at = ? WHERE id = ?").run(status, Date.now(), id);
+    const transfer = this.getTransfer(id)!;
+    this.events.emit({ type: "transfer.upserted", transfer });
+    return transfer;
+  }
+
+  /** Whether this person gave this Bot away (they still see its name in their old chat with it). */
+  gaveAway(personId: string, botId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM bot_transfers WHERE from_id = ? AND bot_id = ? AND status = 'accepted'").get(personId, botId));
+  }
+
+  /**
+   * Gives a Bot to someone else: it gets a new chat with them, its routines move there, and its
+   * old chat stays with the giver as an archived topic it's no longer in.
+   */
+  moveBot(id: string, toId: string, oldChatTitle: string) {
+    const bot = this.getBot(id);
+    if (!bot) return null;
+    const chat = this.createChat({ kind: "bot", title: bot.name, memberIds: [id], coordinatorId: id, ownerId: toId });
+    this.db.prepare("UPDATE bots SET owner_id = ?, chat_id = ? WHERE id = ?").run(toId, chat.id, id);
+    this.db.prepare("UPDATE chats SET kind = 'topic', title = ?, coordinator_id = NULL, archived_at = ? WHERE id = ?").run(oldChatTitle, Date.now(), bot.chatId);
+    this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(bot.chatId);
+    for (const routine of this.listRoutines(id)) if (routine.chatId === bot.chatId) this.updateRoutine(routine.id, { chatId: chat.id });
+    const old = this.getChat(bot.chatId);
+    if (old) this.events.emit({ type: "chat.upserted", chat: old });
+    const moved = this.getBot(id)!;
+    this.events.emit({ type: "bot.upserted", bot: moved });
+    return moved;
   }
 
   setPresence(id: string, presence: Presence, activity: string | null = null) {
