@@ -106,9 +106,6 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             )}
           </div>
           <AccountsList onConnect={setConnecting} />
-          <p className="m-0 mt-4 text-meta leading-relaxed text-muted">
-            Sign-ins and keys stay on this PC; your devices never see them.
-          </p>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">
