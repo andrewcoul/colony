@@ -2,7 +2,7 @@
 
 Status: proposed, 2026-10-15. Follows `pip-parity.md` (built on branch `pip-parity`) and replaces its owner/member model.
 
-Designs: Paper file "Colony · Grok-style chat", page `Family · Everyone's Bots` (artboards F1–F6).
+Designs: Paper file "Colony · Grok-style chat", page `Family · Everyone's Bots` (artboards F1–F10).
 
 ## The idea
 
@@ -55,6 +55,7 @@ Bot-to-Bot help (`message_bot`) stays within one person's Bots. A Bot can only c
 - **A PC belongs to whoever lent it** (the login on the desktop app's connection). Node connections are open to all family, not just the host, fixing the phase 6 gap.
 - **Being family is the permission.** Any family Bot can use any lent PC, within that PC's switches. The per-Bot levels in a Bot's profile go away.
 - **The PC's owner hears about every use.** Approval rules are as before (browser once per task; screen, terminal and file writes every time), but they go to the PC's owner, naming the Bot and its owner: "Luke (Andrew's) wants to run `npm test` on your laptop".
+- **An offline PC is simply unavailable.** Bots keep running on the server; a Bot that needs the PC says it's offline and carries on. Nothing is queued for later.
 - **Bots pick a PC.** `pc_*` tools take an optional `pc` name. With one PC lent, it's that one; the Bot's owner's own PC comes first otherwise.
 - The on-screen pill names the Bot and its owner, and Stop still ends that Bot's turn.
 
@@ -89,15 +90,35 @@ Voice: the provider stays shared (host); quiet hours, calls on/off and each Bot'
 - **Approval card:** buttons for the approver; "Waiting for {name}" for everyone else.
 - **Settings:** You / This Colony split (section 6). The Family page replaces People: no Add/Ignore, just who's here and what they've lent.
 
-## 8. Phases
+## 8. Spending
+
+- **Every model step records its usage:** tokens in and out (and cached), model, provider, whose key paid (a person, or shared), the Bot, and the Bot's owner. Migration: `usage(id, at, bot_id, owner_id, provider_id, payer_id, model, input_tokens, output_tokens, cached_tokens, cost_micros)`; `payer_id` is null for shared keys.
+- **Prices per model:** each provider's models carry a price per million tokens in and out (and cached in). Common models come pre-filled from a small built-in table; anyone can edit the prices on their own providers, the host on shared ones. A model with no price counts tokens and shows "no price set".
+- **Settings › You › Spending:** your spending this month, per Bot, split into your keys and shared keys, with a 30-day chart.
+- **Settings › This Colony › Shared keys** (host): this month's spending on shared keys, by person and by Bot, and an optional **monthly limit per person**.
+- **Over the limit:** that person's Bots switch to their own key if they have one; otherwise their next turn on a shared model stops before calling the model and posts "Your share of Andrew's keys is used up for October. Add your own key in Settings to keep going." The person and the host both get a notification. Limits reset on the 1st.
+- Turns already running finish; the check happens before each model call, so a turn can go slightly over.
+
+## 9. Handing a Bot over
+
+- In a Bot's profile, its owner picks **Give {Bot} to…** and a family member, and chooses whether its memory goes with it ("Keep its memory", the default, or "Start fresh"). The dialog lists what moves and what stays.
+- The recipient gets a card and a push: **Accept / Decline**. Nothing changes until they accept; the giver can cancel while it waits. A declined or cancelled hand-over leaves everything as it was.
+- **What moves:** the Bot (persona, skills, routines, its own computer and workspace), and its memory unless "Start fresh" was chosen. Routines keep their schedule but their chat becomes the new owner's chat with the Bot.
+- **What stays with the giver:** their chat history with the Bot (archived on their side as "Chat with Luke (now Marija's)", never shown to the recipient); the Bot's access to their accounts (removed); their personal model key (a Bot on one switches to the recipient's default model). Spending before the hand-over stays on the giver's record.
+- **Topics:** the Bot stays in the topics it was in, now tagged as the recipient's. If the recipient can't see a topic, the Bot leaves it.
+- Migration: `bot_transfers(id, bot_id, from_id, to_id, keep_memory, status, created_at)`.
+
+## 10. Phases
 
 1. **Ownership and visibility.** Migration, `owner_id` everywhere, the visibility rules in `/state`, events, push and the API; Create Bot for everyone; first-run card. Exit check: two logins each make a Bot and can't see each other's.
 2. **Models and accounts per person.** Providers in the database with owners; the model picker; accounts owned by whoever connected them; access grants limited to your own Bots.
 3. **Approvals to the right person.** `approver_id`, routing, cards and push.
 4. **PCs for the family.** Nodes owned by the lender, no per-Bot levels, `pc` parameter, approvals to the PC's owner.
 5. **Settings split and Family page; per-person voice.**
+6. **Spending.** Usage records, prices, your Spending page, the host's Shared keys page, monthly limits and what happens when one is reached.
+7. **Handing a Bot over.** The Give dialog, the accept card, and moving or archiving everything as above.
 
-## 9. Tests
+## 11. Tests
 
 - Visibility: a family member's `/state`, events and push never include another person's Bot chat, account, key or routine.
 - A topic member can add only their own Bots.
@@ -105,9 +126,11 @@ Voice: the provider stays shared (host); quiet hours, calls on/off and each Bot'
 - Approvals: each row of the table in section 5 routes to the right person; another person's approve call gets 403.
 - PCs: a family Bot uses another person's PC within its switches; the approval goes to the PC's owner; a switched-off capability is refused.
 - Migration: an existing single-user database becomes a family of one with everything owned by the host.
+- Spending: each step writes one usage row with the right payer; costs follow the price table; a person over their limit on shared keys falls back to their own key, or is stopped before the model call.
+- Hand-over: nothing moves before Accept; after it, the recipient owns the Bot, routines and computer; the giver keeps an archived chat the recipient can't load; account access is gone; "Start fresh" empties MEMORY.md.
 
-## Open questions
+## Decisions
 
-1. Tailscale lets you share a single machine with people outside your tailnet; their logins would count as family. Is "use `COLONY_ALLOWED_USERS` if you share machines" enough, or should Colony only accept logins from the host's own tailnet domain by default?
-2. Should the host be able to see how much each person's Bots spend on shared keys?
-3. Can someone hand a Bot to another family member (change its owner)?
+1. Logins from outside the tailnet (Tailscale's machine sharing) count as family. `COLONY_ALLOWED_USERS` keeps anyone out; Settings › Family says so.
+2. Spending is tracked per person and per Bot, with optional monthly limits on shared keys (section 8).
+3. Bots can be handed to another family member (section 9).
