@@ -73,7 +73,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
       title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : editing ? (editing === "new" ? "Add your own key" : editing === "new-shared" ? "Add a shared provider" : editing.name) : voicing ? "Voice" : lending ? "This PC" : peopleOpen ? "Family" : "Settings"}
-      description={editing || voicing || lending || peopleOpen || connecting !== undefined || !host ? undefined : "Add any OpenAI-compatible providers, each with its own key. Every Bot can use any model from any of them; changes apply to the next reply."}>
+      description={undefined}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
       ) : peopleOpen ? (
@@ -91,17 +91,9 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         />
       ) : (
         <div className="flex flex-col">
-          {!host && (
-            <div className="mb-4 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3">
-              {people.find((person) => person.id === HOST_ID) && <PersonAvatar person={people.find((person) => person.id === HOST_ID)!} size={26} />}
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <strong className="truncate text-sm font-medium">{hostName} runs this Colony</strong>
-                <span className="truncate text-meta text-muted">Shared models, voice and updates are looked after on {hostName}'s PC.</span>
-              </span>
-            </div>
-          )}
+          <SectionLabel>You</SectionLabel>
           {models.length > 0 && (
-            <label className="mb-5 flex flex-col gap-1.5">
+            <label className="mb-4 flex flex-col gap-1.5">
               <span className="text-label text-muted">{host ? "Default model for new Bots (everyone's, unless they pick their own)" : "Your default model for new Bots"}</span>
               <select value={settings?.defaultModel ?? ""} onChange={(e) => void setDefault(e.target.value)}
                 className="h-[42px] w-full rounded-lg border border-rule bg-ground px-3 font-mono text-[13px] text-ink outline-none">
@@ -114,59 +106,46 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
               </select>
             </label>
           )}
-
-          {host && (
-            <ProviderList title="Shared models" hint="Everyone's Bots can use these. You pay for them."
-              providers={settings?.providers.filter((provider) => !provider.ownerId) ?? []}
-              empty="No shared models yet. Add a provider so everyone's Bots can think."
-              onEdit={setEditing} onAdd={() => setEditing("new-shared")} addLabel="Add shared provider" />
-          )}
           <ProviderList title={host ? "Just yours" : "My models"} hint={host ? "Only your Bots use these." : `Only your Bots use these, on your key. Without one, they use ${hostName}'s shared models.`}
             providers={settings?.providers.filter((provider) => provider.ownerId) ?? []}
             empty={host ? null : "No key of your own yet."}
             onEdit={setEditing} onAdd={() => setEditing("new")} addLabel="Add your own key" />
-          <p className="m-0 mt-3 text-meta leading-relaxed text-muted">Keys stay on this PC; nobody's app ever sees them, only their last four characters. A key is only ever sent to the address it was saved for.</p>
-          {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
-          <span className="mt-6 mb-1.5 text-label text-muted">Family</span>
-          <button type="button" onClick={() => setPeopleOpen(true)}
-            className="mb-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
-            <span className="flex shrink-0 -space-x-2">
-              {people.slice(0, 3).map((person) => <PersonAvatar key={person.id} person={person} size={22} className="rounded-full ring-2 ring-raised" />)}
-            </span>
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <strong className="truncate text-sm font-medium">Family</strong>
-              <span className="truncate text-meta text-muted">
-                {people.length === 1 ? "Just you so far · anyone on the tailnet can join" : `${people.length} people · you, your name and what Bots know about you`}
-              </span>
-            </span>
-            <ChevronRight size={16} className="shrink-0 text-muted" />
-          </button>
-          {host && <>
-          <span className="mt-4 mb-1.5 text-label text-muted">Voice</span>
-          <button type="button" onClick={() => setVoicing(true)} disabled={!settings}
-            className="flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
-            <AudioLines size={16} className="shrink-0 text-muted" />
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <strong className="truncate text-sm font-medium">Calls</strong>
-              <span className="truncate text-meta text-muted">
-                {settings?.voice.providerId ? `${settings.providers.find((provider) => provider.id === settings.voice.providerId)?.name ?? "Provider removed"} · ${settings.voice.allowCalls ? `Bots can call you, quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Bots can't call you"}` : "Off · pick a provider to talk to your Bots"}
-              </span>
-            </span>
-            <ChevronRight size={16} className="shrink-0 text-muted" />
-          </button>
-          </>}
-          {desktopApp?.node && (
-            <button type="button" onClick={() => setLending(true)}
-              className="mt-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover">
-              <Monitor size={16} className="shrink-0 text-muted" />
-              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                <strong className="truncate text-sm font-medium">This PC</strong>
-                <span className="truncate text-meta text-muted">Lend this computer to your Bots: browser, screen, terminal, files</span>
-              </span>
-              <ChevronRight size={16} className="shrink-0 text-muted" />
-            </button>
-          )}
+          <div className="flex flex-col gap-2">
+            {(host || settings?.voice.providerId) && (
+              <SettingsRow icon={<AudioLines size={16} />} title="Calls" onClick={() => setVoicing(true)} disabled={!settings}
+                detail={settings?.voice.providerId
+                  ? settings.voice.allowCalls ? `Your Bots can ring you · quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Your Bots can't ring you"
+                  : "Off · pick a voice provider to talk to Bots"} />
+            )}
+            {desktopApp?.node && (
+              <SettingsRow icon={<Monitor size={16} />} title="This PC" onClick={() => setLending(true)}
+                detail="Lend this computer to the family's Bots: browser, screen, terminal, files" />
+            )}
+          </div>
           <AccountsList onConnect={setConnecting} />
+
+          <SectionLabel>This Colony</SectionLabel>
+          {host ? (
+            <ProviderList title="Shared models" hint="Everyone's Bots can use these. You pay for them."
+              providers={settings?.providers.filter((provider) => !provider.ownerId) ?? []}
+              empty="No shared models yet. Add a provider so everyone's Bots can think."
+              onEdit={setEditing} onAdd={() => setEditing("new-shared")} addLabel="Add shared provider" />
+          ) : (
+            <div className="mb-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3">
+              {people.find((person) => person.id === HOST_ID) && <PersonAvatar person={people.find((person) => person.id === HOST_ID)!} size={26} />}
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <strong className="truncate text-sm font-medium">{hostName} runs this Colony</strong>
+                <span className="truncate text-meta text-muted">On {hostName}'s PC · shared models, voice and updates</span>
+              </span>
+            </div>
+          )}
+          <SettingsRow title="Family" onClick={() => setPeopleOpen(true)}
+            icon={<span className="flex -space-x-2">{people.slice(0, 3).map((person) => <PersonAvatar key={person.id} person={person} size={20} className="rounded-full ring-2 ring-raised" />)}</span>}
+            detail={people.length === 1 ? "Just you so far · anyone on the tailnet can join" : `${people.length} people · your name and what Bots know about you`} />
+          <p className="m-0 mt-4 text-meta leading-relaxed text-muted">
+            Keys stay on this PC; nobody's app ever sees them, only their last four characters. Your Bots, chats and keys are yours: nobody else in the family can see or manage them.
+          </p>
+          {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">
             <span>Colony {updates.system?.version ?? WEB_VERSION}</span>
@@ -177,6 +156,26 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
         </div>
       )}
     </Dialog>
+  );
+}
+
+/** "You" or "This Colony". */
+function SectionLabel({ children }: { children: React.ReactNode }) {
+  return <span className="mt-5 mb-3 text-meta tracking-[0.08em] text-muted uppercase first:mt-0">{children}</span>;
+}
+
+/** A row that opens a page of Settings. */
+function SettingsRow({ icon, title, detail, onClick, disabled }: { icon: React.ReactNode; title: string; detail: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled}
+      className="flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3 text-left hover:bg-hover disabled:opacity-60">
+      <span className="flex shrink-0 justify-center text-muted">{icon}</span>
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <strong className="truncate text-sm font-medium">{title}</strong>
+        <span className="truncate text-meta text-muted">{detail}</span>
+      </span>
+      <ChevronRight size={16} className="shrink-0 text-muted" />
+    </button>
   );
 }
 

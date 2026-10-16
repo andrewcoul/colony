@@ -87,8 +87,7 @@ export class SentenceSplitter {
   }
 }
 
-const inQuietHours = (now = new Date()) => {
-  const { quietFrom, quietTo } = voiceSettings();
+const inQuietHours = ({ quietFrom, quietTo }: { quietFrom: string; quietTo: string }, now = new Date()) => {
   const minutes = now.getHours() * 60 + now.getMinutes();
   const [fromH, fromM] = quietFrom.split(":").map(Number);
   const [toH, toM] = quietTo.split(":").map(Number);
@@ -114,10 +113,11 @@ export class Calls {
    * if you've turned calls off. Unanswered after 45 s, the reason is posted in the chat instead.
    */
   ring(botId: string, chatId: string, reason: string, now = Date.now()): { ringing: boolean; why?: string } {
-    const settings = voiceSettings();
+    // A Bot rings its owner, on its owner's terms.
+    const settings = voiceSettings(this.store.getBot(botId)?.ownerId);
     if (!settings.allowCalls) return { ringing: false, why: "The user has turned calls from Bots off." };
     if (!voiceProvider()) return { ringing: false, why: "Voice isn't set up, so calls can't happen." };
-    if (inQuietHours(new Date(now))) return { ringing: false, why: `It's the user's quiet hours (${settings.quietFrom}–${settings.quietTo}).` };
+    if (inQuietHours(settings, new Date(now))) return { ringing: false, why: `It's the user's quiet hours (${settings.quietFrom}–${settings.quietTo}).` };
     if (now - (this.lastRing.get(botId) ?? 0) < 30 * 60_000) return { ringing: false, why: "You called less than 30 minutes ago." };
     this.lastRing.set(botId, now);
     const id = crypto.randomUUID();

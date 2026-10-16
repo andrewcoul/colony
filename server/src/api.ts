@@ -635,14 +635,24 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     quietFrom: hhmm,
     quietTo: hhmm,
   }).partial();
+  /**
+   * Voice: the provider, its models and the default voice are the host's (shared); everyone sets
+   * their own call preferences and their own Bots' voices.
+   */
   api.put("/settings/voice", async (c) => {
+    const person = c.get("person");
     const patch = voicePatch.safeParse(await c.req.json());
     if (!patch.success) return c.json({ error: patch.error.issues[0]?.message ?? "Check the voice settings." }, 400);
-    if (patch.data.providerId && settings.providerById(patch.data.providerId)?.protocol !== "openai") {
+    const { providerId, transcribeModel, speechModel, voice, botVoices = {}, ...prefs } = patch.data;
+    const shared = { providerId, transcribeModel, speechModel, voice };
+    if (Object.values(shared).some((value) => value !== undefined) && !isHost(person)) return c.json({ error: "Only the person who runs this Colony can change the voice provider." }, 403);
+    if (Object.keys(botVoices).some((botId) => store.getBot(botId)?.ownerId !== person.id)) return c.json({ error: "You can only pick voices for your own Bots." }, 403);
+    if (providerId && settings.providerById(providerId)?.protocol !== "openai") {
       return c.json({ error: "Voice needs an OpenAI-compatible provider." }, 400);
     }
-    settings.setVoiceSettings(patch.data);
-    return c.json(settings.settingsView(c.get("person").id));
+    if (isHost(person)) settings.setVoiceSettings(Object.fromEntries(Object.entries(shared).filter(([, value]) => value !== undefined)));
+    settings.setCallPrefs(person.id, prefs, botVoices);
+    return c.json(settings.settingsView(person.id));
   });
   /** Says a line in a voice, to try it out in Settings. */
   api.post("/settings/voice/try", async (c) => {

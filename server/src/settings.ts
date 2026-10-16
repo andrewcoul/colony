@@ -39,10 +39,15 @@ export type VoiceSettings = {
   voice: string;
   /** A voice per Bot (falls back to `voice`). */
   botVoices: Record<string, string>;
+  /** Everyone else's own call preferences (the host's are the fields here). */
+  people?: Record<string, CallPrefs>;
   allowCalls: boolean;
   quietFrom: string;
   quietTo: string;
 };
+/** Whether your Bots may ring you, and when not to. Each person sets their own. */
+export type CallPrefs = { allowCalls: boolean; quietFrom: string; quietTo: string };
+const DEFAULT_PREFS: CallPrefs = { allowCalls: true, quietFrom: "22:00", quietTo: "07:00" };
 const DEFAULT_VOICE: VoiceSettings = {
   providerId: null, transcribeModel: "gpt-4o-mini-transcribe", speechModel: "gpt-4o-mini-tts", voice: "alloy",
   botVoices: {}, allowCalls: true, quietFrom: "22:00", quietTo: "07:00",
@@ -87,7 +92,7 @@ export function loadSettings() {
       personalDefaults?: Record<string, string>;
     };
     personalDefaults = { ...saved.personalDefaults };
-    voice = { ...DEFAULT_VOICE, ...saved.voice, botVoices: { ...saved.voice?.botVoices } };
+    voice = { ...DEFAULT_VOICE, ...saved.voice, botVoices: { ...saved.voice?.botVoices }, people: { ...saved.voice?.people } };
     if (saved.providers) {
       providers = saved.providers.map((provider) => {
         const protocol = provider.protocol ?? "openai";
@@ -174,10 +179,23 @@ export function setDesktopModels(providerId: string, verdicts: Record<string, bo
   persist();
 }
 
-export const voiceSettings = (): VoiceSettings => voice;
+/** Voice as one person sees it: the shared provider and voice, with their own call preferences. */
+export const voiceSettings = (personId = HOST): VoiceSettings => {
+  const { people, ...shared } = voice;
+  return personId === HOST ? shared : { ...shared, ...DEFAULT_PREFS, ...people?.[personId] };
+};
 
+/** Changes the shared voice settings (the host's) and the host's own call preferences. */
 export function setVoiceSettings(patch: Partial<VoiceSettings>) {
-  voice = { ...voice, ...patch, botVoices: { ...voice.botVoices, ...patch.botVoices } };
+  voice = { ...voice, ...patch, botVoices: { ...voice.botVoices, ...patch.botVoices }, people: voice.people };
+  persist();
+  return voice;
+}
+
+/** Someone's own call preferences, and the voices of their own Bots. */
+export function setCallPrefs(personId: string, patch: Partial<CallPrefs>, botVoices: Record<string, string> = {}) {
+  if (personId === HOST) return setVoiceSettings({ ...patch, botVoices });
+  voice = { ...voice, botVoices: { ...voice.botVoices, ...botVoices }, people: { ...voice.people, [personId]: { ...DEFAULT_PREFS, ...voice.people?.[personId], ...patch } } };
   persist();
   return voice;
 }
@@ -203,7 +221,7 @@ export function settingsView(personId = HOST): SettingsView {
     defaultModel: defaultModel(personId),
     configured: modelConfigured(personId),
     source,
-    voice,
+    voice: voiceSettings(personId),
     host: personId === HOST,
   };
 }
