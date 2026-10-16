@@ -28,10 +28,10 @@ $utf8 = New-Object System.Text.UTF8Encoding $false # Node rejects a byte-order m
 $platform = 'win-x64'
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  throw 'Colony needs Node.js 22.13 or newer. Install it (for example: winget install OpenJS.NodeJS.LTS), open a new PowerShell window, and run this again.'
+  throw 'Colony needs Node.js 22.19 or newer. Install it (for example: winget install OpenJS.NodeJS.LTS), open a new PowerShell window, and run this again.'
 }
 $nodeVersion = [version](& node -p 'process.versions.node')
-if ($nodeVersion -lt [version]'22.13.0') { throw "Colony needs Node.js 22.13 or newer; this PC has $nodeVersion. Update Node.js and run this again." }
+if ($nodeVersion -lt [version]'22.19.0') { throw "Colony needs Node.js 22.19 or newer; this PC has $nodeVersion. Update Node.js and run this again." }
 
 New-Item -ItemType Directory -Force (Join-Path $InstallDir 'versions') | Out-Null
 $work = Join-Path ([IO.Path]::GetTempPath()) ('colony-install-' + [guid]::NewGuid().ToString('N'))

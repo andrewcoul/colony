@@ -28,7 +28,7 @@ has no accounts: your Tailscale network is the only way in.
 
 ## Requirements
 
-- Windows, macOS or Linux with **Node.js 22.13+** (Colony uses the built-in `node:sqlite`)
+- Windows, macOS or Linux with **Node.js 22.19+** (Colony uses the built-in `node:sqlite`)
 - An **OpenAI-compatible API**: OpenRouter, xAI, OpenCode Go, a local server…
 - Optional: **Docker Desktop**, for Bot computers
 - Optional: **self-hosted Firecrawl** at `127.0.0.1:3002`, for web search and reading
@@ -36,7 +36,7 @@ has no accounts: your Tailscale network is the only way in.
 
 ## Install
 
-**The server** (Windows; needs Node.js 22.13+). In PowerShell:
+**The server** (Windows; needs Node.js 22.19+). In PowerShell:
 
 ```powershell
 irm https://github.com/andrewcoul/colony/releases/latest/download/install-colony-server.ps1 | iex
