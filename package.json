@@ -1,6 +1,6 @@
 {
   "name": "colony",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Self-hosted, open-source persistent AI teammates (Bots) with their own computers.",
