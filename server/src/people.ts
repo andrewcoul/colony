@@ -87,7 +87,7 @@ const RULES: Rule[] = [
   ["GET", /^\/settings$/, anyone],
   // Accounts: your own (checked in the routes).
   ["*", /^\/accounts(?:\/.*)?$/, anyone],
-  ["*", /^\/settings\/(providers|providers\/check|default-model|providers\/[\w-]+|providers\/[\w-]+\/desktop-check)$/, anyone],
+  ["*", /^\/settings\/(providers|providers\/check|default-model|providers\/[\w-]+|providers\/[\w-]+\/desktop-check|voice|voice\/try)$/, anyone],
   // You, and nobody else, edit your name, color and what Bots know about you.
   ["*", /^\/people\/([\w-]+)(?:\/about)?$/, (_store, person, id) => (id === person.id ? null : NOT_YOURS)],
   ["*", /^\/bots\/([\w-]+)(?:\/.*)?$/, ownBot],

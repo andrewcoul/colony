@@ -149,7 +149,7 @@ describe("the family", () => {
     expect((await andrew("PATCH", `/bots/${ivy.id}`, { name: "Mine" })).status).toBe(403);
     expect((await marija("POST", `/bots/${luke.id}/routines`, { title: "x", prompt: "y", schedule: { type: "interval", minutes: 60 } })).status).toBe(403);
     // What the whole Colony shares stays the host's.
-    expect((await marija("PUT", "/settings/voice", { allowCalls: false })).status).toBe(403);
+    expect((await marija("PUT", "/settings/voice", { providerId: null })).status).toBe(403);
     await until(() => store.listMessages(ivy.chatId).length > 0);
   });
 
@@ -224,6 +224,24 @@ describe("the family", () => {
     expect((await andrew("POST", `/approvals/${approval.id}`, { approve: true })).status).toBe(403);
     expect((await marija("POST", `/approvals/${approval.id}`, { approve: true })).status).toBe(204);
     expect(await answer).toBe(true);
+  });
+
+  test("calls are on each person's terms: their Bots ring only them, never in their quiet hours", async () => {
+    const { store, events, runner, andrew, marija, luke, ivy } = await family();
+    const settings = await import("./settings.js");
+    const { Calls } = await import("./voice.js");
+    settings.setVoiceSettings({ providerId: "env", allowCalls: true, quietFrom: "22:00", quietTo: "07:00" });
+    // Marija turns calls off for herself and picks Ivy's voice; she can't pick Luke's, or the provider.
+    expect((await marija("PUT", "/settings/voice", { allowCalls: false, botVoices: { [ivy.id]: "nova" } })).json.voice).toMatchObject({ allowCalls: false });
+    expect((await marija("PUT", "/settings/voice", { botVoices: { [luke.id]: "onyx" } })).status).toBe(403);
+    expect((await andrew("GET", "/settings")).json.voice.allowCalls).toBe(true);
+    const calls = new Calls(store, events, runner);
+    const rang: string[] = [];
+    calls.notify = (_input, personId) => rang.push(personId);
+    const noon = new Date(2026, 9, 15, 12).getTime();
+    expect(calls.ring(ivy.id, ivy.chatId, "Hi", noon).ringing).toBe(false);
+    expect(calls.ring(luke.id, luke.chatId, "Hi", noon).ringing).toBe(true);
+    expect(rang).toEqual(["owner"]);
   });
 
   test("events reach only the people they're about", async () => {
