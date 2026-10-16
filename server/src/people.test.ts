@@ -192,6 +192,40 @@ describe("the family", () => {
     expect(marijaId).toBeTruthy();
   });
 
+  test("an approval goes to the person it's for: only they can answer, only their phone buzzes", async () => {
+    const db = openDb(":memory:");
+    const events = new EventLog(db);
+    const store = new Store(db, events);
+    const gate = new ApprovalGate(store);
+    const runner = new AgentRunner(store, events, gate, () => coreTools, () => model);
+    const { PushService } = await import("./push.js");
+    const pushed: { endpoint: string; title: string; tag: string }[] = [];
+    const push = new PushService(db, store, events, async (subscription, payload) => { pushed.push({ endpoint: subscription.endpoint, ...JSON.parse(String(payload)) }); return {} as never; });
+    const api = createApi({ store, events, gate, runner, push });
+    const as = (login: string) => async (method: string, url: string, body?: unknown) => {
+      const response = await api.request(url, { method, headers: { "Content-Type": "application/json", "Tailscale-User-Login": login }, body: body === undefined ? undefined : JSON.stringify(body) });
+      return { status: response.status };
+    };
+    const andrew = as("andrew@example.com");
+    const marija = as("marija@example.com");
+    await andrew("POST", "/push/subscribe", { endpoint: "https://push.example/andrew", keys: { p256dh: "k", auth: "a" } });
+    await marija("POST", "/push/subscribe", { endpoint: "https://push.example/marija", keys: { p256dh: "k", auth: "a" } });
+    const marijaId = store.listPeople().find((person) => person.name === "Marija")!.id;
+    const luke = store.createBot({ name: "Luke", title: "", description: "", model: "env::mock-model", computer: false });
+    const trip = store.createChat({ kind: "topic", title: "Trip", memberIds: [luke.id], coordinatorId: luke.id });
+    store.updateTopic(trip.id, { peopleIds: [marijaId] });
+    const message = store.createMessage({ chatId: trip.id, author: luke.id, text: "" });
+    // Luke (Andrew's) wants to use something of Marija's.
+    const answer = gate.request({ botId: luke.id, chatId: trip.id, messageId: message.id, tool: "pc_shell", summary: "Luke wants to use Marija's laptop", detail: "Run: lp boarding.pdf", reason: "", approverId: marijaId }, new AbortController().signal);
+    const approval = await until(() => store.listApprovals("pending")[0]);
+    expect(approval.approverId).toBe(marijaId);
+    await until(() => pushed.some((item) => item.tag.startsWith("approval-")));
+    expect(pushed.filter((item) => item.tag.startsWith("approval-")).map((item) => item.endpoint)).toEqual(["https://push.example/marija"]);
+    expect((await andrew("POST", `/approvals/${approval.id}`, { approve: true })).status).toBe(403);
+    expect((await marija("POST", `/approvals/${approval.id}`, { approve: true })).status).toBe(204);
+    expect(await answer).toBe(true);
+  });
+
   test("events reach only the people they're about", async () => {
     const { store, luke, ivy, marijaId } = await family();
     const marija = store.getPerson(marijaId)!;

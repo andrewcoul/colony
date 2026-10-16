@@ -184,7 +184,7 @@ export function mailTools(services: Integrations) {
       if (!draft.to.length) throw new Error("This draft has no recipients; add them with mail_draft first.");
       const others = draft.to.length + draft.cc.length - 1;
       const approved = await ctx.gate.request({
-        botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "mail_send",
+        botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "mail_send", approverId: account.personId,
         summary: `${ctx.botName} wants to email ${draft.to[0]}${others > 0 ? ` and ${others} other${others === 1 ? "" : "s"}` : ""}`,
         detail: draftCard(account, draft),
         reason: "Sends from your mailbox · always asks",
@@ -257,7 +257,7 @@ export function mailTools(services: Integrations) {
       if (input.end < input.start) throw new Error("The event ends before it starts.");
       if (fields.attendees?.length) {
         const approved = await ctx.gate.request({
-          botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "calendar_invite",
+          botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "calendar_invite", approverId: account.personId,
           summary: `${ctx.botName} wants to invite ${fields.attendees.length === 1 ? fields.attendees[0] : `${fields.attendees.length} people`} to “${fields.title}”`,
           detail: eventCard({ title: fields.title, start: fields.start, end: fields.end, location: fields.location, attendees: fields.attendees }),
           reason: "Sends invitations · always asks",
@@ -281,7 +281,7 @@ export function mailTools(services: Integrations) {
       if (guests.some((email) => email.toLowerCase() !== account.email.toLowerCase())) {
         const after = { title: fields.title ?? current.title, start: fields.start ?? current.start, end: fields.end ?? current.end, location: fields.location ?? current.location, attendees: guests };
         const approved = await ctx.gate.request({
-          botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "calendar_invite",
+          botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "calendar_invite", approverId: account.personId,
           summary: `${ctx.botName} wants to change “${current.title}” and notify its guests`,
           detail: `Before:\n${eventCard({ ...current, attendees: current.attendees.map((item) => item.email) })}\n\nAfter:\n${eventCard(after)}`,
           reason: "Notifies the guests · always asks",
@@ -307,7 +307,7 @@ export function mailTools(services: Integrations) {
       const provider = services.calendar(account);
       const event = await provider.get(id);
       const approved = await ctx.gate.request({
-        botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "calendar_respond",
+        botId: ctx.botId, chatId: ctx.chatId, messageId: ctx.messageId, tool: "calendar_respond", approverId: account.personId,
         summary: `${ctx.botName} wants to ${response === "tentative" ? "tentatively accept" : response} “${event.title}”`,
         detail: `${eventCard({ ...event, attendees: [] })}${event.organizer ? `\nOrganizer: ${event.organizer}` : ""}${comment ? `\n\nNote: ${comment}` : ""}`,
         reason: "Tells the organizer · always asks",

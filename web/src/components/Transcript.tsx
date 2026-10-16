@@ -450,6 +450,7 @@ function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpe
   // Only the person it's waiting for can answer; everyone else sees who that is.
   const myId = useMyId();
   const approver = useLive((s) => s.people.find((person) => person.id === approval?.approverId));
+  const asker = useLive((s) => (approval ? s.bots[approval.botId] : undefined));
   if (!approval) return <p className="m-0 text-meta text-muted">Approval resolved.</p>;
   const pending = approval.status === "pending";
   const mine = approval.approverId === myId;
@@ -471,7 +472,9 @@ function ApprovalCard({ approvalId, onOpenBrowser }: { approvalId: string; onOpe
         <m.div key="card" className="flex flex-col gap-3 rounded-xl border border-lemon/35 bg-lemon/7 p-4"
           exit={{ opacity: 0, scale: 0.97, transition: { duration: 0.14 } }} style={{ originX: 0 }}>
           <span className="flex items-center gap-2 text-label font-semibold text-lemon">
-            {takeover ? <Hand size={16} /> : <ShieldCheck size={16} />}{approval.summary}
+            {takeover ? <Hand size={16} /> : <ShieldCheck size={16} />}<span className="flex-1">{approval.summary}</span>
+            {/* Someone else's Bot asking you: say whose. */}
+            {asker && <OwnerTag ownerId={asker.ownerId} />}
           </span>
           {takeover
             ? <p className="m-0 text-label leading-relaxed whitespace-pre-wrap text-ink [overflow-wrap:anywhere]">{approval.detail}</p>
