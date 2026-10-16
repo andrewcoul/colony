@@ -21,7 +21,8 @@ const { RoutineScheduler } = await import("../../routines.js");
 const { MemoryStorage } = await import("@earendil-works/pi-durable");
 const files = await import("../../files.js");
 const { scriptedModels, textTurn, toolTurn, promptText } = await import("./testkit.js");
-(await import("../../settings.js")).loadSettings();
+const settings = await import("../../settings.js");
+settings.loadSettings();
 type ColonyTool = import("../tools.js").ColonyTool;
 
 const sent: string[] = [];
@@ -39,15 +40,24 @@ const sendEmail: ColonyTool = {
   },
 };
 
+/** Like a PC's screen tool: its result is a picture, in the AI SDK's content shape. */
+const pcScreenshot: ColonyTool = {
+  description: "See the PC's screen.",
+  inputSchema: z.object({}),
+  describe: () => "Looked at the PC's screen",
+  replay: "gated",
+  execute: async () => ({ shot: { data: Buffer.from("pc-png").toString("base64"), mediaType: "image/png" }, text: "Desktop of Laptop" }),
+  toModelOutput: (output: { shot: { data: string; mediaType: string }; text: string }) => ({ type: "content", value: [{ type: "text", text: output.text }, { type: "file", data: { type: "data", data: output.shot.data }, mediaType: output.shot.mediaType }] }),
+};
 const scripted = scriptedModels();
-const tools = () => ({ ...coreTools, send_email: sendEmail });
+const tools = () => ({ ...coreTools, send_email: sendEmail, pc_screenshot: pcScreenshot });
 
-async function setup(options: { models?: typeof scripted; settings?: Parameters<typeof PiRunner.open>[4]["settings"] } = {}) {
+async function setup(options: { models?: typeof scripted; settings?: Parameters<typeof PiRunner.open>[4]["settings"]; desktop?: Parameters<typeof PiRunner.open>[4]["desktop"] } = {}) {
   const db = openDb(":memory:");
   const events = new EventLog(db);
   const store = new Store(db, events);
   const gate = new ApprovalGate(store);
-  const runner = await PiRunner.open(store, events, gate, tools, { storage: new MemoryStorage(), models: (options.models ?? scripted).source, settings: options.settings });
+  const runner = await PiRunner.open(store, events, gate, tools, { storage: new MemoryStorage(), models: (options.models ?? scripted).source, settings: options.settings, desktop: options.desktop });
   const routines = new RoutineScheduler(store, runner);
   const api = createApi({ store, events, gate, runner, routines });
   const call = async (method: string, url: string, body?: unknown) => {
@@ -388,5 +398,58 @@ describe("pi runtime: switching over", () => {
     expect(prompt).toContain("Colony was updated while you were working");
     expect(prompt).toContain("Email Tom the notes.");
     expect(after.listRuns()).toEqual([]);
+  });
+});
+
+describe("pi runtime: the Bot's desktop", () => {
+  const shot = { data: Buffer.from("fake-jpeg").toString("base64"), mediaType: "image/jpeg" as const, width: 1280, height: 800 };
+  const actions: string[] = [];
+  const fakeDesktop = {
+    screenshot: async () => { actions.push("screenshot"); return shot; },
+    click: async (_id: string, x: number, y: number) => { actions.push(`click ${x},${y}`); },
+  } as never;
+
+  test("every action returns a fresh screenshot to the model, and only the newest two stay in what it's sent", async () => {
+    settings.setDesktopModels("env", { "mock-model": true });
+    const script = scripted.play([
+      textTurn("Hi."),
+      toolTurn("desktop_click", { x: 10, y: 20 }),
+      toolTurn("desktop_screenshot", {}),
+      toolTurn("desktop_screenshot", {}),
+      textTurn("All done on the desktop."),
+    ]);
+    const { store, call } = await setup({ desktop: fakeDesktop });
+    const { json: bot } = await call("POST", "/bots", { name: "Dee", computer: true, desktop: true });
+    expect(bot.desktop).toBe(true);
+    await finished(store, bot.chatId, 1);
+    await call("POST", `/chats/${bot.chatId}/messages`, { text: "Click the button." });
+    const reply = (await finished(store, bot.chatId, 2)).at(-1)!;
+    expect(reply.text).toBe("All done on the desktop.");
+    expect(reply.steps.map((step) => step.tool)).toEqual(["desktop_click", "desktop_screenshot", "desktop_screenshot"]);
+    expect(actions).toContain("click 10,20");
+    expect(script.toolNames.at(-1)).toContain("desktop_click");
+    // The last request: three screenshots were taken, two are still images.
+    const last = script.prompts.at(-1)!.messages.filter((message) => message.role === "toolResult");
+    const images = last.flatMap((message) => message.content.filter((part) => part.type === "image"));
+    expect(images).toHaveLength(2);
+    expect(promptText(script.prompts.at(-1))).toContain("An earlier screenshot, removed to save space.");
+    expect(promptText(script.prompts.at(-1))).toContain("Your desktop");
+  });
+});
+
+describe("pi runtime: PC tools", () => {
+  test("a PC's screenshot reaches the model as an image with its caption", async () => {
+    const script = scripted.play([textTurn("Hi."), toolTurn("pc_screenshot", {}), textTurn("I can see your screen.")]);
+    const { store, call } = await setup();
+    const { json: bot } = await call("POST", "/bots", { name: "Pax" });
+    await finished(store, bot.chatId, 1);
+    await call("POST", `/chats/${bot.chatId}/messages`, { text: "Look at my screen." });
+    const reply = (await finished(store, bot.chatId, 2)).at(-1)!;
+    expect(reply.steps[0]).toMatchObject({ tool: "pc_screenshot", status: "done" });
+    const result = script.prompts.at(-1)!.messages.find((message) => message.role === "toolResult")!;
+    expect(result.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "text", text: "Desktop of Laptop" }),
+      expect.objectContaining({ type: "image", mimeType: "image/png" }),
+    ]));
   });
 });
