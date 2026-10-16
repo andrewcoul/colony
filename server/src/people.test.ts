@@ -38,7 +38,8 @@ function setup() {
   const events = new EventLog(db);
   const store = new Store(db, events);
   const gate = new ApprovalGate(store);
-  const runner = new AgentRunner(store, events, gate, () => coreTools, () => model);
+  const told: { title: string; body: string; personId: string }[] = [];
+  const runner = new AgentRunner(store, events, gate, () => coreTools, () => model, undefined, { notify: (notification, personId) => told.push({ ...notification, personId }) });
   const api = createApi({ store, events, gate, runner });
   const as = (login: string | null) => async (method: string, url: string, body?: unknown) => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -47,7 +48,7 @@ function setup() {
     const json = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
     return { status: response.status, json: json as any };
   };
-  return { store, events, runner, as };
+  return { store, events, runner, as, told };
 }
 
 /** The host (first login) and Marija, each with a Bot of their own. */
@@ -254,5 +255,70 @@ describe("the family", () => {
     expect(eventFor(host, { type: "bot.upserted", bot: store.getBot(ivy.id)! }, store)).toEqual({ type: "bot.deleted", botId: ivy.id });
     expect(eventFor(marija, { type: "bot.upserted", bot: store.getBot(ivy.id)! }, store)).not.toBeNull();
     expect(eventFor(marija, { type: "computer.output", botId: luke.id, text: "ls" }, store)).toBeNull();
+  });
+});
+
+describe("spending", () => {
+  /** The shared model at $4,000 per million tokens in and $8,000 out: each reply here (10 in, 5 out) costs $0.08. */
+  const pricey = { name: "Shared", baseURL: "http://model.invalid/v1", models: ["mock-model"], prices: { "mock-model": { input: 4_000, output: 8_000 } } };
+  /** Marija says something to Ivy once Ivy is free, and gets Ivy's finished reply. */
+  const sayer = (env: Awaited<ReturnType<typeof family>>) => async (text: string) => {
+    const replies = () => env.store.listMessages(env.ivy.chatId).filter((message) => message.author === env.ivy.id);
+    await until(() => !env.runner.isBotRunning(env.ivy.id) && replies().every((message) => message.status !== "streaming"));
+    const before = replies().length;
+    await env.marija("POST", `/chats/${env.ivy.chatId}/messages`, { text });
+    return until(() => replies().length > before && !env.runner.isBotRunning(env.ivy.id) && replies().at(-1)!.status !== "streaming" && replies().at(-1)!);
+  };
+
+  test("every step counts against the Bot's owner and whoever's key paid; the host sees the shared keys", async () => {
+    const env = await family();
+    const { andrew, marija, ivy, marijaId } = env;
+    const say = sayer(env);
+    await until(() => !env.runner.isBotRunning(ivy.id));
+    expect((await andrew("PUT", "/settings/providers/env", pricey)).status).toBe(200);
+    expect((await andrew("GET", "/settings")).json.providers.find((provider: { id: string }) => provider.id === "env").prices["mock-model"]).toEqual({ input: 4_000, output: 8_000 });
+    await say("Plan the week");
+
+    const mine = (await marija("GET", "/spending")).json;
+    expect(mine).toMatchObject({ own: 0, shared: 0.08, limit: null, hostName: "Andrew", bots: [{ botId: ivy.id, name: "Ivy", own: 0, shared: 0.08, tokens: 30 }], unpriced: ["mock-model"] });
+    // (Ivy's hello ran before there was a price: its tokens count, at no cost.)
+    expect(mine.days).toHaveLength(30);
+    expect(mine.days.at(-1).shared).toBe(0.08);
+    // Luke's hello is Andrew's, on the house.
+    expect((await andrew("GET", "/spending")).json).toMatchObject({ own: 0, shared: 0, bots: [{ name: "Luke", shared: 0 }] });
+    // Only the host sees the shared keys and sets limits.
+    expect((await andrew("GET", "/spending/shared")).json.people.find((person: { personId: string }) => person.personId === marijaId)).toMatchObject({ cost: 0.08, limit: null, bots: [{ name: "Ivy", cost: 0.08 }] });
+    expect((await marija("GET", "/spending/shared")).status).toBe(403);
+    expect((await marija("PUT", `/spending/limits/${marijaId}`, { limit: 100 })).status).toBe(403);
+    expect((await andrew("PUT", "/spending/limits/owner", { limit: 5 })).status).toBe(400);
+  });
+
+  test("over the limit: the turn stops before calling the model and both are told, until there's an own key", async () => {
+    const env = await family();
+    const { andrew, marija, marijaId, told } = env;
+    const say = sayer(env);
+    await until(() => !env.runner.isBotRunning(env.ivy.id));
+    await andrew("PUT", "/settings/providers/env", pricey);
+    // (Ivy's hello may already have cost something, depending on the prices other tests left.)
+    const before = (await marija("GET", "/spending")).json.shared as number;
+    expect((await andrew("PUT", `/spending/limits/${marijaId}`, { limit: before + 0.05 })).json.people.find((person: { personId: string }) => person.personId === marijaId).limit).toBe(before + 0.05);
+    // The check is before each turn, so the first one goes over.
+    expect(await say("One")).toMatchObject({ status: "done", error: null });
+    const stopped = await say("Two");
+    expect(stopped).toMatchObject({ status: "failed", error: expect.stringMatching(/^Your share of Andrew's keys is used up for \w+\. Add your own key in Settings to keep going\.$/) });
+    expect((await marija("GET", "/spending")).json.shared).toBeCloseTo(before + 0.08);
+    expect(told.map((item) => [item.personId, item.title])).toEqual([[marijaId, "Your share is used up"], ["owner", "Marija's share of your keys is used up"]]);
+
+    // With a key of her own, Ivy goes on with it; that spending is Marija's own.
+    await marija("POST", "/settings/providers", { name: "Marija's", baseURL: "http://marija.invalid/v1", apiKey: "sk-marija-000000000", models: ["gpt-own"] });
+    const carried = await say("Three");
+    expect(carried).toMatchObject({ status: "done", text: "On it." });
+    const after = (await marija("GET", "/spending")).json;
+    expect(after).toMatchObject({ own: 0, unpriced: expect.arrayContaining(["gpt-own"]), bots: [{ name: "Ivy", tokens: 45 }] });
+    expect(after.shared).toBeCloseTo(before + 0.08);
+    expect(told).toHaveLength(2);
+    // Lifting the limit puts Ivy back on the shared model.
+    await andrew("PUT", `/spending/limits/${marijaId}`, { limit: null });
+    expect((await marija("GET", "/spending")).json.limit).toBeNull();
   });
 });

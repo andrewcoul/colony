@@ -24,6 +24,12 @@ const toBot = (row: Row): Bot => ({
   createdAt: row.created_at as number,
 });
 
+/** One model step's usage. `payerId` null: a shared key. `costMicros` null: the model has no price. */
+export type UsageRow = {
+  id: string; at: number; botId: string; ownerId: string; providerId: string; payerId: string | null; model: string;
+  inputTokens: number; outputTokens: number; cachedTokens: number; costMicros: number | null;
+};
+
 /** A turn's checkpoint: what the model will be sent at its next step, so a restart can resume it. */
 export type RunCheckpoint = {
   /** The turn's first reply message. */
@@ -370,6 +376,22 @@ export class Store {
     this.db.prepare("DELETE FROM people WHERE id = ?").run(id);
     this.events.emit({ type: "people.updated", people: this.listPeople() });
     for (const chatId of shared) { const chat = this.getChat(chatId); if (chat) this.events.emit({ type: "chat.upserted", chat }); }
+  }
+
+  // ---------- Spending ----------
+  recordUsage(entry: Omit<UsageRow, "id" | "at">, at = Date.now()) {
+    this.db.prepare(`INSERT INTO usage (id, at, bot_id, owner_id, provider_id, payer_id, model, input_tokens, output_tokens, cached_tokens, cost_micros)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(newId(), at, entry.botId, entry.ownerId, entry.providerId, entry.payerId, entry.model, entry.inputTokens, entry.outputTokens, entry.cachedTokens, entry.costMicros);
+  }
+
+  /** Usage since a time, oldest first. */
+  listUsage(since: number): UsageRow[] {
+    return (this.db.prepare("SELECT * FROM usage WHERE at >= ? ORDER BY at").all(since) as Row[]).map((row) => ({
+      id: row.id as string, at: row.at as number, botId: row.bot_id as string, ownerId: row.owner_id as string, providerId: row.provider_id as string,
+      payerId: (row.payer_id as string | null) ?? null, model: row.model as string, inputTokens: row.input_tokens as number,
+      outputTokens: row.output_tokens as number, cachedTokens: row.cached_tokens as number, costMicros: (row.cost_micros as number | null) ?? null,
+    }));
   }
 
   // ---------- PCs (nodes) ----------

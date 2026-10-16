@@ -80,7 +80,7 @@ const anyone = () => null;
  * host's (the server itself: updates, shared settings).
  */
 const RULES: Rule[] = [
-  ["GET", /^\/(state|events|me|family|img|system|push\/key|household)$/, anyone],
+  ["GET", /^\/(state|events|me|family|img|system|push\/key|household|spending)$/, anyone],
   ["POST", /^\/(push\/subscribe|push\/unsubscribe|push\/status|push\/test|focus|bots|topics|folders)$/, anyone],
   ["PUT", /^\/household$/, anyone],
   // Models: everyone has their own providers and default; shared ones are the host's (checked in the routes).

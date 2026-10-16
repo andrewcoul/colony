@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Person, Routine, Schedule, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Person, Price, Routine, Schedule, SharedSpending, Spending, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -29,8 +29,10 @@ export type FileEntry = { name: string; path: string; type: "file" | "dir"; size
 /** "openai": OpenAI-compatible chat completions; "anthropic": Anthropic's Messages API (Claude). */
 export type Protocol = "openai" | "anthropic";
 /** `ownerId` null: shared (the host's key, usable by everyone's Bots); otherwise one person's own. */
-export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null; ownerId: string | null };
-export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
+/** `prices`: each model's price per million tokens, set by hand or built in (models without one aren't listed). */
+export type ProviderView = { id: string; name: string; baseURL: string; protocol: Protocol; models: string[]; desktop: string[]; keySet: boolean; keyHint: string | null; ownerId: string | null; prices: Record<string, Price> };
+/** `prices`: changed ones only; null puts a model back to its built-in price. */
+export type ProviderInput = { name: string; baseURL: string; protocol: Protocol; apiKey?: string; models: string[]; desktop?: string[]; prices?: Record<string, Price | null> };
 export type DesktopVerdict = { model: string; reads: boolean; points: boolean; canDrive: boolean; error?: string };
 /** Voice calls (server/src/settings.ts VoiceSettings). */
 export type VoiceSettings = {
@@ -126,6 +128,9 @@ export const api = {
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
+  spending: () => request<Spending>("GET", "/spending"),
+  sharedSpending: () => request<SharedSpending>("GET", "/spending/shared"),
+  setSpendLimit: (personId: string, limit: number | null) => request<SharedSpending>("PUT", `/spending/limits/${encodeURIComponent(personId)}`, { limit }),
   addProvider: (input: ProviderInput & { shared?: boolean }) => request<Settings>("POST", "/settings/providers", input),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   deleteProvider: (id: string) => request<Settings>("DELETE", `/settings/providers/${encodeURIComponent(id)}`),

@@ -252,6 +252,23 @@ const MIGRATIONS = [
   ALTER TABLE nodes ADD COLUMN person_id TEXT NOT NULL DEFAULT 'owner';
   DROP TABLE node_access;
   `,
+  // v16: what every model step used and cost, and whose key paid (payer_id null: a shared key).
+  `
+  CREATE TABLE usage (
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    bot_id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    payer_id TEXT,
+    model TEXT NOT NULL,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cached_tokens INTEGER NOT NULL,
+    cost_micros INTEGER
+  );
+  CREATE INDEX usage_at ON usage (at);
+  `,
 ];
 
 export type Db = DatabaseSync;

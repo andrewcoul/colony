@@ -25,6 +25,7 @@ import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
 import type { AppState, Chat, Person, TopicIcon } from "./shared/types.js";
+import { sharedSpending, spendingFor } from "./spending.js";
 import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
@@ -610,6 +611,8 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     models: z.array(z.string().trim().min(1).max(200)).min(1, "Add at least one model.").max(60),
     /** Models that can drive a desktop (set by the desktop check or by hand). */
     desktop: z.array(z.string().trim().min(1).max(200)).max(60).optional(),
+    /** Dollars per million tokens per model; null puts one back to the built-in price. */
+    prices: z.record(z.string().max(200), z.object({ input: z.number().min(0).max(10_000), output: z.number().min(0).max(10_000), cached: z.number().min(0).max(10_000).optional() }).nullable()).optional(),
   });
   /** Tells everyone's apps the models changed (each sees their own list), and returns this person's view. */
   const settingsChanged = (personId: string) => {
@@ -617,6 +620,21 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return settings.settingsView(personId);
   };
   api.get("/settings", (c) => c.json(settings.settingsView(c.get("person").id)));
+
+  // ---------- Spending ----------
+  /** Your spending: this month by Bot and the last 30 days. */
+  api.get("/spending", (c) => c.json(spendingFor(store, c.get("person").id)));
+  /** The host's shared keys: this month by person and Bot, with limits. */
+  api.get("/spending/shared", (c) => c.json(sharedSpending(store)));
+  /** The host sets (or, with null, removes) someone's monthly limit on shared keys. */
+  api.put("/spending/limits/:personId", async (c) => {
+    const personId = c.req.param("personId");
+    if (!store.getPerson(personId)) return c.json({ error: "There's nobody like that in the family." }, 404);
+    if (personId === HOST_ID) return c.json({ error: "The shared keys are yours, so there's no limit for you." }, 400);
+    const { limit } = z.object({ limit: z.number().min(0).max(100_000).nullable() }).parse(await c.req.json());
+    settings.setSpendLimit(personId, limit);
+    return c.json(sharedSpending(store));
+  });
   /** A provider this person may change: their own, or (the host) a shared one. */
   const editable = (personId: string, providerId: string) => {
     const provider = settings.providerById(providerId);

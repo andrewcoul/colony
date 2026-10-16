@@ -2,7 +2,8 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
-import type { ModelOption } from "./shared/types.js";
+import { builtInPrice } from "./prices.js";
+import type { ModelOption, Price } from "./shared/types.js";
 
 /**
  * The API a provider speaks: OpenAI-compatible chat completions (most providers), or
@@ -18,15 +19,19 @@ export type Protocol = "openai" | "anthropic";
  * A model provider and its key. `ownerId` null: shared (the host's, usable by everyone's Bots);
  * otherwise one person's own, usable only by their Bots.
  */
-export type Provider = { id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[]; desktop: string[]; ownerId: string | null };
-export type ProviderInput = { name: string; baseURL: string; protocol?: Protocol; apiKey?: string; models: string[]; desktop?: string[] };
+export type Provider = {
+  id: string; name: string; baseURL: string; protocol: Protocol; apiKey: string; models: string[]; desktop: string[]; ownerId: string | null;
+  /** Prices set by hand; models without one use the built-in table, or have no price. */
+  prices?: Record<string, Price>;
+};
+export type ProviderInput = { name: string; baseURL: string; protocol?: Protocol; apiKey?: string; models: string[]; desktop?: string[]; prices?: Record<string, Price | null> };
 
 /** Claude models on Anthropic's API can drive a desktop; others are marked by the desktop check (or by hand). */
 const defaultDesktop = (protocol: Protocol, models: string[]) => (protocol === "anthropic" ? models.filter((model) => /claude/i.test(model)) : []);
 export type ModelTarget = { provider: Provider; model: string; ref: string };
 
-/** What devices see. Keys never leave the server. */
-export type ProviderView = Omit<Provider, "apiKey"> & { keySet: boolean; keyHint: string | null };
+/** What devices see. Keys never leave the server. `prices`: each model's price, set or built in. */
+export type ProviderView = Omit<Provider, "apiKey" | "prices"> & { keySet: boolean; keyHint: string | null; prices: Record<string, Price> };
 /**
  * Voice: one provider's OpenAI-compatible /audio endpoints transcribe what you say and speak
  * replies (OpenAI itself, or local servers like faster-whisper-server and Kokoro).
@@ -68,6 +73,8 @@ let defaultRef = "";
 /** Each person's own default model for new Bots (the host's is `defaultRef`). */
 let personalDefaults: Record<string, string> = {};
 let voice: VoiceSettings = { ...DEFAULT_VOICE };
+/** The host's monthly limit on each person's use of shared keys, in dollars. */
+let spendLimits: Record<string, number> = {};
 let source: "app" | "env" = "env";
 
 const settingsFile = () => path.join(config.dataDir, "settings.json");
@@ -90,8 +97,10 @@ export function loadSettings() {
       model?: { providerName: string; baseURL: string; apiKey: string; models: string[] };
       voice?: Partial<VoiceSettings>;
       personalDefaults?: Record<string, string>;
+      spendLimits?: Record<string, number>;
     };
     personalDefaults = { ...saved.personalDefaults };
+    spendLimits = { ...saved.spendLimits };
     voice = { ...DEFAULT_VOICE, ...saved.voice, botVoices: { ...saved.voice?.botVoices }, people: { ...saved.voice?.people } };
     if (saved.providers) {
       providers = saved.providers.map((provider) => {
@@ -118,7 +127,7 @@ function persist() {
   fs.mkdirSync(config.dataDir, { recursive: true });
   // Write then rename, so a crash never leaves half a file. Readable only by you.
   const temp = `${settingsFile()}.${process.pid}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef, personalDefaults, voice }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ providers, defaultModel: defaultRef, personalDefaults, voice, spendLimits }, null, 2), { mode: 0o600 });
   fs.renameSync(temp, settingsFile());
   source = "app";
 }
@@ -162,6 +171,26 @@ export function modelOptions(personId = HOST): ModelOption[] {
 }
 
 export const providerById = (id: string) => providers.find((item) => item.id === id) ?? null;
+
+/** A model's price: set by hand on its provider, or from the built-in table. */
+export const priceOf = (provider: Provider, model: string): Price | null => provider.prices?.[model] ?? builtInPrice(model);
+
+/** A model on a person's own key, for when their share of the shared keys is used up: their own default, else their first. */
+export function ownModel(personId: string): ModelTarget | null {
+  const own = find(personalDefaults[personId]);
+  if (own?.provider.ownerId === personId) return own;
+  const provider = providers.find((item) => item.ownerId === personId && item.models.length);
+  return provider ? { provider, model: provider.models[0], ref: modelRef(provider.id, provider.models[0]) } : null;
+}
+
+export const spendLimit = (personId: string): number | null => spendLimits[personId] ?? null;
+
+/** Sets (or, with null, removes) a person's monthly limit on shared keys. */
+export function setSpendLimit(personId: string, limit: number | null) {
+  const { [personId]: _, ...rest } = spendLimits;
+  spendLimits = limit === null ? rest : { ...rest, [personId]: limit };
+  persist();
+}
 
 /** Whether this model can drive a desktop. */
 export const canDriveDesktop = (target: ModelTarget | null) => Boolean(target?.provider.desktop.includes(target.model));
@@ -217,7 +246,11 @@ export function defaultModel(personId = HOST) {
 export function settingsView(personId = HOST): SettingsView {
   return {
     providers: providers.filter((provider) => usable(provider, personId))
-      .map(({ apiKey, ...provider }) => ({ ...provider, keySet: Boolean(apiKey), keyHint: apiKey.length >= 12 ? apiKey.slice(-4) : null })),
+      .map((provider) => {
+        const { apiKey, prices: _, ...rest } = provider;
+        const prices = Object.fromEntries(provider.models.flatMap((model) => { const price = priceOf(provider, model); return price ? [[model, price]] : []; }));
+        return { ...rest, keySet: Boolean(apiKey), keyHint: apiKey.length >= 12 ? apiKey.slice(-4) : null, prices };
+      }),
     defaultModel: defaultModel(personId),
     configured: modelConfigured(personId),
     source,
@@ -255,11 +288,22 @@ export function saveProvider(id: string | null, input: ProviderInput, ownerId: s
     models,
     desktop: models.filter((model) => desktop.includes(model)),
     ownerId: existing ? existing.ownerId : ownerId,
+    prices: pricesFor(models, existing?.prices, input.prices),
   };
   providers = existing ? providers.map((item) => (item.id === next.id ? next : item)) : [...providers, next];
   ensureDefault();
   persist();
   return next.id;
+}
+
+/** Kept prices for the models still there, changed by any typed in (null clears one back to the built-in price). */
+function pricesFor(models: string[], kept: Record<string, Price> = {}, typed: Record<string, Price | null> = {}) {
+  const prices: Record<string, Price> = {};
+  for (const model of models) {
+    const price = model in typed ? typed[model] : kept[model];
+    if (price && Number.isFinite(price.input) && Number.isFinite(price.output)) prices[model] = price;
+  }
+  return Object.keys(prices).length ? prices : undefined;
 }
 
 export function deleteProvider(id: string) {
