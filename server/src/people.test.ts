@@ -47,8 +47,18 @@ function setup() {
     const json = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
     return { status: response.status, json: json as any };
   };
-  const bot = store.createBot({ name: "Luke", title: "", description: "", model: "env::mock-model", computer: false });
-  return { store, events, runner, bot, as };
+  return { store, events, runner, as };
+}
+
+/** The host (first login) and Marija, each with a Bot of their own. */
+async function family() {
+  const env = setup();
+  const andrew = env.as("andrew@example.com");
+  const marija = env.as("marija@example.com");
+  const luke = (await andrew("POST", "/bots", { name: "Luke", model: "env::mock-model" })).json;
+  const ivy = (await marija("POST", "/bots", { name: "Ivy", model: "env::mock-model" })).json;
+  const me = (await marija("GET", "/me")).json.me;
+  return { ...env, andrew, marija, luke, ivy, marijaId: me.id as string };
 }
 
 async function until<T>(read: () => T | undefined | null | false, timeoutMs = 3000): Promise<T> {
@@ -63,80 +73,82 @@ async function until<T>(read: () => T | undefined | null | false, timeoutMs = 30
 
 afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-describe("people", () => {
-  test("the first login is the owner's; a new one waits until the owner adds it", async () => {
+describe("the family", () => {
+  test("the first login is the host's; anyone else is family straight away", async () => {
     const { as } = setup();
-    const andrew = as("andrew@example.com");
-    expect((await andrew("GET", "/me")).json.me).toMatchObject({ id: "owner", role: "owner", name: "Andrew", login: "andrew@example.com" });
-    // This PC (no login) is the owner too.
+    expect((await as("andrew@example.com")("GET", "/me")).json.me).toMatchObject({ id: "owner", role: "host", name: "Andrew" });
+    // This PC (no login) is the host too.
     expect((await as(null)("GET", "/me")).json.me.id).toBe("owner");
-
-    const marija = as("marija.k@example.com");
-    expect((await marija("GET", "/me")).json.me).toMatchObject({ role: "pending", name: "Marija" });
-    expect(await marija("GET", "/state")).toMatchObject({ status: 403, json: { pending: true } });
-    const pending = (await andrew("GET", "/state")).json.people.find((person: { role: string }) => person.role === "pending");
-    expect(pending.login).toBe("marija.k@example.com");
-
-    await andrew("PATCH", `/people/${pending.id}`, { role: "member" });
-    expect((await marija("GET", "/state")).status).toBe(200);
-    // Settings, accounts and Bots stay the owner's.
-    expect((await marija("GET", "/settings")).status).toBe(403);
-    expect((await marija("POST", "/bots", { name: "Mine" })).status).toBe(403);
+    expect((await as("marija.k@example.com")("GET", "/me")).json.me).toMatchObject({ role: "family", name: "Marija" });
+    expect((await as("marija.k@example.com")("GET", "/state")).status).toBe(200);
   });
 
-  test("members see only the topics shared with them, and talk to its Bot by name", async () => {
-    const { store, bot, as } = setup();
-    const andrew = as("andrew@example.com");
-    await andrew("GET", "/me");
-    const marija = as("marija@example.com");
-    const me = (await marija("GET", "/me")).json.me;
-    await andrew("PATCH", `/people/${me.id}`, { role: "member" });
-    writeAbout(me.id, "- Vegetarian. Likes window seats.");
+  test("everyone's Bots are their own: nobody else sees them, their chats or their routines", async () => {
+    const { andrew, marija, luke, ivy, store } = await family();
+    expect(luke.ownerId).toBe("owner");
+    const andrewSees = (await andrew("GET", "/state")).json;
+    const marijaSees = (await marija("GET", "/state")).json;
+    expect(andrewSees.bots.map((bot: { name: string }) => bot.name)).toEqual(["Luke"]);
+    expect(marijaSees.bots.map((bot: { name: string }) => bot.name)).toEqual(["Ivy"]);
+    expect(marijaSees.chats.map((chat: { id: string }) => chat.id)).toEqual([ivy.chatId]);
+    // Not even the host can read or drive someone else's Bot.
+    expect((await andrew("GET", `/chats/${ivy.chatId}/messages`)).status).toBe(403);
+    expect((await andrew("POST", `/chats/${ivy.chatId}/messages`, { text: "hi" })).status).toBe(403);
+    expect((await andrew("PATCH", `/bots/${ivy.id}`, { name: "Mine" })).status).toBe(403);
+    expect((await marija("POST", `/bots/${luke.id}/routines`, { title: "x", prompt: "y", schedule: { type: "interval", minutes: 60 } })).status).toBe(403);
+    // Server settings stay the host's.
+    expect((await marija("PUT", "/settings/default-model", { model: "env::mock-model" })).status).toBe(403);
+    await until(() => store.listMessages(ivy.chatId).length > 0);
+  });
 
-    const trip = store.createChat({ kind: "topic", title: "Trip to Skopje", memberIds: [bot.id], coordinatorId: bot.id, icon: "plane" });
-    const secret = store.createChat({ kind: "topic", title: "Birthday present", memberIds: [bot.id], coordinatorId: bot.id, icon: "gift" });
-    await andrew("PATCH", `/chats/${trip.id}`, { peopleIds: [me.id] });
+  test("a shared topic: each person brings their own Bots, and the Bot hears who's talking", async () => {
+    const { store, andrew, marija, luke, ivy, marijaId } = await family();
+    writeAbout(marijaId, "- Vegetarian. Likes window seats.");
+    const trip = (await andrew("POST", "/topics", { title: "Trip to Skopje", icon: "plane", memberIds: [luke.id] })).json;
+    // You can only bring in your own Bots.
+    expect((await andrew("POST", "/topics", { title: "Sneaky", icon: "plane", memberIds: [ivy.id] })).status).toBe(400);
+    await andrew("PATCH", `/chats/${trip.id}`, { peopleIds: [marijaId] });
+    expect((await marija("GET", "/state")).json.chats.map((chat: { title: string }) => chat.title)).toContain("Trip to Skopje");
+    // Marija adds Ivy; she can't rename Andrew's topic or remove Luke.
+    expect((await marija("PATCH", `/chats/${trip.id}`, { memberIds: [luke.id, ivy.id] })).status).toBe(200);
+    expect((await marija("PATCH", `/chats/${trip.id}`, { title: "Mine now" })).status).toBe(403);
+    expect((await marija("PATCH", `/chats/${trip.id}`, { memberIds: [ivy.id] })).status).toBe(400);
+    // Now each sees the other's Bot, read-only.
+    expect((await marija("GET", "/state")).json.bots.map((bot: { name: string }) => bot.name).sort()).toEqual(["Ivy", "Luke"]);
 
-    const state = (await marija("GET", "/state")).json;
-    expect(state.chats.map((chat: { title: string }) => chat.title)).toEqual(["Trip to Skopje"]);
-    expect(state.bots.map((item: { name: string }) => item.name)).toEqual(["Luke"]);
-    expect((await marija("GET", `/chats/${secret.id}/messages`)).status).toBe(403);
-    expect((await marija("GET", `/chats/${bot.chatId}/messages`)).status).toBe(403);
+    // With no @mention, your own Bot answers you; Andrew's Bot answers Andrew.
+    expect((await marija("POST", `/chats/${trip.id}/messages`, { text: "Hi" })).json.replies).toHaveLength(1);
+    await until(() => store.listMessages(trip.id).find((message) => message.author === ivy.id && message.status === "done"));
+    expect(store.listMessages(trip.id).some((message) => message.author === luke.id)).toBe(false);
 
     prompts.length = 0;
-    const sent = await marija("POST", `/chats/${trip.id}/messages`, { text: "Can we fly Thursday?" });
-    expect(sent.json.message.author).toBe(`person:${me.id}`);
-    await until(() => store.listMessages(trip.id).find((message) => message.author === bot.id && message.status === "done"));
-    expect(prompts[0].messages).toContain("[Marija]: Can we fly Thursday?");
-    expect(prompts[0].system).toContain("This topic is shared: Andrew (who runs Colony), Marija.");
-    expect(prompts[0].system).toContain("The latest message is from Marija.");
-    expect(prompts[0].system).toContain("Vegetarian. Likes window seats.");
+    const sent = await marija("POST", `/chats/${trip.id}/messages`, { text: "@Ivy can we fly Thursday?" });
+    expect(sent.json.message.author).toBe(`person:${marijaId}`);
+    await until(() => store.listMessages(trip.id).filter((message) => message.author === ivy.id && message.status === "done").length === 2 && prompts.length);
+    const prompt = prompts.at(-1)!;
+    expect(prompt.messages).toContain("[Marija]: @Ivy can we fly Thursday?");
+    expect(prompt.system).toContain("This topic is shared: Andrew (who runs Colony), Marija.");
+    expect(prompt.system).toContain("Vegetarian. Likes window seats.");
   });
 
-  test("@Name for another person is between people: the Bot stays quiet", async () => {
-    const { store, bot, as } = setup();
-    const andrew = as("andrew@example.com");
-    await andrew("GET", "/me");
-    const me = (await as("marija@example.com")("GET", "/me")).json.me;
-    await andrew("PATCH", `/people/${me.id}`, { role: "member" });
-    const trip = store.createChat({ kind: "topic", title: "Trip", memberIds: [bot.id], coordinatorId: bot.id, icon: "plane" });
+  test("@Name for a person keeps the Bots quiet unless one is named too", async () => {
+    const { andrew, luke, marijaId } = await family();
+    const trip = (await andrew("POST", "/topics", { title: "Trip", icon: "plane", memberIds: [luke.id] })).json;
     await andrew("PATCH", `/chats/${trip.id}`, { everyone: true });
-    const sent = await andrew("POST", `/chats/${trip.id}/messages`, { text: "@Marija are you free Thursday?" });
-    expect(sent.json.replies).toEqual([]);
-    // Naming the Bot too brings it in.
-    const both = await andrew("POST", `/chats/${trip.id}/messages`, { text: "@Marija Thursday works. Luke, can you check the 9am flight?" });
-    expect(both.json.replies).toHaveLength(1);
+    expect((await andrew("POST", `/chats/${trip.id}/messages`, { text: "@Marija are you free Thursday?" })).json.replies).toEqual([]);
+    expect((await andrew("POST", `/chats/${trip.id}/messages`, { text: "@Marija Thursday works. Luke, can you check flights?" })).json.replies).toHaveLength(1);
+    expect(marijaId).toBeTruthy();
   });
 
-  test("members only hear events about topics shared with them", () => {
-    const { store, bot } = setup();
-    const member = store.addPerson({ login: "m@example.com", name: "M", color: "#7CC4FA", role: "member" });
-    const shared = store.createChat({ kind: "topic", title: "Shared", memberIds: [bot.id], coordinatorId: bot.id });
-    store.updateTopic(shared.id, { peopleIds: [member.id] });
-    const message = store.createMessage({ chatId: bot.chatId, author: "user", text: "private" });
-    expect(eventFor(member, { type: "message.upserted", message }, store)).toBeNull();
-    expect(eventFor(member, { type: "chat.upserted", chat: store.getChat(bot.chatId)! }, store)).toEqual({ type: "chat.deleted", chatId: bot.chatId });
-    expect(eventFor(member, { type: "chat.upserted", chat: store.getChat(shared.id)! }, store)).not.toBeNull();
-    expect(eventFor(member, { type: "settings.updated", models: [], defaultModel: "", configured: true }, store)).toBeNull();
+  test("events reach only the people they're about", async () => {
+    const { store, luke, ivy, marijaId } = await family();
+    const marija = store.getPerson(marijaId)!;
+    const host = store.getPerson("owner")!;
+    const message = store.createMessage({ chatId: luke.chatId, author: "user", text: "private" });
+    expect(eventFor(marija, { type: "message.upserted", message }, store)).toBeNull();
+    expect(eventFor(host, { type: "chat.upserted", chat: store.getChat(ivy.chatId)! }, store)).toEqual({ type: "chat.deleted", chatId: ivy.chatId });
+    expect(eventFor(host, { type: "bot.upserted", bot: store.getBot(ivy.id)! }, store)).toEqual({ type: "bot.deleted", botId: ivy.id });
+    expect(eventFor(marija, { type: "bot.upserted", bot: store.getBot(ivy.id)! }, store)).not.toBeNull();
+    expect(eventFor(marija, { type: "computer.output", botId: luke.id, text: "ls" }, store)).toBeNull();
   });
 });

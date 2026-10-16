@@ -1,7 +1,7 @@
 import type { ImagePart, ModelMessage } from "ai";
 import * as files from "../files.js";
 import { describeSchedule } from "../shared/schedule.js";
-import { authorOf, isHuman, isShared, peopleIn, readAbout, readHousehold } from "../people.js";
+import { authorOf, isHost, isHuman, isShared, peopleIn, readAbout, readHousehold } from "../people.js";
 import type { Bot, Chat, Message, Routine } from "../shared/types.js";
 import type { Store } from "../store.js";
 import type { DesktopMode } from "./desktopTools.js";
@@ -139,10 +139,10 @@ export function peopleNote(store: Store, chat: Chat) {
   const people = peopleIn(store, chat);
   const last = store.listMessages(chat.id, { limit: 20 }).reverse().find((message) => isHuman(message.author));
   const sender = last ? people.find((person) => authorOf(person) === last.author) : undefined;
-  const about = sender && sender.role !== "owner" ? readAbout(sender.id) : "";
+  const about = sender && !isHost(sender) ? readAbout(sender.id) : "";
   const household = readHousehold();
   return [
-    `This topic is shared: ${people.map((person) => `${person.name}${person.role === "owner" ? " (who runs Colony)" : ""}`).join(", ")}. Each person's messages start with "[Name]: ". Answer whoever wrote last, by name when it helps; a message that @mentions only another person is for them, not you.`,
+    `This topic is shared: ${people.map((person) => `${person.name}${isHost(person) ? " (who runs Colony)" : ""}`).join(", ")}. Each person's messages start with "[Name]: ". Answer whoever wrote last, by name when it helps; a message that @mentions only another person is for them, not you.`,
     sender ? `The latest message is from ${sender.name}.` : "",
     about ? `About ${sender!.name} (their USER.md):\n${about}` : "",
     household ? `About the household (HOUSEHOLD.md):\n${household}` : "",

@@ -22,6 +22,8 @@ export type Bot = {
   /** Short description of what the Bot is doing right now, shown on hover. */
   activity: string | null;
   chatId: string;
+  /** Who it belongs to: whoever made it (or was given it). Only they see its chat, memory and routines. */
+  ownerId: string;
   createdAt: number;
 };
 
@@ -55,17 +57,19 @@ export type Chat = {
   lastAuthor: string | null;
   updatedAt: number;
   unread: number;
-  /** Topics: the people (besides the owner) who can see and post in it, or everyone. */
+  /** Who it belongs to: a Bot's owner for its chat, whoever started a topic. */
+  ownerId: string;
+  /** Topics: the people (besides its owner) who can see and post in it, or everyone. */
   peopleIds: string[];
   everyone: boolean;
 };
 
 /**
- * Someone in the household, known by their Tailscale login (no Colony accounts).
- * The owner runs Colony and sees everything; members see the topics shared with them;
- * a login Colony hasn't been told about waits ("pending") until the owner adds or ignores it.
+ * Someone in the family, known by their Tailscale login (no Colony accounts). The host runs
+ * Colony on their PC and looks after what's shared; everyone else is family. Each person's
+ * Bots are their own.
  */
-export type PersonRole = "owner" | "member" | "pending" | "ignored";
+export type PersonRole = "host" | "family";
 export type Person = { id: string; login: string | null; name: string; color: string; role: PersonRole; createdAt: number };
 
 /** interrupted: Colony restarted while the step was running (see the run's restart marker). */
@@ -84,7 +88,8 @@ export type Step = {
 };
 
 /** A folder topics are filed in. */
-export type Folder = { id: string; title: string; position: number; createdAt: number };
+/** A person's own way of filing their topics. */
+export type Folder = { id: string; title: string; position: number; ownerId: string; createdAt: number };
 
 /** A topic a Bot suggested starting; nothing exists until you tap Create. */
 export type TopicProposal = { title: string; icon: TopicIcon; brief: string; memberIds: string[]; folderId: string | null };
@@ -226,10 +231,14 @@ export type Approval = {
   /** Exact command, recipient, or payload to show verbatim. */
   detail: string;
   reason: string;
+  /** Who must answer: the Bot's owner, or whoever owns the account or PC it would act on. */
+  approverId: string;
   status: ApprovalStatus;
   createdAt: number;
   resolvedAt: number | null;
 };
+/** What a tool asks for; the approver defaults to the Bot's owner. */
+export type ApprovalRequest = Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt" | "approverId"> & { approverId?: string };
 
 /** What a PC lets Bots do, switched on in its desktop app (and enforced there). */
 export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk";

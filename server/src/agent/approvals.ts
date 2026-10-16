@@ -1,5 +1,5 @@
 import type { Store } from "../store.js";
-import type { Approval } from "../shared/types.js";
+import type { Approval, ApprovalRequest } from "../shared/types.js";
 
 const APPROVAL_TIMEOUT_MS = 6 * 60 * 60_000;
 
@@ -14,7 +14,7 @@ export class ApprovalGate {
 
   constructor(private store: Store) {}
 
-  async request(input: Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt">, signal: AbortSignal): Promise<boolean> {
+  async request(input: ApprovalRequest, signal: AbortSignal): Promise<boolean> {
     // After a restart, a resumed turn asking for the same thing re-attaches to the approval
     // that was already waiting (and keeps its original deadline) instead of asking twice.
     const kept = this.adopt(input);
@@ -44,7 +44,7 @@ export class ApprovalGate {
    * A pending approval from before a restart for this reply and tool, if it asks for exactly
    * the same action. One that asks for something different is expired: the new request replaces it.
    */
-  private adopt(input: Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt">) {
+  private adopt(input: ApprovalRequest) {
     let match: Approval | undefined;
     for (const approval of this.store.listApprovals("pending")) {
       if (approval.messageId !== input.messageId || approval.tool !== input.tool || this.waiting.has(approval.id)) continue;

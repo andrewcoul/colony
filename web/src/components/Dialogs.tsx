@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Shuffle } from "lucide-react";
 import { TOPIC_ICONS, type Bot, type Chat, type TopicIcon } from "@shared/types";
 import { api } from "../lib/api";
-import { useLive } from "../lib/live";
+import { useLive, useMyId } from "../lib/live";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
 import { PersonAvatar } from "./People";
@@ -132,7 +132,11 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
 }) {
   const botMap = useLive((s) => s.bots);
   const folderMap = useLive((s) => s.folders);
-  const bots = Object.values(botMap).sort((a, b) => a.name.localeCompare(b.name));
+  const me = useLive((s) => s.me?.id ?? "owner");
+  // You bring your own Bots; other people's already in the topic stay as they are.
+  const bots = Object.values(botMap).filter((bot) => bot.ownerId === me).sort((a, b) => a.name.localeCompare(b.name));
+  const others = (topic?.memberIds ?? []).map((id) => botMap[id]).filter((bot) => bot && bot.ownerId !== me);
+  const limited = Boolean(topic && topic.ownerId !== me);
   const folders = Object.values(folderMap).sort((a, b) => a.position - b.position);
   const [title, setTitle] = useState("");
   const [icon, setIcon] = useState<TopicIcon>("chat");
@@ -145,7 +149,8 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   // Who else in the household sees it.
-  const people = useLive((s) => s.people).filter((person) => person.role === "member");
+  const myId = useMyId();
+  const people = useLive((s) => s.people).filter((person) => person.id !== myId);
   const [peopleIds, setPeopleIds] = useState<string[]>([]);
   const [everyone, setEveryone] = useState(false);
 
@@ -171,8 +176,9 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
     try {
       const folder = newFolder?.trim() ? (await api.createFolder(newFolder.trim())).id : folderId || null;
       const input = { title: title.trim(), icon, brief: brief.trim(), folderId: folder, memberIds: members, coordinatorId: coordinatorId || undefined };
-      let chat = topic ? await api.updateTopic(topic.id, input) : await api.createTopic(input);
-      if (people.length && (everyone !== chat.everyone || peopleIds.join() !== chat.peopleIds.join())) chat = await api.shareTopic(chat.id, { peopleIds, everyone });
+      // Someone else's topic: only your Bots change.
+      let chat = limited ? await api.updateTopic(topic!.id, { memberIds: members }) : topic ? await api.updateTopic(topic.id, input) : await api.createTopic(input);
+      if (!limited && people.length && (everyone !== chat.everyone || peopleIds.join() !== chat.peopleIds.join())) chat = await api.shareTopic(chat.id, { peopleIds, everyone });
       onOpenChange(false);
       onSaved(chat.id);
     } catch (failure) { setError(failure instanceof Error ? failure.message : "Couldn't save the topic."); }
@@ -181,9 +187,10 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
 
   const shown = allIcons ? TOPIC_ICONS : TOPIC_ICONS.slice(0, 11);
   return (
-    <Dialog open={open} onOpenChange={onOpenChange} title={topic ? "Edit topic" : "New topic"}
-      description={topic ? undefined : "A topic is its own conversation for one ongoing thing: a trip, a renovation, a launch."}>
+    <Dialog open={open} onOpenChange={onOpenChange} title={limited ? "Your Bots in this topic" : topic ? "Edit topic" : "New topic"}
+      description={limited ? `Bring your own Bots into ${topic!.title}, or take them out.` : topic ? undefined : "A topic is its own conversation for one ongoing thing: a trip, a renovation, a launch."}>
       <form onSubmit={save} className="flex flex-col">
+        {!limited && <>
         <Field label="Name" htmlFor="topic-title"><Input id="topic-title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={60} required autoFocus placeholder="Hallway renovation" /></Field>
 
         <span className="mb-1.5 text-label text-muted">Icon</span>
@@ -201,7 +208,8 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
           )}
         </div>
 
-        <span className="mb-1.5 text-label text-muted">Bots</span>
+        </>}
+        <span className="mb-1.5 text-label text-muted">{others.length ? "Your Bots" : "Bots"}</span>
         <div className="mb-1.5 flex flex-wrap gap-2">
           {bots.length === 0 && <p className="m-0 py-1 text-label text-muted">Create a Bot first.</p>}
           {bots.map((bot) => {
@@ -218,7 +226,12 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
         <p className="m-0 mb-4 text-meta text-muted">
           {members.length > 1 ? "Several Bots work on it together and can hand work to each other." : "Add more Bots and they work on it together."}
         </p>
-        {members.length > 1 && (
+        {others.length > 0 && (
+          <span className="mb-3 flex flex-wrap items-center gap-1.5 text-meta text-muted">
+            Also here:{others.map((bot) => <span key={bot!.id} className="flex items-center gap-1.5 rounded-full bg-raised py-0.5 pr-2.5 pl-1 text-label text-soft"><Face seed={bot!.faceSeed} size={18} />{bot!.name}</span>)}
+          </span>
+        )}
+        {members.length > 1 && !limited && (
           <label className="mb-4 flex items-center justify-between gap-3 text-sm">
             <span className="text-soft">Answers unless you @mention another</span>
             <select value={coordinatorId} onChange={(e) => setCoordinatorId(e.target.value)} className="rounded-lg border border-rule bg-ground px-2.5 py-1.5 text-sm text-ink outline-none">
@@ -227,6 +240,7 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
           </label>
         )}
 
+        {!limited && <>
         <Field label="What's it about? Optional" htmlFor="topic-brief">
           <textarea id="topic-brief" value={brief} onChange={(e) => setBrief(e.target.value)} maxLength={2000} rows={3}
             placeholder="Repaint, new lights and a built-in wardrobe. Budget about 25,000 zł, done before Christmas."
@@ -273,6 +287,7 @@ export function TopicDialog({ open, onOpenChange, onSaved, topic, defaultBotId }
             <Input value={newFolder} onChange={(e) => setNewFolder(e.target.value)} maxLength={40} autoFocus placeholder="Home" className="max-w-44" />
           )}
         </div>
+        </>}
         {error && <p role="alert" className="m-0 mb-3 text-label text-danger">{error}</p>}
         <Button type="submit" variant="primary" disabled={busy || !title.trim() || members.length < 1}>{topic ? "Save" : "Create topic"}</Button>
       </form>

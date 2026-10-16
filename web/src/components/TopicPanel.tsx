@@ -5,7 +5,7 @@ import type { ArtifactVersion, Bot, Chat, ChatFile } from "@shared/types";
 import { api, fileUrl } from "../lib/api";
 import { shortTime } from "../lib/dates";
 import { changesOnly, diffLines } from "../lib/diff";
-import { loadArtifact, loadFiles, useLive, useIsOwner } from "../lib/live";
+import { loadArtifact, loadFiles, useLive, useMyId } from "../lib/live";
 import { fade, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { DocBody, VersionNumber } from "./DocView";
@@ -29,9 +29,12 @@ export function TopicPanel({ chat, bots, tab, onTab, phone, onClose, onError }: 
   const files = useLive((s) => s.files[chat.id]);
   const routineCount = useLive((s) => Object.values(s.routines).filter((routine) => routine.chatId === chat.id).length);
   useEffect(() => { if (!files) void loadFiles(chat.id).catch(() => {}); }, [chat.id, files]);
-  const lead = bots.find((bot) => bot.id === chat.coordinatorId) ?? bots[0];
-  // Routines are the owner's to set up.
-  const owner = useIsOwner();
+  // Routines here belong to one of your own Bots in the topic (the lead, if it's yours).
+  const myId = useMyId();
+  const myBots = bots.filter((bot) => bot.ownerId === myId);
+  const lead = myBots.find((bot) => bot.id === chat.coordinatorId) ?? myBots[0];
+  // You schedule work for your own Bots in this topic.
+  const owner = myBots.length > 0;
   const tabs: { id: TopicTab; label: string; count?: number }[] = [
     { id: "doc", label: "Doc" },
     { id: "files", label: "Files", count: files?.length },

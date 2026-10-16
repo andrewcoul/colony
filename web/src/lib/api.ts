@@ -136,9 +136,9 @@ export const api = {
     if (!response.ok) throw new Error(((await response.json().catch(() => null)) as { error?: string } | null)?.error ?? "Couldn't play that voice.");
     return response.blob();
   },
-  me: () => request<{ me: Person; owner: string }>("GET", "/me"),
-  updatePerson: (id: string, patch: Partial<Pick<Person, "name" | "color" | "role">>) => request<Person>("PATCH", `/people/${encodeURIComponent(id)}`, patch),
-  removePerson: (id: string) => request<void>("DELETE", `/people/${encodeURIComponent(id)}`),
+  me: () => request<{ me: Person; host: string }>("GET", "/me"),
+  family: () => request<{ person: Person; bots: number }[]>("GET", "/family"),
+  updatePerson: (id: string, patch: Partial<Pick<Person, "name" | "color">>) => request<Person>("PATCH", `/people/${encodeURIComponent(id)}`, patch),
   personAbout: (id: string) => request<{ text: string }>("GET", `/people/${encodeURIComponent(id)}/about`),
   setPersonAbout: (id: string, text: string) => request<void>("PUT", `/people/${encodeURIComponent(id)}/about`, { text }),
   household: () => request<{ text: string }>("GET", "/household"),
