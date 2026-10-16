@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, m } from "motion/react";
-import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Phone, Square, Trash2 } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, CalendarClock, ChevronLeft, FileText, IdCard, Lock, Monitor, MoreHorizontal, Pencil, Phone, RotateCcw, Shrink, Square, Trash2 } from "lucide-react";
 import type { Bot, Chat } from "@shared/types";
 import { api } from "../lib/api";
 import { loadArtifact, loadMessages, loadOlder, useLive } from "../lib/live";
@@ -36,6 +36,7 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
 }) {
   const call = useCall();
   const mine = "user";
+  const persistent = useLive((s) => s.persistent);
   const botMap = useLive((s) => s.bots);
   const messages = useLive((s) => s.messages[chat.id]) ?? EMPTY;
   const loaded = useLive((s) => chat.id in s.messages);
@@ -151,6 +152,15 @@ export function ChatScreen({ chat, phone, onBack, onOpenChat, onError, onExpandC
           <MenuContent>
             {bot && <MenuItem onClick={() => setPanel("profile")}><IdCard size={15} />Profile, memory & skills</MenuItem>}
             {topic && <MenuItem onClick={() => setEditing(true)}><Pencil size={15} />Edit topic</MenuItem>}
+            {/* Persistent conversations: the Bot's context here, summarised now or started over. */}
+            {persistent && !thread && answerer && <>
+              <MenuItem onClick={() => void api.compact(chat.id).catch((failure) => onError(failure instanceof Error ? failure.message : "Couldn't compact."))}>
+                <Shrink size={15} />Compact {answerer.name}'s conversation
+              </MenuItem>
+              <MenuItem disabled={busy} onClick={() => { if (confirm(`${answerer.name} starts fresh here: it won't see this conversation any more. Its memory and skills stay, and the chat stays as it is.`)) void api.startFresh(chat.id).catch((failure) => onError(failure instanceof Error ? failure.message : "Couldn't start fresh.")); }}>
+                <RotateCcw size={15} />Start {answerer.name} fresh here
+              </MenuItem>
+            </>}
             {topic && (
               <MenuItem onClick={() => void api.updateTopic(chat.id, { archived: !chat.archivedAt }).catch(() => onError("Couldn't change that."))}>
                 {chat.archivedAt ? <><ArchiveRestore size={15} />Move out of the archive</> : <><Archive size={15} />Archive</>}

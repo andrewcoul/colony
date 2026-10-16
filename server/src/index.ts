@@ -7,6 +7,8 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { ApprovalGate } from "./agent/approvals.js";
 import { AgentRunner } from "./agent/run.js";
+import { PiRunner } from "./agent/pi/runner.js";
+import type { Runner } from "./agent/runner.js";
 import { browserTools } from "./agent/browserTools.js";
 import { computerTools } from "./agent/computerTools.js";
 import { accountsGuidance, mailTools, mailToolsFor } from "./agent/mailTools.js";
@@ -101,11 +103,12 @@ const toolsFor = (botId: string): ToolRegistry => {
     ...pcToolsFor(nodes, store, botId),
   };
 };
-const runner = new AgentRunner(store, events, gate, toolsFor, undefined, desktop, {
-  integrations,
-  guidance: (botId) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)),
-  notify: (notification) => void push.notify(notification, { force: true }),
-});
+const guidance = (botId: string) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer));
+// pi durable keeps each Bot's conversations in data/agent.db; the AI SDK runtime keeps per-step checkpoints in colony.db.
+const runner: Runner = config.runtime === "pi"
+  ? await PiRunner.open(store, events, gate, toolsFor, { storage: path.join(config.dataDir, "agent.db"), desktop, integrations, guidance })
+  : new AgentRunner(store, events, gate, toolsFor, undefined, desktop, { integrations, guidance });
+console.log(`Agent runtime: ${config.runtime === "pi" ? "pi durable (persistent conversations)" : "AI SDK"}`);
 const calls = new Calls(store, events, runner);
 nodes.stopBot = (botId) => runner.stopBot(botId);
 const ringTools = callTools(calls);

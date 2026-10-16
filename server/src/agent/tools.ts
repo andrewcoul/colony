@@ -20,7 +20,7 @@ export type ToolContext = {
   chatId: string;
   messageId: string;
   signal: AbortSignal;
-  gate: ApprovalGate;
+  gate: Pick<ApprovalGate, "request">;
   store: Store;
   /** 0 for a turn the user started; 1 when another Bot asked. Bots can't chain further. */
   depth: number;

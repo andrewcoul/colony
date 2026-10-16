@@ -25,6 +25,8 @@ export type LiveState = {
   access: Access[];
   /** PCs lent through the desktop app. */
   nodes: PcNode[];
+  /** Bots keep persistent conversations (compact, start fresh, branch). */
+  persistent: boolean;
   /** Bots ringing you right now, by call id. */
   ringing: Record<string, RingingCall>;
   error: string | null;
@@ -32,7 +34,7 @@ export type LiveState = {
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], ringing: {}, error: null,
+  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], persistent: false, ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -122,7 +124,7 @@ async function loadState() {
     ready: true, error: null,
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
-    accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [],
+    accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [], persistent: Boolean(snapshot.persistent),
   });
 }
 

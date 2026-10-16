@@ -120,6 +120,9 @@ export const api = {
   steerNow: (messageId: string) => request<void>("POST", `/messages/${messageId}/steer`),
   unqueue: (messageId: string) => request<void>("DELETE", `/messages/${messageId}`),
   stop: (chatId: string) => request<void>("POST", `/chats/${chatId}/stop`),
+  /** Persistent conversations: summarise the older part now, or start the Bot afresh here. */
+  compact: (chatId: string) => request<void>("POST", `/chats/${chatId}/compact`, {}),
+  startFresh: (chatId: string) => request<void>("POST", `/chats/${chatId}/fresh`, {}),
   markRead: (chatId: string) => request<void>("POST", `/chats/${chatId}/read`),
   decide: (approvalId: string, approve: boolean) => request<void>("POST", `/approvals/${approvalId}`, { approve }),
   terminal: (botId: string) => request<{ text: string }>("GET", `/bots/${botId}/terminal`),

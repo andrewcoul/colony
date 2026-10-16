@@ -424,6 +424,7 @@ export class Store {
     this.db.prepare("DELETE FROM artifacts WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chat_files WHERE chat_id = ?").run(id);
     removeChatFolder(id);
+    this.db.prepare("DELETE FROM conversations WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chats WHERE id = ?").run(id);
     this.events.emit({ type: "chat.deleted", chatId: id });
@@ -630,6 +631,48 @@ export class Store {
 
   deleteRun(id: string) {
     this.db.prepare("DELETE FROM runs WHERE id = ?").run(id);
+  }
+
+  // ---------- Persistent conversations (pi durable) ----------
+  /** The conversation a Bot keeps in a chat, if it has one. */
+  conversationOf(chatId: string, botId: string): { conversationId: string; createdAt: number } | null {
+    const row = this.db.prepare("SELECT conversation_id, created_at FROM conversations WHERE chat_id = ? AND bot_id = ?").get(chatId, botId) as Row | undefined;
+    return row ? { conversationId: row.conversation_id as string, createdAt: row.created_at as number } : null;
+  }
+
+  /** Which chat and Bot a conversation belongs to. */
+  conversationOwner(conversationId: string): { chatId: string; botId: string } | null {
+    const row = this.db.prepare("SELECT chat_id, bot_id FROM conversations WHERE conversation_id = ?").get(conversationId) as Row | undefined;
+    return row ? { chatId: row.chat_id as string, botId: row.bot_id as string } : null;
+  }
+
+  /** Links (or relinks: "start fresh", a branch) a Bot's conversation in a chat. */
+  linkConversation(chatId: string, botId: string, conversationId: string, createdAt = Date.now()) {
+    this.db.prepare(`INSERT INTO conversations (chat_id, bot_id, conversation_id, created_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT (chat_id, bot_id) DO UPDATE SET conversation_id = excluded.conversation_id, created_at = excluded.created_at`).run(chatId, botId, conversationId, createdAt);
+  }
+
+  /** Chat messages a conversation has already taken in, of these. */
+  seenBy(conversationId: string, messageIds: string[]): Set<string> {
+    if (!messageIds.length) return new Set();
+    const rows = this.db.prepare(`SELECT message_id FROM conversation_seen WHERE conversation_id = ? AND message_id IN (${messageIds.map(() => "?").join(",")})`)
+      .all(conversationId, ...messageIds) as Row[];
+    return new Set(rows.map((row) => row.message_id as string));
+  }
+
+  markSeen(conversationId: string, messageIds: string[]) {
+    for (const id of messageIds) this.db.prepare("INSERT OR IGNORE INTO conversation_seen (conversation_id, message_id) VALUES (?, ?)").run(conversationId, id);
+  }
+
+  /** Where a Bot's reply ended in its conversation (a branch starts there). */
+  setMessageEntry(messageId: string, conversationId: string, entryId: string) {
+    this.db.prepare(`INSERT INTO message_entries (message_id, conversation_id, entry_id) VALUES (?, ?, ?)
+      ON CONFLICT (message_id) DO UPDATE SET conversation_id = excluded.conversation_id, entry_id = excluded.entry_id`).run(messageId, conversationId, entryId);
+  }
+
+  messageEntry(messageId: string): { conversationId: string; entryId: string } | null {
+    const row = this.db.prepare("SELECT conversation_id, entry_id FROM message_entries WHERE message_id = ?").get(messageId) as Row | undefined;
+    return row ? { conversationId: row.conversation_id as string, entryId: row.entry_id as string } : null;
   }
 
   // ---------- Mail waiting to trigger a routine ----------

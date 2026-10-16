@@ -139,6 +139,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     accounts: integrations?.accounts.list() ?? [],
     access: integrations?.accounts.listAccess() ?? [],
     nodes: nodes?.list() ?? [],
+    persistent: Boolean(runner.compact),
     seq: events.latestSeq(),
   }));
 
@@ -525,6 +526,30 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
       return c.json({ error: "Only a message that's still waiting can be taken back." }, 409);
     }
     store.deleteMessage(message.id);
+    return c.body(null, 204);
+  });
+
+  /** Which of a chat's Bots a conversation action is for: the one named, or the chat's lead. */
+  const botIn = (chat: Chat, botId?: string) => (botId && chat.memberIds.includes(botId) ? botId : chat.coordinatorId && chat.memberIds.includes(chat.coordinatorId) ? chat.coordinatorId : chat.memberIds[0]);
+  api.post("/chats/:id/compact", async (c) => {
+    const chat = store.getChat(c.req.param("id"));
+    if (!chat) return c.json({ error: "Chat not found." }, 404);
+    if (!runner.compact) return c.json({ error: "Bots here don't keep persistent conversations." }, 400);
+    const { botId } = z.object({ botId: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+    const bot = botIn(chat, botId);
+    if (!bot) return c.json({ error: "There's no Bot in this chat." }, 400);
+    try { await runner.compact(chat.id, bot); } catch (error) { return c.json({ error: error instanceof Error ? error.message : "Couldn't compact." }, 409); }
+    return c.body(null, 204);
+  });
+  api.post("/chats/:id/fresh", async (c) => {
+    const chat = store.getChat(c.req.param("id"));
+    if (!chat) return c.json({ error: "Chat not found." }, 404);
+    if (!runner.startFresh) return c.json({ error: "Bots here don't keep persistent conversations." }, 400);
+    const { botId } = z.object({ botId: z.string().optional() }).parse(await c.req.json().catch(() => ({})));
+    const bot = botIn(chat, botId);
+    if (!bot) return c.json({ error: "There's no Bot in this chat." }, 400);
+    if (runner.isRunning(chat.id, bot)) return c.json({ error: "Stop the Bot first." }, 409);
+    await runner.startFresh(chat.id, bot);
     return c.body(null, 204);
   });
 

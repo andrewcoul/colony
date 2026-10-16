@@ -258,6 +258,8 @@ export type AppState = {
   access: Access[];
   /** PCs lent through the desktop app: Bots may use them, within each PC's switches. */
   nodes: PcNode[];
+  /** Bots keep persistent conversations (pi durable): they can be compacted, started fresh and branched. */
+  persistent: boolean;
   /** Latest event sequence number; subscribe to /api/events from here. */
   seq: number;
 };

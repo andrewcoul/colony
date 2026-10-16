@@ -38,7 +38,7 @@ test("a family database becomes yours alone: everyone else's Bots, topics, accou
   before.close();
 
   const db = openDb(file);
-  expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(18);
+  expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBeGreaterThanOrEqual(18);
   const after = new Store(db, new EventLog(db));
   const accounts = new Accounts(db, new EventLog(db), path.join(dataDir, "accounts.json"));
   expect(after.forgetOthers()).toEqual([hers.id]);

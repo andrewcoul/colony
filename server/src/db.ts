@@ -295,6 +295,27 @@ const MIGRATIONS = [
   DELETE FROM people WHERE id <> 'owner';
   UPDATE approvals SET approver_id = 'owner';
   `,
+  // v19: persistent Bots (pi durable). Each Bot keeps one conversation per chat in data/agent.db;
+  // these link them, note which chat messages each has taken in, and where a reply ended in it.
+  `
+  CREATE TABLE IF NOT EXISTS conversations (
+    chat_id TEXT NOT NULL,
+    bot_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, bot_id)
+  );
+  CREATE TABLE IF NOT EXISTS conversation_seen (
+    conversation_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    PRIMARY KEY (conversation_id, message_id)
+  );
+  CREATE TABLE IF NOT EXISTS message_entries (
+    message_id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    entry_id TEXT NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;
