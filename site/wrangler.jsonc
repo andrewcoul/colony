@@ -1,0 +1,13 @@
+// For documentation: colony-site is uploaded through the Cloudflare API from site/dist (worker.js and
+// metadata.json, made by `npm run build --prefix site`), not with wrangler. This is the same setup.
+{
+  "name": "colony-site",
+  "main": "dist/worker.js",
+  "compatibility_date": "2026-10-01",
+  "vars": {
+    // The origin: Colony's Cloudflare Tunnel, behind its own Access app.
+    "ORIGIN_URL": "https://colony-origin.werdna.xyz"
+  }
+  // Secrets (wrangler secret put …): ACCESS_CLIENT_ID and ACCESS_CLIENT_SECRET, the origin Access
+  // app's service token.
+}

@@ -96,7 +96,7 @@ describe("pi runtime: Bots", () => {
     const reply = (await finished(store, bot.chatId, 2)).at(-1)!;
     expect(reply.text).toBe("Noted.");
     expect(reply.steps).toMatchObject([{ tool: "memory", title: "Saved to memory", status: "done" }]);
-    expect(files.readEntries(bot.id, "memory")).toEqual(["Prefers replies under 3 lines"]);
+    expect(files.readEntries(bot, "memory")).toEqual(["Prefers replies under 3 lines"]);
     expect(promptText(script.prompts.at(-1))).toContain("Prefers replies under 3 lines");
     expect(store.listRuns()).toEqual([]);
   });
@@ -138,7 +138,7 @@ describe("pi runtime: Bots", () => {
   test("a chat from before the conversation starts it with its recent history", async () => {
     const script = scripted.play([textTurn("Picking up from where we were.")]);
     const { store, call } = await setup();
-    const bot = store.createBot({ name: "Old", title: "", description: "", model: "dev::mock-model", computer: false });
+    const bot = store.createBot({ name: "Old", title: "", description: "", model: "dev::mock-model", computer: false, ownerId: "owner" });
     store.createMessage({ chatId: bot.chatId, author: "user", text: "We decided on Lisbon." });
     store.createMessage({ chatId: bot.chatId, author: bot.id, text: "Lisbon it is." });
     await call("POST", `/chats/${bot.chatId}/messages`, { text: "Where are we going?" });
@@ -330,7 +330,7 @@ describe("pi runtime: routines and usage", () => {
     expect(reply.text).toBe("Morning brief: all quiet.");
     expect(reply.cards).toMatchObject([{ type: "routine", title: "Morning brief" }]);
     expect(promptText(script.prompts.at(-1))).toContain("Brief me.");
-    expect(store.listUsage(0).map((row) => row.botId)).toEqual([bot.id, bot.id]);
+    expect(store.listUsage(0, "owner").map((row) => row.botId)).toEqual([bot.id, bot.id]);
   });
 });
 

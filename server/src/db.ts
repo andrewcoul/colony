@@ -282,18 +282,12 @@ const MIGRATIONS = [
     decided_at INTEGER
   );
   `,
-  // v18: Colony is single-user again. Other people, what was shared with them, their PCs, push
-  // subscriptions and spending go (their Bots, topics and accounts are removed at startup, with
-  // their files). The family columns stay unused for now, so an older Colony can still open this.
+  // v18: nothing is shared between people any more: hand-overs and shared topics end. (This once
+  // removed everyone but the host; people are accounts again, so their things stay theirs.)
   `
   DELETE FROM bot_transfers;
   DELETE FROM chat_people;
   UPDATE chats SET everyone = 0;
-  DELETE FROM nodes WHERE person_id <> 'owner';
-  DELETE FROM push_subscriptions WHERE person_id IS NOT NULL AND person_id <> 'owner';
-  DELETE FROM usage WHERE owner_id <> 'owner';
-  DELETE FROM people WHERE id <> 'owner';
-  UPDATE approvals SET approver_id = 'owner';
   `,
   // v19: persistent Bots (pi durable). Each Bot keeps one conversation per chat in data/agent.db;
   // these link them, note which chat messages each has taken in, and where a reply ended in it.
@@ -316,17 +310,52 @@ const MIGRATIONS = [
     entry_id TEXT NOT NULL
   );
   `,
+  // v20: separate accounts. The owner (everything so far) is the admin; anyone else is a member.
+  // Each event is for one person (null: everyone); what came before is the admin's. A topic only
+  // holds its owner's Bots, and each approval waits for the owner of the Bot that asked.
+  `
+  UPDATE people SET role = CASE WHEN id = 'owner' THEN 'admin' ELSE 'member' END;
+  ALTER TABLE events ADD COLUMN person_id TEXT;
+  UPDATE events SET person_id = 'owner';
+  CREATE INDEX events_by_person ON events (person_id, seq);
+  UPDATE push_subscriptions SET person_id = 'owner' WHERE person_id IS NULL;
+  UPDATE usage SET owner_id = COALESCE((SELECT owner_id FROM bots WHERE bots.id = usage.bot_id), owner_id);
+  UPDATE approvals SET approver_id = COALESCE((SELECT owner_id FROM bots WHERE bots.id = approvals.bot_id), 'owner');
+  DELETE FROM chat_members WHERE bot_id NOT IN (
+    SELECT bots.id FROM bots JOIN chats ON chats.id = chat_members.chat_id WHERE bots.owner_id = chats.owner_id
+  );
+  `,
+  // v21: the admin can turn a member off (they can't sign in, and their Bots don't run).
+  `ALTER TABLE people ADD COLUMN disabled_at INTEGER;`,
+  // v22: invites to sign up on the web. Only a hash of each link's token is kept.
+  `
+  CREATE TABLE invites (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    used_at INTEGER,
+    person_id TEXT
+  );
+  CREATE INDEX invites_by_email ON invites (email);
+  `,
 ];
 
 export type Db = DatabaseSync;
 
-/** Opens (and migrates) the SQLite database. Pass ":memory:" in tests. */
-export function openDb(file: string): Db {
+/**
+ * Opens (and migrates) the SQLite database. Pass ":memory:" in tests. `version` stops at an older
+ * schema (tests make databases as an older Colony left them).
+ */
+export function openDb(file: string, version = MIGRATIONS.length): Db {
   if (file !== ":memory:") fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new DatabaseSync(file);
   db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
-  const version = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
-  for (let index = version; index < MIGRATIONS.length; index++) {
+  const current = (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  for (let index = current; index < Math.min(version, MIGRATIONS.length); index++) {
     db.exec("BEGIN");
     try {
       db.exec(MIGRATIONS[index]);

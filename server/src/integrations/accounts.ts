@@ -53,7 +53,9 @@ const NONE = { mail: "none", calendar: "none", vault: "none" } as const;
 /**
  * Connected accounts and what each Bot may do with them. Account details live in the
  * database; tokens live in data/accounts.json (readable only by you), so a copy of the
- * database never carries them. Every change emits `accounts.updated`.
+ * database never carries them. Every change emits `accounts.updated`, to the admin: accounts
+ * are the admin's, connected in Settings and given to the admin's own Bots. (Accounts other
+ * people connected in the family build stay in the database, unused.)
  */
 export class Accounts {
   /** Called when an account's sign-in stops working (expired or revoked). */
@@ -62,8 +64,6 @@ export class Accounts {
 
   constructor(private db: Db, private events: EventLog, private file = path.join(config.dataDir, "accounts.json")) {
     this.secrets = this.read();
-    // Colony is single-user: accounts other people connected in the family build go, with their tokens.
-    for (const row of db.prepare("SELECT id FROM accounts WHERE person_id <> 'owner'").all() as Row[]) this.remove(row.id as string);
     events.subscribe(({ event }) => {
       if (event.type === "bot.deleted") this.forgetBot(event.botId);
     });
@@ -87,16 +87,16 @@ export class Accounts {
   }
 
   private emit() {
-    this.events.emit({ type: "accounts.updated", accounts: this.list(), access: this.listAccess() });
+    this.events.emit({ type: "accounts.updated", accounts: this.list(), access: this.listAccess() }, "owner");
   }
 
-  // ---------- Accounts ----------
+  // ---------- Accounts (the admin's) ----------
   list(): Account[] {
-    return (this.db.prepare("SELECT * FROM accounts ORDER BY created_at").all() as Row[]).map(toAccount);
+    return (this.db.prepare("SELECT * FROM accounts WHERE person_id = 'owner' ORDER BY created_at").all() as Row[]).map(toAccount);
   }
 
   get(id: string): Account | null {
-    const row = this.db.prepare("SELECT * FROM accounts WHERE id = ?").get(id) as Row | undefined;
+    const row = this.db.prepare("SELECT * FROM accounts WHERE id = ? AND person_id = 'owner'").get(id) as Row | undefined;
     return row ? toAccount(row) : null;
   }
 
@@ -105,7 +105,7 @@ export class Accounts {
    * already connected: its access settings stay, the new sign-in replaces the old.
    */
   connect(input: { kind: AccountKind; label: string; email: string }, secret: AccountSecret): Account {
-    const existing = this.db.prepare("SELECT id FROM accounts WHERE kind = ? AND lower(email) = lower(?)").get(input.kind, input.email) as Row | undefined;
+    const existing = this.db.prepare("SELECT id FROM accounts WHERE kind = ? AND lower(email) = lower(?) AND person_id = 'owner'").get(input.kind, input.email) as Row | undefined;
     const id = (existing?.id as string | undefined) ?? randomUUID();
     if (existing) {
       this.db.prepare("UPDATE accounts SET label = ?, email = ?, status = 'ok' WHERE id = ?").run(input.label, input.email, id);
@@ -173,7 +173,7 @@ export class Accounts {
 
   // ---------- What each Bot may do ----------
   listAccess(): Access[] {
-    return (this.db.prepare("SELECT * FROM bot_access ORDER BY rowid").all() as Row[]).map(toAccess);
+    return (this.db.prepare("SELECT ba.* FROM bot_access ba JOIN accounts a ON a.id = ba.account_id AND a.person_id = 'owner' ORDER BY ba.rowid").all() as Row[]).map(toAccess);
   }
 
   access(botId: string, accountId: string): Access {

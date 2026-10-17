@@ -33,6 +33,11 @@ export function SpendingPage({ onBack }: { onBack: () => void }) {
           <div className="flex flex-col gap-1">
             <span className="text-meta text-muted">{spending.month} so far</span>
             <strong className="text-[32px] leading-none font-semibold tracking-tight tabular-nums">{money(spending.total)}</strong>
+            {spending.cap !== null && spending.cap !== undefined && (
+              <span className={cn("text-meta", spending.total >= spending.cap ? "text-danger" : "text-muted")}>
+                {spending.total >= spending.cap ? `Your ${money(spending.cap)} monthly limit is reached: new replies wait until the 1st.` : `of your ${money(spending.cap)} monthly limit`}
+              </span>
+            )}
           </div>
 
           <div className="flex flex-col gap-2">

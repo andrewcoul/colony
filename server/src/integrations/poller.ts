@@ -1,4 +1,5 @@
 import { fence, when } from "../agent/mailTools.js";
+import { ADMIN_ID } from "../people.js";
 import type { RoutineScheduler } from "../routines.js";
 import type { Routine } from "../shared/types.js";
 import type { Store } from "../store.js";
@@ -67,7 +68,8 @@ export class MailPoller {
     const { accounts } = this.services;
     const byAccount = new Map<string, (Routine & { schedule: MailSchedule })[]>();
     for (const routine of this.watching()) {
-      // Only Bots still allowed to read that mailbox.
+      // Only Bots still allowed to read that mailbox (accounts are the admin's, for the admin's Bots).
+      if (this.store.getBot(routine.botId)?.ownerId !== ADMIN_ID) continue;
       if (!allows.mail(accounts.access(routine.botId, routine.schedule.accountId).mail, "read")) continue;
       byAccount.set(routine.schedule.accountId, [...(byAccount.get(routine.schedule.accountId) ?? []), routine]);
     }

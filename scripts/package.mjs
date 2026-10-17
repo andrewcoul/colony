@@ -29,7 +29,11 @@ for (const item of ["server/dist", "server/assets", "web/dist", "computer", ".en
 for (const script of ["launcher.mjs", "service.ps1", "install.ps1"]) copy(`scripts/${script}`);
 
 // Pin the server's direct dependencies to the versions this build was tested with.
-const installed = (dependency) => JSON.parse(fs.readFileSync(path.join(root, "node_modules", dependency, "package.json"), "utf8")).version;
+// npm keeps a dependency in server/node_modules when it can't share the root's copy.
+const installed = (dependency) => {
+  const file = ["server/node_modules", "node_modules"].map((dir) => path.join(root, dir, dependency, "package.json")).find((candidate) => fs.existsSync(candidate));
+  return JSON.parse(fs.readFileSync(file, "utf8")).version;
+};
 const dependencies = Object.fromEntries(Object.keys(server.dependencies).map((dependency) => [dependency, installed(dependency)]));
 const write = (file, data) => fs.writeFileSync(path.join(stage, file), `${JSON.stringify(data, null, 2)}\n`);
 write("package.json", { name: "colony-server", version, private: true, type: "module", license, engines, dependencies });

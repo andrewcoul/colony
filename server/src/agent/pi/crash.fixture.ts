@@ -31,7 +31,7 @@ const call = { approval: toolTurn("send_email", { to: "sarah@acme.com", body: "D
 scripted.play([textTurn("Hi."), call]);
 const runner = await PiRunner.open(store, events, gate, () => crashTools(dataDir, 1), { storage: await openNodeSqliteStorage(path.join(dataDir, "agent.db")), models: scripted.source });
 
-const bot = store.createBot({ name: "Peng", title: "", description: "", model: "dev::mock-model", computer: false });
+const bot = store.createBot({ name: "Peng", title: "", description: "", model: "dev::mock-model", computer: false, ownerId: "owner" });
 runner.start(bot.chatId, bot.id, { hiddenPrompt: "Say hi." });
 const ready = () => {
   if (scenario === "approval") return store.listApprovals("pending").length > 0;

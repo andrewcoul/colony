@@ -169,14 +169,28 @@ that only devices on your tailnet can reach:
 Notifications skip the chat you're looking at. If push stops working after you
 wipe `data/`, turn notifications off and on again on each device.
 
-**Security model:** there's no login, so anyone who can reach Colony can use your
-Bots and their computers.
+**Security model:** every request is a person, or it's refused. The admin (you)
+runs Colony; members each have their own Bots, chats, files, routines and
+computers, and nobody sees anyone else's, not even the admin.
 - Never use `tailscale funnel` for Colony. Colony refuses Funnel (public internet)
   traffic.
-- To limit which tailnet accounts get in, list their logins in `.env`, e.g.
+- On your tailnet, Colony is yours alone: list your logins in `.env`, e.g.
   `COLONY_ALLOWED_USERS=you@gmail.com`. Tailscale adds each request's login, and
-  clients can't forge it.
-- Requests made directly on the PC are always allowed.
+  clients can't forge it. Other tailnet logins are refused.
+- On the web (the `colony-site` Worker in `site/`, then a Cloudflare Tunnel behind
+  its own Access app), Colony is invite-only: you invite an email from Settings ›
+  People, and only that email can make an account from the link. Your own email goes
+  in `COLONY_ADMIN_EMAILS`; set up its web password in Settings › People from the
+  tailnet or this PC. See [docs/deploy-accounts.md](docs/deploy-accounts.md).
+- Settings, sign-ins, connected accounts, lending a PC and updates are the admin's.
+  A member may have 2 Bot computers running at once (`COLONY_MEMBER_MAX_COMPUTERS`).
+- Members' Bots never use your sign-ins. They run on OpenCode Go with an OpenCode
+  API key you add in Settings › Members' models (kept in `data/credentials.json`;
+  only its last four characters are ever shown), on the models you allow there
+  (`muse-spark-1.3-contributor` to start). Until you add the key, members' Bots
+  can't run. In Settings › People you can give each member a monthly spending cap
+  (none by default; months run on Chicago time), turn members off, or remove them.
+- Requests made directly on the PC are always the admin's.
 
 ## Bot computers
 

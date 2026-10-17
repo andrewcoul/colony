@@ -13,7 +13,7 @@
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w server\" \"npm run dev -w web\"",
     "build": "npm run build -w web && npm run build -w server",
     "start": "npm start -w server",
-    "check": "npm run check -w server && npm run check -w web && npm run check --prefix desktop",
+    "check": "npm run check -w server && npm run check -w web && npm run check --prefix site && npm run check --prefix desktop",
     "test": "vitest run",
     "search:start": "docker compose -f firecrawl-mcp.compose.yml up -d --build",
     "computer:build": "docker build -t colony-computer:3 computer",

@@ -1,19 +1,37 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Me, Message, ModelOption, PersonSummary, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const data = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(data?.error || `Request failed (${response.status}).`);
-  }
-  return (response.status === 204 ? undefined : await response.json()) as T;
+/**
+ * A request that failed. `signIn`: you need to sign in (through the website). `offline`: the
+ * website can't reach the PC Colony runs on.
+ */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly signIn = false, readonly offline = false) { super(message); this.name = "ApiError"; }
 }
+
+async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch { throw new ApiError("Couldn't reach Colony. Check your connection, then try again.", 0); }
+  if (!response.ok) {
+    const data = await response.json().catch(() => null) as { error?: string; message?: string; signIn?: boolean; offline?: boolean } | null;
+    throw new ApiError(data?.error || data?.message || `Request failed (${response.status}).`, response.status, response.status === 401 && Boolean(data?.signIn), Boolean(data?.offline));
+  }
+  if (response.status === 204) return undefined as T;
+  try { return await response.json() as T; } catch { throw new ApiError(`Colony sent back something unexpected (${response.status}).`, response.status); }
+}
+
+/** An invite as the admin sees it (server/src/invites.ts). */
+export type Invite = { id: string; email: string; status: "pending" | "used" | "revoked" | "expired"; createdAt: number; expiresAt: number; sentAt: number | null; usedAt: number | null };
+/** Inviting: emailed, or a link to copy (no email set up, or it didn't work). */
+export type InviteSent = { invite: Invite; emailed: boolean; link?: string; error?: string };
+export type WebSignIn = { enabled: boolean; email: boolean; adminEmails: string[]; origins: string[] };
 
 export type BrowserInput =
   | { type: "click"; x: number; y: number }
@@ -58,7 +76,18 @@ export type VoiceSettings = {
 };
 /** Voice as devices see it: the key's last four characters at most. */
 export type VoiceView = VoiceSettings & { keySet: boolean; keyHint: string | null };
-export type Settings = { providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
+/** Members' models: whether the members' OpenCode API key is set (its last four characters only), and what members may use. */
+export type MembersView = {
+  keySet: boolean; keyHint: string | null; models: string[]; defaultModel: string; defaultCap: number | null;
+  catalog: CatalogModel[]; prices: Record<string, Price>;
+};
+export type Settings = { role?: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView; members?: MembersView };
+/** What a member sees of Settings: the models they may use, their spending and cap, and whether voice is on (server/src/settings.ts). */
+export type MemberSettings = {
+  role: "member"; models: ModelOption[]; defaultModel: string; configured: boolean;
+  voice: { on: boolean; allowCalls: boolean; quietFrom: string; quietTo: string };
+  spent: number; cap: number | null;
+};
 
 /** The server's version and updates (server/src/updates.ts). */
 export type SystemInfo = {
@@ -146,6 +175,26 @@ export const api = {
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
+  /** A member's reduced Settings. */
+  memberSettings: () => request<MemberSettings>("GET", "/settings"),
+  /** Who you are, and what your Bots know about you (your USER.md). */
+  me: () => request<{ me: Me; about: string }>("GET", "/me"),
+  setAbout: (text: string) => request<{ about: string }>("PUT", "/me/about", { text }),
+  /** The admin's: the members' OpenCode API key (only its last four characters ever come back). */
+  setMemberKey: (key: string) => request<Settings>("PUT", "/settings/members/key", { key }),
+  clearMemberKey: () => request<Settings>("DELETE", "/settings/members/key"),
+  setMemberPolicy: (patch: { models?: string[]; defaultModel?: string; defaultCap?: number | null }) => request<Settings>("PUT", "/settings/members", patch),
+  people: () => request<PersonSummary[]>("GET", "/people"),
+  /** `cap`: dollars a month, null for none, "default" for the members' default. */
+  updatePerson: (id: string, patch: { cap?: number | null | "default"; disabled?: boolean }) => request<PersonSummary>("PUT", `/people/${encodeURIComponent(id)}`, patch),
+  /** Removes a member's account (they're turned off); `deleteData` removes their Bots, chats and files too. */
+  removePerson: (id: string, deleteData = false) => request<PersonSummary | void>("DELETE", `/people/${encodeURIComponent(id)}${deleteData ? "?data=delete" : ""}`),
+  invites: () => request<Invite[]>("GET", "/invites"),
+  invite: (email: string) => request<InviteSent>("POST", "/invites", { email }),
+  resendInvite: (id: string) => request<InviteSent>("POST", `/invites/${encodeURIComponent(id)}/resend`),
+  revokeInvite: (id: string) => request<void>("DELETE", `/invites/${encodeURIComponent(id)}`),
+  webSignIn: () => request<WebSignIn>("GET", "/web-signin"),
+  setUpAdminSignIn: (email: string, password: string) => request<void>("POST", "/web-signin/admin", { email, password }),
   spending: () => request<Spending>("GET", "/spending"),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   startModelSignIn: (id: SignInId) => request<ModelSignInStart>("POST", `/settings/signins/${id}/start`),

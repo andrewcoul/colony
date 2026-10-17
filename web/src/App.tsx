@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { AnimatePresence } from "motion/react";
 import { Plus, WifiOff, X } from "lucide-react";
-import { setFocusedChat, useLive, type RingingCall } from "./lib/live";
+import { setFocusedChat, useIsAdmin, useLive, type RingingCall } from "./lib/live";
 import { useCall } from "./lib/call";
 import { CallBar, CallScreen, IncomingCall } from "./components/CallView";
 import { onOpenSettings, onOpenUpdates } from "./lib/settings";
@@ -11,6 +11,7 @@ import { CreateBotDialog, TopicDialog } from "./components/Dialogs";
 import { LogoMark } from "./components/Logo";
 import { Roster } from "./components/Roster";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { OfflineScreen, ResetPage, SignInPage, SignUpPage } from "./components/SignIn";
 import { UpdatesDialog } from "./components/UpdatesDialog";
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -54,6 +55,8 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [connected]);
   const loadError = useLive((s) => s.error);
+  const needsSignIn = useLive((s) => s.signIn);
+  const offline = useLive((s) => s.offline);
   const chats = useLive((s) => s.chats);
   const phone = usePhone();
   const [chatId, openChat] = useOpenChat();
@@ -62,7 +65,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => onOpenSettings(() => setSettingsOpen(true)), []);
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  useEffect(() => { startUpdates(); return onOpenUpdates(() => setUpdatesOpen(true)); }, []);
+  useEffect(() => onOpenUpdates(() => setUpdatesOpen(true)), []);
+  // Updates are the admin's to see and install.
+  const admin = useIsAdmin();
+  useEffect(() => { if (ready && admin) startUpdates(); }, [ready, admin]);
   const [error, setError] = useState("");
   const chat = chatId ? chats[chatId] : undefined;
   const call = useCall();
@@ -88,6 +94,12 @@ export default function App() {
   }, [ready, chatId, chat, openChat]);
   // Tell the server what's on screen so it doesn't notify about it.
   useEffect(() => { setFocusedChat(chat?.id ?? null); }, [chat?.id]);
+
+  // Signing up from an invite, resetting a password, signing in (through the website), or offline.
+  if (location.pathname === "/signup") return <SignUpPage invite={new URLSearchParams(location.search).get("invite") ?? ""} />;
+  if (location.pathname === "/reset") return <ResetPage token={new URLSearchParams(location.search).get("token") ?? ""} />;
+  if (needsSignIn) return <SignInPage />;
+  if (!ready && offline) return <OfflineScreen />;
 
   if (!ready) {
     return (

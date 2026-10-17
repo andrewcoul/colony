@@ -15,12 +15,14 @@ type Notification = { title: string; body: string; chatId: string | null; tag: s
 const FRESH_MS = 30 * 60_000;
 
 /**
- * Web Push to your devices. Keys are generated on first start and kept in data/push.json.
- * Bots notify when they finish a reply or need an approval, unless you're looking at that chat.
+ * Web Push to people's devices. Keys are generated on first start and kept in data/push.json.
+ * Bots notify their owner when they finish a reply or need an approval, unless the owner is
+ * looking at that chat. Each device belongs to whoever subscribed it, and only gets their news.
  */
 export class PushService {
   readonly publicKey: string;
-  private focus = new Map<string, { chatId: string | null; visible: boolean }>();
+  /** Open app windows, keyed "<person>:<window>", and the chat each shows. */
+  private focus = new Map<string, { personId: string; chatId: string | null; visible: boolean }>();
   private streams = new Map<string, number>();
   private notified = new Set<string>();
 
@@ -43,44 +45,48 @@ export class PushService {
         const bot = this.store.getBot(event.approval.botId);
         // A browser takeover opens straight into that Bot's browser.
         const path = event.approval.tool === "browser_takeover" ? `${bot?.chatId}/browser` : undefined;
-        if (bot) void this.notify({ title: `${bot.name} needs you`, body: event.approval.summary, chatId: event.approval.chatId, tag: `approval-${event.approval.id}`, path });
+        if (bot) void this.notify({ title: `${bot.name} needs you`, body: event.approval.summary, chatId: event.approval.chatId, tag: `approval-${event.approval.id}`, path }, { personId: event.approval.approverId });
       }
     });
   }
 
-  /** A device's subscription. */
-  subscribe(subscription: PushSubscriptionInput) {
-    this.db.prepare(`INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at) VALUES (?, ?, ?, ?)
-      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth`)
-      .run(subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, Date.now());
+  /** A device's subscription, and whose device it is. A device that signs in as someone else becomes theirs. */
+  subscribe(subscription: PushSubscriptionInput, personId: string) {
+    this.db.prepare(`INSERT INTO push_subscriptions (endpoint, p256dh, auth, created_at, person_id) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, person_id = excluded.person_id`)
+      .run(subscription.endpoint, subscription.keys.p256dh, subscription.keys.auth, Date.now(), personId);
   }
 
-  unsubscribe(endpoint: string) {
-    this.db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+  /** Drops a device; `personId` limits it to that person's devices. */
+  unsubscribe(endpoint: string, personId?: string) {
+    if (personId === undefined) this.db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").run(endpoint);
+    else this.db.prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND person_id = ?").run(endpoint, personId);
   }
 
-  isSubscribed(endpoint: string) {
-    return Boolean(this.db.prepare("SELECT 1 FROM push_subscriptions WHERE endpoint = ?").get(endpoint));
+  isSubscribed(endpoint: string, personId: string) {
+    return Boolean(this.db.prepare("SELECT 1 FROM push_subscriptions WHERE endpoint = ? AND person_id = ?").get(endpoint, personId));
   }
 
-  /** Which chat each open app window is showing, so we don't buzz the phone for what's on screen. */
-  setFocus(clientId: string, chatId: string | null, visible: boolean) {
-    this.focus.set(clientId, { chatId, visible });
+  /** Which chat each of a person's open app windows is showing, so we don't buzz the phone for what's on screen. */
+  setFocus(personId: string, clientId: string, chatId: string | null, visible: boolean) {
+    this.focus.set(`${personId}:${clientId}`, { personId, chatId, visible });
   }
 
   /** Counts a window's open event streams; its focus is forgotten when the last one closes. */
-  attachClient(clientId: string) {
-    this.streams.set(clientId, (this.streams.get(clientId) ?? 0) + 1);
+  attachClient(personId: string, clientId: string) {
+    const key = `${personId}:${clientId}`;
+    this.streams.set(key, (this.streams.get(key) ?? 0) + 1);
     return () => {
-      const left = (this.streams.get(clientId) ?? 1) - 1;
-      if (left > 0) return void this.streams.set(clientId, left);
-      this.streams.delete(clientId);
-      this.focus.delete(clientId);
+      const left = (this.streams.get(key) ?? 1) - 1;
+      if (left > 0) return void this.streams.set(key, left);
+      this.streams.delete(key);
+      this.focus.delete(key);
     };
   }
 
-  watching(chatId: string) {
-    return [...this.focus.values()].some((client) => client.visible && client.chatId === chatId);
+  /** Whether this person has the chat on screen. */
+  watching(personId: string, chatId: string) {
+    return [...this.focus.values()].some((client) => client.personId === personId && client.visible && client.chatId === chatId);
   }
 
   private onMessage(message: Message) {
@@ -94,13 +100,13 @@ export class PushService {
     const routine = message.cards.find((card) => card.type === "routine" && card.action === "ran");
     const where = routine?.type === "routine" ? routine.title : chat.kind === "topic" ? chat.title : null;
     const body = plainText(message.text).slice(0, 180) || message.error || "Finished.";
-    void this.notify({ title: where ? `${bot.name} · ${where}` : bot.name, body, chatId: chat.id, tag: chat.id });
+    void this.notify({ title: where ? `${bot.name} · ${where}` : bot.name, body, chatId: chat.id, tag: chat.id }, { personId: chat.ownerId });
   }
 
-  /** Notifies your devices, unless you're looking at that chat (`force`: regardless). */
-  async notify(notification: Notification, { force = false }: { force?: boolean } = {}) {
-    if (!force && notification.chatId && this.watching(notification.chatId)) return 0;
-    const rows = this.db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions").all() as { endpoint: string; p256dh: string; auth: string }[];
+  /** Notifies one person's devices, unless they're looking at that chat (`force`: regardless). */
+  async notify(notification: Notification, { force = false, personId }: { force?: boolean; personId: string }) {
+    if (!force && notification.chatId && this.watching(personId, notification.chatId)) return 0;
+    const rows = this.db.prepare("SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE person_id = ?").all(personId) as { endpoint: string; p256dh: string; auth: string }[];
     const payload = JSON.stringify({ title: notification.title, body: notification.body, tag: notification.tag, url: notification.path || notification.chatId ? `/#/chat/${notification.path ?? notification.chatId}` : "/" });
     let delivered = 0;
     await Promise.all(rows.map(async (row) => {

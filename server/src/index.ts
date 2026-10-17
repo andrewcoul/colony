@@ -28,8 +28,12 @@ import { ComputerService } from "./computer/docker.js";
 import { IdleStopper } from "./computer/idle.js";
 import { Updater } from "./updates.js";
 import { VERSION } from "./version.js";
-import { accessCheck, tailnetOnly } from "./access.js";
-import { createApi } from "./api.js";
+import { requirePerson, resolver, standardSources } from "./access.js";
+import { createApi, isPublicApi } from "./api.js";
+import { Invites } from "./invites.js";
+import { mailerFromEnv } from "./mailer.js";
+import { WebAccounts, webSignInProblem } from "./webauth.js";
+import { startWebAuth } from "./betterAuth.js";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
@@ -39,8 +43,8 @@ import { defaultModel, loadSettings, modelConfigured, modelOptions, onProvidersC
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
-import { foldHousehold } from "./people.js";
-import { removeBotFolder } from "./files.js";
+import { ADMIN_ID, foldHousehold, People } from "./people.js";
+import { decideUpgrade, refuseUpgrade, type Upgrade } from "./upgrades.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -67,29 +71,25 @@ loadSettings();
 // Your ChatGPT and OpenCode sign-ins (data/credentials.json) and the models picked from each.
 const models = new ColonyModels();
 const modelSignIns = new ModelSignIns(models);
-// A sign-in finishing or ending changes which models Bots can use.
-onProvidersChanged(() => events.emit({ type: "settings.updated", models: modelOptions(), defaultModel: defaultModel(), configured: modelConfigured() }));
-// Colony is single-user: the family build's host login is yours, and everyone else's things go.
+// A sign-in finishing or ending changes which models Bots can use (each person's stream narrows them to theirs).
+onProvidersChanged(() => events.emit({ type: "settings.updated", models: modelOptions(), defaultModel: defaultModel(), configured: modelConfigured() }, null));
+// The family build's host login is the admin's tailnet login.
 if (!ownerLogin()) {
   const host = db.prepare("SELECT login FROM people WHERE id = 'owner'").get() as { login: string | null } | undefined;
   if (host?.login) setOwnerLogin(host.login);
 }
-const othersBots = store.forgetOthers();
-for (const botId of othersBots) removeBotFolder(botId);
 foldHousehold();
 // Bots from before multiple providers stored a plain model id, and Bots from before sign-ins an
 // API key provider's id; point them at the provider their model is in now.
-for (const bot of store.listBots()) {
+// (Members' Bots are on the members' provider, which never moved.)
+for (const bot of store.listBots(ADMIN_ID)) {
   const target = resolveModel(bot.model, { fallback: false });
   if (target && target.ref !== bot.model) store.updateBot(bot.id, { model: target.ref });
 }
 const gate = new ApprovalGate(store);
 const nodes = new NodeHub(store, events);
 const computer = new ComputerService(store, events);
-void computer.syncStates().then(async () => {
-  for (const botId of othersBots) await computer.remove(botId).catch(() => {});
-  await computer.pruneOldImages();
-});
+void computer.syncStates().then(() => computer.pruneOldImages());
 const browser = new BrowserService(computer);
 const desktop = new DesktopService(computer);
 const computerToolset = { ...computerTools(computer), ...browserTools(browser) };
@@ -100,19 +100,24 @@ const integrations = new Integrations(accounts, tokens, new Vaults(accounts));
 const signIns = new SignIns(accounts, tokens);
 const accountTools = mailTools(integrations);
 const loginTools = vaultTools(browser, integrations);
-/** Each Bot's tools: the basics, its computer if it has one, and whatever accounts you've given it. */
+/**
+ * Each Bot's tools: the basics, its computer if it has one, and whatever accounts you've given it.
+ * Accounts and PCs are the admin's, so only the admin's Bots ever get those.
+ */
 const toolsFor = (botId: string): ToolRegistry => {
-  const hasComputer = Boolean(store.getBot(botId)?.computer);
+  const bot = store.getBot(botId);
+  const hasComputer = Boolean(bot?.computer);
+  const admins = bot?.ownerId === ADMIN_ID;
   return {
     ...coreTools,
     ...(hasComputer ? computerToolset : {}),
-    ...mailToolsFor(accountTools, integrations, botId),
-    ...(hasComputer ? vaultToolsFor(loginTools, integrations, botId) : {}),
+    ...(admins ? mailToolsFor(accountTools, integrations, botId) : {}),
+    ...(admins && hasComputer ? vaultToolsFor(loginTools, integrations, botId) : {}),
     ...ringTools,
     ...pcToolsFor(nodes, store, botId),
   };
 };
-const guidance = (botId: string) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer));
+const guidance = (botId: string) => (store.getBot(botId)?.ownerId === ADMIN_ID ? accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer)) : "");
 // pi durable keeps each Bot's conversations in data/agent.db.
 const runner: Runner = await PiRunner.open(store, events, gate, toolsFor, { storage: path.join(config.dataDir, "agent.db"), models, desktop, integrations, guidance });
 const calls = new Calls(store, events, runner);
@@ -123,28 +128,47 @@ routines.start();
 const poller = new MailPoller(store, integrations, routines);
 poller.start();
 const push = new PushService(db, store, events);
-calls.notify = (notification) => void push.notify(notification, { force: true });
+calls.notify = (notification, personId) => void push.notify(notification, { force: true, personId });
 // Pick up the turns that were running when Colony stopped, in the replies they were writing.
 runner.resumeAll(resumable);
+// Accounts are the admin's.
 accounts.onNeedsReauth = (account) => void push.notify({
   title: `Reconnect ${account.label}`,
   body: `${account.email} stopped working for your Bots. Reconnect it in Settings → Accounts.`,
   chatId: null,
   tag: `reauth-${account.id}`,
-});
+}, { personId: ADMIN_ID });
 
-const app = new Hono();
+// Who's asking: every request and WebSocket upgrade is a person (see access.ts), or refused.
 const owner = { allowed: config.allowedUsers, login: ownerLogin, claim: (login: string) => setOwnerLogin(login) };
-app.use(tailnetOnly(owner, config.cloudflareAccess));
+const people = new People(store, { adminEmails: config.adminEmails });
+// Web sign-in (through the colony-site Worker): invite-only accounts, and email through Resend.
+const invites = new Invites(db, config.inviteTtlDays);
+const mailer = mailerFromEnv();
+const webAccounts = new WebAccounts(store, people, invites);
+// Better Auth, with its own database (data/auth.db): only once BETTER_AUTH_SECRET and the web origins are set.
+const webSignInOff = webSignInProblem(process.env, config.publicOrigins);
+const webAuth = webSignInOff ? null : await startWebAuth({
+  file: path.join(config.dataDir, "auth.db"), secret: process.env.BETTER_AUTH_SECRET!.trim(), origins: config.publicOrigins, mailer, accounts: webAccounts,
+});
+if (webAuth) webAccounts.attach(webAuth.sessions);
+console.log(webSignInOff ? `[colony] ${webSignInOff}` : `[colony] Web sign-in is on for ${config.publicOrigins.join(", ")}${mailer.enabled ? ", with email" : " (no email: set RESEND_API_KEY for resets and codes)"}.`);
+const resolve = resolver(standardSources(owner, config.cloudflareAccess), people, (header) => webAccounts.personFor(header));
+const app = new Hono();
+// Pages load without a sign-in (that's where you sign in); /api needs one, except signing in itself.
+app.use(requirePerson(resolve, { origins: config.publicOrigins, isPublic: (path) => !path.startsWith("/api/") || isPublicApi(path) }));
 const updater = new Updater({
   version: VERSION,
   home: config.home,
   repo: config.updateRepo,
   apiBase: config.updateApi,
-  busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => bot.name),
+  // Members' Bots count, but their names stay theirs.
+  busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => (bot.ownerId === ADMIN_ID ? bot.name : "a member's Bot")),
 });
 updater.start();
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, models, modelSignIns, integrations, signIns, calls, nodes }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access: resolve, models, modelSignIns,
+  memberKey: { set: (key) => models.setMemberKey(key), clear: () => models.clearMemberKey() }, integrations, signIns, calls, nodes,
+  web: { accounts: webAccounts, invites, mailer, origins: config.publicOrigins, auth: webAuth } }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -165,7 +189,6 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
 
 // The desktop viewer streams video over a WebSocket at /api/bots/<id>/screen/media. Hono doesn't
 // proxy upgrades, so pass them straight to the Bot's desktop, under the same access rules.
-const allowed = accessCheck(owner, config.cloudflareAccess);
 /** Open Screen viewers per Bot; an open viewer keeps the computer awake. */
 const screenViewers = new Map<string, number>();
 const idle = new IdleStopper({
@@ -187,34 +210,30 @@ server.on("upgrade", (request, socket, head) => {
   // Checking a Cloudflare Access sign-in can take a moment; the socket holds its data until then.
   const failed = () => socket.destroy();
   socket.on("error", failed);
-  void allowed(header).then((refusal) => {
+  // Through the website, upgrades need a web sign-in and must come from Colony's own pages. A refusal
+  // is answered (401, 403 or 404) before closing, so the website doesn't take it for Colony being offline.
+  void decideUpgrade(resolve, header, config.publicOrigins, store, request.url ?? "").then((decided) => {
     socket.off("error", failed);
-    if (refusal || socket.destroyed) { socket.destroy(); return; }
-    routeUpgrade(request, socket, head);
-  }, () => socket.destroy());
+    if (socket.destroyed) return;
+    if ("status" in decided) { refuseUpgrade(socket, decided); return; }
+    routeUpgrade(decided.upgrade, decided.person.id, request, socket, head);
+  }, () => refuseUpgrade(socket, { status: 403, error: "Colony couldn't check this connection." }));
 });
-function routeUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
+function routeUpgrade(upgrade: Upgrade, personId: string, request: IncomingMessage, socket: Duplex, head: Buffer) {
   // The desktop app lending your PC to your Bots.
-  if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
-    nodes.upgrade(request, socket, head);
-    return;
-  }
+  if (upgrade.kind === "nodes") { nodes.upgrade(request, socket, head); return; }
   // A voice call with one of your Bots: /api/chats/<id>/call.
-  if (/^\/api\/chats\/[\w-]+\/call(\?|$)/.test(request.url ?? "")) {
-    calls.upgrade(request, socket, head);
-    return;
-  }
+  if (upgrade.kind === "call") { calls.upgrade(request, socket, head, personId); return; }
   // Watching a Bot's screen.
-  const match = /^\/api\/bots\/([\w-]+)\/screen(\/[^?#]*)(\?[^#]*)?$/.exec(request.url ?? "");
-  const bot = match ? store.getBot(match[1]) : null;
-  if (!match || !bot?.computer) { socket.destroy(); return; }
+  const bot = store.getBot(upgrade.botId);
+  if (!bot?.computer) { socket.destroy(); return; }
   void computer.runningDesktopPort(bot.id).then((port) => {
     if (!port) { socket.destroy(); return; }
     const upstream = net.connect(port, "127.0.0.1", () => {
       const headers = Object.entries(request.headers)
         .filter(([name]) => !["host", "cookie", "origin", "referer"].includes(name))
         .map(([name, value]) => `${name}: ${Array.isArray(value) ? value.join(", ") : value}`);
-      upstream.write([`${request.method} ${match[2]}${match[3] ?? ""} HTTP/1.1`, `host: 127.0.0.1:${port}`, ...headers, "", ""].join("\r\n"));
+      upstream.write([`${request.method} ${upgrade.path}${upgrade.query} HTTP/1.1`, `host: 127.0.0.1:${port}`, ...headers, "", ""].join("\r\n"));
       if (head?.length) upstream.write(head);
       socket.pipe(upstream).pipe(socket);
       screenViewers.set(bot.id, (screenViewers.get(bot.id) ?? 0) + 1);

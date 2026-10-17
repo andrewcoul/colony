@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AudioLines, Check, ChevronLeft, ChevronRight, Coins, Loader2, LogOut, Monitor, Plus, Server, X } from "lucide-react";
+import { AudioLines, Check, ChevronLeft, ChevronRight, Coins, KeyRound, Loader2, LogOut, Monitor, Plus, Server, Users, X } from "lucide-react";
 import type { Price } from "@shared/types";
 import type { AccountKind } from "@shared/types";
-import { api, type DesktopVerdict, type ProviderView, type Settings } from "../lib/api";
+import { api, type DesktopVerdict, type MemberSettings, type ProviderView, type Settings } from "../lib/api";
 import { AccountsList, ConnectAccount, KIND_NAMES } from "./AccountsSettings";
 import { ModelSignIn } from "./ModelSignIn";
 import { VoiceSettingsEditor } from "./VoiceSettings";
 import { ThisPcSettings } from "./ThisPcSettings";
-import { SpendingPage } from "./Spending";
+import { money, SpendingPage } from "./Spending";
+import { AboutYou, MembersModelsPage, PeoplePage, SignOutButton } from "./PeopleSettings";
 import { desktopApp } from "../lib/desktop";
-import { useLive } from "../lib/live";
+import { useIsAdmin, useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
 import { pending, useUpdates, WEB_VERSION } from "../lib/updates";
 import { cn } from "../lib/utils";
@@ -26,8 +27,55 @@ const verdictText = (verdict: DesktopVerdict) => verdict.error ? `couldn't check
 
 const message = (failure: unknown, fallback: string) => (failure instanceof Error ? failure.message : fallback);
 
+type DialogProps = { open: boolean; onOpenChange: (open: boolean) => void };
+
+/** Settings: all of it for the admin; for a member, what's theirs. */
+export function SettingsDialog(props: DialogProps) {
+  return useIsAdmin() ? <AdminSettingsDialog {...props} /> : <MemberSettingsDialog {...props} />;
+}
+
+/** A member's Settings: who they're signed in as, what their Bots know about them, their models, spending and cap. */
+function MemberSettingsDialog({ open, onOpenChange }: DialogProps) {
+  const me = useLive((s) => s.me);
+  const [settings, setSettings] = useState<MemberSettings | null>(null);
+  const [spendingOpen, setSpendingOpen] = useState(false);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    if (!open) return;
+    setSpendingOpen(false); setError("");
+    void api.memberSettings().then(setSettings).catch(() => setError("Couldn't load settings."));
+  }, [open]);
+  const preferred = settings?.models.find((model) => model.ref === settings.defaultModel)?.model;
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange} title={spendingOpen ? "Spending" : "Settings"} description={undefined}>
+      {spendingOpen ? <SpendingPage onBack={() => setSpendingOpen(false)} /> : (
+        <div className="flex flex-col gap-2">
+          <p className="m-0 mb-2 text-label text-muted">Signed in as <span className="text-ink">{me?.login ?? me?.name}</span>.</p>
+          <SignOutButton />
+          <AboutYou />
+          <div className="mt-2 mb-2 flex flex-col gap-1">
+            <span className="text-label text-muted">Models your Bots may use</span>
+            <span className="text-meta text-muted">
+              {!settings ? "…" : settings.models.length === 0 ? "None yet. Ask the person who runs this Colony."
+                : `${settings.models.map((model) => model.model).join(", ")}${preferred ? ` · new Bots use ${preferred}` : ""}${settings.configured ? "" : " · not set up yet"}`}
+            </span>
+          </div>
+          <SettingsRow icon={<Coins size={16} />} title="Spending" onClick={() => setSpendingOpen(true)}
+            detail={settings ? `${money(settings.spent)} this month · ${settings.cap === null ? "no monthly limit" : `limit ${money(settings.cap)}`}` : "What your Bots cost this month, by Bot"} />
+          <p className="m-0 mt-1 text-meta text-muted">Notifications: tap the bell on the Bots screen to turn them on for this device.</p>
+          <p className="m-0 mt-1 text-meta text-muted">
+            {settings?.voice.on ? `Voice calls are on${settings.voice.allowCalls ? ` · Bots can ring you, not ${settings.voice.quietFrom}–${settings.voice.quietTo}` : ""}.` : "Voice calls are off."}
+          </p>
+          {error && <p role="alert" className="m-0 mt-2 text-label text-danger">{error}</p>}
+          <p className="m-0 mt-4 border-t border-rule pt-4 text-meta text-muted">Colony {WEB_VERSION} · Models, voice, accounts and updates are set by the person who runs this Colony.</p>
+        </div>
+      )}
+    </Dialog>
+  );
+}
+
 /** Where models come from (ChatGPT and OpenCode sign-ins), the default model for new Bots, and connected accounts. */
-export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+function AdminSettingsDialog({ open, onOpenChange }: DialogProps) {
   const models = useLive((s) => s.models);
   const updates = useUpdates();
   const news = pending(updates);
@@ -40,10 +88,12 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
   const [voicing, setVoicing] = useState(false);
   const [lending, setLending] = useState(false);
   const [spendingOpen, setSpendingOpen] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [membersOpen, setMembersOpen] = useState(false);
 
   useEffect(() => {
     if (!open) return;
-    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setSpendingOpen(false); setError("");
+    setEditing(null); setConnecting(undefined); setVoicing(false); setLending(false); setSpendingOpen(false); setPeopleOpen(false); setMembersOpen(false); setError("");
     void api.settings().then(setSettings).catch(() => setError("Couldn't load settings."));
   }, [open]);
   const reload = useCallback(() => { void api.settings().then(setSettings).catch(() => {}); }, []);
@@ -58,10 +108,14 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}
-      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : provider ? provider.name : voicing ? "Voice" : lending ? "This PC" : spendingOpen ? "Spending" : "Settings"}
+      title={connecting !== undefined ? `Connect ${connecting ? KIND_NAMES[connecting] : "an account"}` : provider ? provider.name : voicing ? "Voice" : lending ? "This PC" : spendingOpen ? "Spending" : peopleOpen ? "People" : membersOpen ? "Members' models" : "Settings"}
       description={undefined}>
       {connecting !== undefined ? (
         <ConnectAccount kind={connecting} onBack={() => setConnecting(undefined)} />
+      ) : peopleOpen ? (
+        <PeoplePage onBack={() => setPeopleOpen(false)} />
+      ) : membersOpen && settings?.members ? (
+        <MembersModelsPage members={settings.members} onBack={() => setMembersOpen(false)} onSaved={setSettings} />
       ) : spendingOpen ? (
         <SpendingPage onBack={() => setSpendingOpen(false)} />
       ) : lending ? (
@@ -96,6 +150,10 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
           <div className="flex flex-col gap-2">
             <SettingsRow icon={<Coins size={16} />} title="Spending" onClick={() => setSpendingOpen(true)}
               detail="What your Bots cost this month, by Bot" />
+            <SettingsRow icon={<Users size={16} />} title="People" onClick={() => setPeopleOpen(true)}
+              detail="Invites, web sign-in, and members: what they spend, their caps and computers" />
+            <SettingsRow icon={<KeyRound size={16} />} title="Members' models" onClick={() => setMembersOpen(true)} disabled={!settings?.members}
+              detail={settings?.members ? `${settings.members.keySet ? `Key set${settings.members.keyHint ? ` (…${settings.members.keyHint})` : ""}` : "No OpenCode API key yet"} · ${settings.members.models.length} model${settings.members.models.length === 1 ? "" : "s"} · ${settings.members.defaultCap === null ? "no cap set" : `cap $${settings.members.defaultCap}`}` : "OpenCode Go for members' Bots"} />
             <SettingsRow icon={<AudioLines size={16} />} title="Voice" onClick={() => setVoicing(true)} disabled={!settings}
               detail={settings?.voice.baseURL
                 ? settings.voice.allowCalls ? `Talk to your Bots · they can ring you · quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Talk to your Bots · they can't ring you"
@@ -106,6 +164,7 @@ export function SettingsDialog({ open, onOpenChange }: { open: boolean; onOpenCh
             )}
           </div>
           <AccountsList onConnect={setConnecting} />
+          <div className="mt-3"><SignOutButton /></div>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">

@@ -22,6 +22,8 @@ export type Bot = {
   /** Short description of what the Bot is doing right now, shown on hover. */
   activity: string | null;
   chatId: string;
+  /** The person whose Bot this is. Only they see it, its chats and its computer. */
+  ownerId: string;
   createdAt: number;
 };
 
@@ -55,6 +57,8 @@ export type Chat = {
   lastAuthor: string | null;
   updatedAt: number;
   unread: number;
+  /** The person whose chat this is. Every Bot in it is theirs (no shared topics). */
+  ownerId: string;
 };
 
 /** interrupted: Colony restarted while the step was running (see the run's restart marker). */
@@ -73,7 +77,7 @@ export type Step = {
 };
 
 /** A folder topics are filed in. */
-export type Folder = { id: string; title: string; position: number; createdAt: number };
+export type Folder = { id: string; title: string; position: number; ownerId: string; createdAt: number };
 
 /** A topic a Bot suggested starting; nothing exists until you tap Create. */
 export type TopicProposal = { title: string; icon: TopicIcon; brief: string; memberIds: string[]; folderId: string | null };
@@ -215,12 +219,14 @@ export type Approval = {
   /** Exact command, recipient, or payload to show verbatim. */
   detail: string;
   reason: string;
+  /** Who answers it: the owner of the Bot that asks. */
+  approverId: string;
   status: ApprovalStatus;
   createdAt: number;
   resolvedAt: number | null;
 };
-/** What a tool asks for. */
-export type ApprovalRequest = Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt">;
+/** What a tool asks for (the approver is always the Bot's owner). */
+export type ApprovalRequest = Omit<Approval, "id" | "status" | "createdAt" | "resolvedAt" | "approverId">;
 
 /** What a PC lets Bots do, switched on in its desktop app (and enforced there). */
 export type PcCapability = "browser" | "screen" | "shell" | "files" | "fullDisk";
@@ -236,12 +242,37 @@ export type Spending = {
   days: { date: string; cost: number }[];
   /** Models used this month that have no price, so their tokens count but cost nothing here. */
   unpriced: string[];
+  /** A member's monthly cap in dollars, set by the admin (null: none). New turns wait once `total` reaches it. */
+  cap: number | null;
+};
+
+/** A member as the admin sees them in Settings › People. `cap` null: no cap. */
+export type PersonSummary = Me & {
+  disabled: boolean; createdAt: number;
+  /** This month's spending (America/Chicago), dollars. */
+  spent: number;
+  cap: number | null;
+  /** Whether the cap is set for them, or the default for members. */
+  capOwn: boolean;
+  bots: number;
+  /** Bot computers running (or starting) now. */
+  computers: number;
 };
 
 /** Your PC, lent to Bots through the Colony desktop app. `online`: its desktop app is connected now. */
 export type PcNode = { id: string; name: string; platform: string; capabilities: PcCapability[]; online: boolean; lastSeen: number };
 
+/**
+ * What a person can do here. The admin runs this Colony (Settings, sign-ins, accounts, PCs,
+ * updates); members have their own Bots and nothing else. Each sees only their own things.
+ */
+export type Role = "admin" | "member";
+/** Who's signed in. `login`: their email or tailnet login (null when on this PC). */
+export type Me = { id: string; role: Role; name: string; login: string | null };
+
 export type AppState = {
+  /** Who you are to this Colony. */
+  me: Me;
   bots: Bot[];
   chats: Chat[];
   folders: Folder[];

@@ -1,7 +1,7 @@
 import { Monitor, ShieldCheck } from "lucide-react";
 import type { Access, Account, Bot, CalendarAccess, MailAccess, PcNode, VaultAccess } from "@shared/types";
 import { api } from "../lib/api";
-import { useLive } from "../lib/live";
+import { useIsAdmin, useLive } from "../lib/live";
 import { openSettings } from "../lib/settings";
 import { cn } from "../lib/utils";
 import { AccountIcon } from "./AccountsSettings";
@@ -14,11 +14,13 @@ const SWITCHES: [PcNode["capabilities"][number], string][] = [["browser", "brows
 
 const selectClass = "h-9 min-w-0 flex-1 rounded-lg border border-rule bg-ground px-2.5 text-label text-ink outline-none disabled:opacity-50";
 
-/** What this Bot may do with each connected account. Nothing until you choose. */
+/** What this Bot may do with each connected account. Nothing until you choose. Accounts and PCs are the admin's. */
 export function BotAccess({ bot, onError }: { bot: Bot; onError: (message: string) => void }) {
   const accounts = useLive((s) => s.accounts);
   const access = useLive((s) => s.access);
   const nodes = useLive((s) => s.nodes);
+  const admin = useIsAdmin();
+  if (!admin) return null;
 
   const current = (account: Account): Access =>
     access.find((item) => item.botId === bot.id && item.accountId === account.id) ?? { botId: bot.id, accountId: account.id, mail: "none", calendar: "none", vault: "none" };

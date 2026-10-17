@@ -3,8 +3,10 @@ import { randomBytes, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { config } from "../config.js";
 import type { EventLog } from "../events.js";
 import { botDir, workspaceDir } from "../files.js";
+import { ADMIN_ID } from "../people.js";
 import type { Store } from "../store.js";
 
 /** Bump with computer/Dockerfile; containers on an older image are recreated (/workspace persists). */
@@ -20,6 +22,17 @@ const LOG_KEEP = 200_000;
 const OUTPUT_TO_MODEL = 20_000;
 
 export type ExecResult = { exitCode: number; output: string; truncated: boolean; timedOut: boolean; durationMs: number };
+
+/** Runs one docker command (tests pass a fake). */
+export type Docker = (args: string[], options?: { input?: string; env?: Record<string, string> }) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+/** A member already has as many computers running as they may. */
+export class ComputerLimitError extends Error {
+  constructor(limit: number) {
+    super(`You can have ${limit} Bot computer${limit === 1 ? "" : "s"} running at once. Switch one off (its Bot's Computer tab → Stop) and try again.`);
+    this.name = "ComputerLimitError";
+  }
+}
 
 function run(args: string[], options: { input?: string; env?: Record<string, string> } = {}) {
   return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
@@ -37,14 +50,22 @@ function run(args: string[], options: { input?: string; env?: Record<string, str
 /**
  * One Docker container per Bot: its own Linux computer with /workspace bind-mounted
  * from data/bots/<id>/workspace. Hardened: no privileges, capped memory/CPU/processes.
+ * Each is labeled with its Bot and the Bot's owner; a member may have `memberMax` running at once.
  */
 export class ComputerService {
   private starting = new Map<string, Promise<void>>();
   /** Called whenever a Bot's computer is used (the idle stopper listens). */
   onUse: (botId: string) => void = () => {};
   private imageReady: Promise<void> | null = null;
+  /** Per person: computers start one at a time, so two at once can't both slip under the limit. */
+  private admitting = new Map<string, Promise<unknown>>();
+  private memberMax: number;
+  private docker: Docker;
 
-  constructor(private store: Store, private events: EventLog) {}
+  constructor(private store: Store, private events: EventLog, options: { docker?: Docker; memberMax?: number } = {}) {
+    this.docker = options.docker ?? run;
+    this.memberMax = options.memberMax ?? config.limits.memberMaxComputers;
+  }
 
   containerName(botId: string) {
     return `colony-${botId.slice(0, 8)}`;
@@ -64,18 +85,39 @@ export class ComputerService {
   }
 
   private async hostPort(name: string, port: string) {
-    const answer = await run(["port", name, port]);
+    const answer = await this.docker(["port", name, port]);
     const address = answer.stdout.split(/\r?\n/).find((line) => line.startsWith("127.0.0.1:"));
     return address ? Number(address.trim().split(":")[1]) : null;
   }
 
   private ensureImage() {
     this.imageReady ??= (async () => {
-      if ((await run(["image", "inspect", IMAGE])).code === 0) return;
-      const build = await run(["build", "-t", IMAGE, CONTEXT]);
+      if ((await this.docker(["image", "inspect", IMAGE])).code === 0) return;
+      const build = await this.docker(["build", "-t", IMAGE, CONTEXT]);
       if (build.code !== 0) throw new Error(`Couldn't build the computer image: ${build.stderr.slice(-300)}`);
     })().catch((error) => { this.imageReady = null; throw error; });
     return this.imageReady;
+  }
+
+  /** Bots let through `admit` whose computers are still starting. */
+  private admitted = new Set<string>();
+
+  /**
+   * Refuses to start a member's computer while they have `memberMax` running (or starting). The
+   * admin has no limit. One person's starts are checked one at a time.
+   */
+  private admit(botId: string): Promise<void> {
+    const ownerId = this.store.getBot(botId)?.ownerId;
+    if (!ownerId || ownerId === ADMIN_ID) return Promise.resolve();
+    const turn = (this.admitting.get(ownerId) ?? Promise.resolve()).then(async () => {
+      const theirs = (id: string) => this.store.getBot(id)?.ownerId === ownerId;
+      const busy = new Set([...(await this.runningBots()).filter(theirs), ...[...this.admitted].filter(theirs)]);
+      busy.delete(botId);
+      if (busy.size >= this.memberMax) throw new ComputerLimitError(this.memberMax);
+      this.admitted.add(botId);
+    });
+    this.admitting.set(ownerId, turn.catch(() => {}));
+    return turn;
   }
 
   /** Starts (or creates) the Bot's container. Concurrent callers share one start. */
@@ -85,23 +127,25 @@ export class ComputerService {
     if (existing) return existing;
     const start = (async () => {
       const name = this.containerName(botId);
-      const inspect = await run(["inspect", "-f", "{{.Config.Image}}|{{.State.Running}}", name]);
+      const inspect = await this.docker(["inspect", "-f", "{{.Config.Image}}|{{.State.Running}}", name]);
       const [image, running] = inspect.stdout.trim().split("|");
       const current = inspect.code === 0 && image === IMAGE;
       if (current && running === "true") { this.store.setComputerState(botId, "on"); return; }
+      await this.admit(botId);
       this.store.setComputerState(botId, "starting");
       try {
         await this.ensureImage();
         const migrating = inspect.code === 0 && !current;
-        if (migrating) await run(["rm", "-f", name]); // Outdated image: rebuild around the same files.
+        if (migrating) await this.docker(["rm", "-f", name]); // Outdated image: rebuild around the same files.
         if (current) {
-          const started = await run(["start", name]);
+          const started = await this.docker(["start", name]);
           if (started.code !== 0) throw new Error(started.stderr.trim());
         } else {
           fs.mkdirSync(workspaceDir(botId), { recursive: true });
           fs.mkdirSync(path.join(botDir(botId), "browser"), { recursive: true });
-          const created = await run([
+          const created = await this.docker([
             "run", "-d", "--name", name, "--hostname", name, "--label", `colony.bot=${botId}`,
+            "--label", `colony.person=${this.store.getBot(botId)?.ownerId ?? ADMIN_ID}`,
             // Passed through the environment so the token never shows in a command line.
             "-e", "CUA_ENV_TOKEN",
             "-v", `${workspaceDir(botId)}:/workspace`,
@@ -120,7 +164,7 @@ export class ComputerService {
           if (created.code !== 0) throw new Error(created.stderr.trim() || "docker run failed");
         }
         // Files made by older computers (as root) or by Colony's file tools belong to the desktop user.
-        await run(["exec", name, "chown", "-R", `${DESKTOP_USER}:${DESKTOP_USER}`, "/workspace", "/browser"]);
+        await this.docker(["exec", name, "chown", "-R", `${DESKTOP_USER}:${DESKTOP_USER}`, "/workspace", "/browser"]);
         await this.waitForDesktop(name);
         this.store.setComputerState(botId, "on");
         if (migrating) void this.pruneOldImages();
@@ -128,7 +172,7 @@ export class ComputerService {
         this.store.setComputerState(botId, "error");
         throw new Error(`The computer couldn't start. Is Docker running? (${error instanceof Error ? error.message.slice(0, 200) : "unknown"})`);
       }
-    })().finally(() => this.starting.delete(botId));
+    })().finally(() => { this.starting.delete(botId); this.admitted.delete(botId); });
     this.starting.set(botId, start);
     return start;
   }
@@ -153,17 +197,19 @@ export class ComputerService {
     child.stdin.end();
 
     let output = "";
+    // The terminal panel is the Bot owner's to watch.
+    const ownerId = this.store.getBot(botId)?.ownerId ?? "";
     const onData = (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       if (output.length < 1_000_000) output += text;
       this.appendLog(botId, text);
-      this.events.broadcast({ type: "computer.output", botId, text });
+      this.events.broadcast({ type: "computer.output", botId, text }, ownerId);
     };
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
 
     const kill = () => {
-      void run(["exec", name, "bash", "-c", `kill -KILL -- -$(cat /tmp/colony-${execId}.pid) 2>/dev/null; rm -f /tmp/colony-${execId}.pid`]);
+      void this.docker(["exec", name, "bash", "-c", `kill -KILL -- -$(cat /tmp/colony-${execId}.pid) 2>/dev/null; rm -f /tmp/colony-${execId}.pid`]);
       child.kill();
     };
     options.signal.addEventListener("abort", kill, { once: true });
@@ -173,7 +219,7 @@ export class ComputerService {
       child.on("close", (code) => resolve(code ?? -1));
     });
     options.signal.removeEventListener("abort", kill);
-    void run(["exec", name, "rm", "-f", `/tmp/colony-${execId}.pid`]);
+    void this.docker(["exec", name, "rm", "-f", `/tmp/colony-${execId}.pid`]);
 
     const timedOut = exitCode === 124 || exitCode === 137;
     const footer = options.signal.aborted ? "^C stopped\n" : timedOut ? `(timed out after ${timeout}s)\n` : exitCode !== 0 ? `(exit ${exitCode})\n` : "";
@@ -214,7 +260,7 @@ export class ComputerService {
   /** The desktop's port if the computer is already running (never starts it). */
   async runningDesktopPort(botId: string) {
     const name = this.containerName(botId);
-    const inspect = await run(["inspect", "-f", "{{.State.Running}}", name]);
+    const inspect = await this.docker(["inspect", "-f", "{{.State.Running}}", name]);
     if (inspect.stdout.trim() !== "true") return null;
     return this.hostPort(name, SPACESD_PORT);
   }
@@ -222,26 +268,26 @@ export class ComputerService {
   async browserEndpoint(botId: string) {
     await this.ensure(botId);
     const name = this.containerName(botId);
-    const started = await run(["exec", name, "colony-browser"]);
+    const started = await this.docker(["exec", name, "colony-browser"]);
     if (started.code !== 0) throw new Error(`The browser couldn't start: ${(started.stderr || started.stdout).trim().slice(-300)}`);
-    const port = await run(["port", name, CDP_PORT]);
+    const port = await this.docker(["port", name, CDP_PORT]);
     const address = port.stdout.split(/\r?\n/).find((line) => line.startsWith("127.0.0.1:"));
     if (!address) throw new Error("The browser's DevTools port isn't published; turn the computer off and on again.");
     return `http://${address.trim()}`;
   }
 
   async remove(botId: string) {
-    await run(["rm", "-f", this.containerName(botId)]);
+    await this.docker(["rm", "-f", this.containerName(botId)]);
   }
 
   async stop(botId: string) {
-    await run(["stop", "-t", "2", this.containerName(botId)]);
+    await this.docker(["stop", "-t", "2", this.containerName(botId)]);
     this.store.setComputerState(botId, "off");
   }
 
   /** Bots whose computers are running right now. */
   async runningBots() {
-    const list = await run(["ps", "--filter", "label=colony.bot", "--format", "{{.Label \"colony.bot\"}}"]);
+    const list = await this.docker(["ps", "--filter", "label=colony.bot", "--format", "{{.Label \"colony.bot\"}}"]);
     return list.code === 0 ? list.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : [];
   }
 
@@ -257,14 +303,14 @@ export class ComputerService {
    * image is built on it and shares its layers.
    */
   async pruneOldImages() {
-    const images = await run(["images", "colony-computer", "--format", "{{.Repository}}:{{.Tag}}"]);
+    const images = await this.docker(["images", "colony-computer", "--format", "{{.Repository}}:{{.Tag}}"]);
     if (images.code !== 0) return [];
     const removed: string[] = [];
     for (const ref of images.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)) {
       if (ref === IMAGE || ref.endsWith(":<none>")) continue;
-      const users = await run(["ps", "-a", "-q", "--filter", `ancestor=${ref}`]);
+      const users = await this.docker(["ps", "-a", "-q", "--filter", `ancestor=${ref}`]);
       if (users.code !== 0 || users.stdout.trim()) continue;
-      if ((await run(["rmi", ref])).code === 0) removed.push(ref);
+      if ((await this.docker(["rmi", ref])).code === 0) removed.push(ref);
     }
     if (removed.length) console.log(`[colony] Removed old computer images: ${removed.join(", ")}`);
     return removed;

@@ -57,17 +57,17 @@ async function setup() {
   calls = new Calls(store, events, runner);
   const notified: { title: string; path: string }[] = [];
   calls.notify = (input) => notified.push(input);
-  const bot = store.createBot({ name: "Ada", title: "Helper", description: "", model: "dev::mock-model", computer: false });
+  const bot = store.createBot({ name: "Ada", title: "Helper", description: "", model: "dev::mock-model", computer: false, ownerId: "owner" });
   const chat = store.listChats().find((item) => item.kind === "bot" && item.memberIds[0] === bot.id)!;
   const ephemeral: { type: string }[] = [];
   events.subscribe(({ event }) => { if (event.type.startsWith("call.")) ephemeral.push(event); });
   return { store, events, runner, calls, bot, chat, notified, ephemeral };
 }
 
-/** Serves the call socket the way index.ts does. */
-async function callServer(calls: InstanceType<typeof Calls>) {
+/** Serves the call socket the way index.ts does, for one person (the admin, unless said). */
+async function callServer(calls: InstanceType<typeof Calls>, personId = "owner") {
   const server = http.createServer();
-  server.on("upgrade", (request, socket, head) => calls.upgrade(request, socket, head));
+  server.on("upgrade", (request, socket, head) => calls.upgrade(request, socket, head, personId));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   return { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, close: () => server.close() };
 }
@@ -141,6 +141,23 @@ describe("calls", () => {
     calls.miss(callId);
     expect(ephemeral.map((event) => event.type)).toEqual(["call.ringing", "call.ended"]);
     expect(store.listMessages(chat.id).at(-1)).toMatchObject({ author: bot.id, text: "I tried to call you: Your flight was cancelled." });
+  });
+
+  test("a Bot rings only its owner, and nobody else can pick up or open a call in its chat", async () => {
+    const { calls, chat, bot } = await setup();
+    const to: string[] = [];
+    calls.notify = (_input, personId) => to.push(personId);
+    calls.ring(bot.id, chat.id, "Quick question.", new Date(2026, 9, 15, 12).getTime());
+    expect(to).toEqual(["owner"]);
+    const callId = [...(calls as unknown as { rings: Map<string, unknown> }).rings.keys()][0];
+    expect(calls.ownerOf(callId)).toBe("owner");
+    const server = await callServer(calls, "someone-else");
+    const ws = new WebSocket(`${server.url}/api/chats/${chat.id}/call?answer=${callId}`);
+    const outcome = await new Promise<string>((resolve) => { ws.once("open", () => resolve("open")); ws.once("error", () => resolve("refused")); });
+    expect(outcome).toBe("refused");
+    // Still ringing for its owner.
+    expect(calls.ownerOf(callId)).toBe("owner");
+    server.close();
   });
 
   test("never during quiet hours, or with calls turned off", async () => {
