@@ -16,7 +16,7 @@ import type { MiddlewareHandler } from "hono";
  */
 export type Owner = { allowed: string[]; login: () => string | null; claim: (login: string) => void };
 
-type Jwk = crypto.JsonWebKey & { kid?: string };
+type Jwk = crypto.webcrypto.JsonWebKey & { kid?: string };
 /** Cloudflare Access in front of a Cloudflare Tunnel. `keys` replaces fetching the team's signing keys (tests). */
 export type CloudflareAccess = { teamDomain: string; aud: string; emails: string[]; keys?: (url: string) => Promise<Jwk[]> };
 
