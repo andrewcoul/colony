@@ -721,7 +721,7 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     return c.json(settingsChanged());
   });
   const capInput = z.number().min(0).max(100_000).nullable();
-  /** The OpenCode Go models members may use, their default, and the cap for members without their own. */
+  /** The OpenCode Zen models members may use, their default, and the cap for members without their own. */
   route("PUT", "/settings/members", "admin", async (c) => {
     const patch = z.object({ models: z.array(z.string().trim().min(1).max(200)).max(50), defaultModel: z.string().max(200), defaultCap: capInput }).partial().parse(await c.req.json());
     try { settings.setMemberPolicy(patch); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }

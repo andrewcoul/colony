@@ -38,7 +38,7 @@ test("a database from before accounts stays the admin's: every row is the owner'
   before.close();
 
   const db = openDb(file);
-  expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(22);
+  expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(23);
   expect(counts(db)).toEqual(was);
   const store = new Store(db, new EventLog(db));
   expect(store.listPeople().map((person) => [person.id, person.role])).toEqual([["owner", "admin"]]);
@@ -123,6 +123,43 @@ test("other people's own model keys are dropped from settings; shared ones becom
   expect(saved).toMatchObject({ ownerLogin: "me@example.com" });
   expect(saved).not.toHaveProperty("spendLimits");
   expect(saved).not.toHaveProperty("personalDefaults");
+});
+
+test("members' Bots move from OpenCode Go to Zen; Go's muse-spark gives way to the free default", () => {
+  const file = path.join(dataDir, "members-go.db");
+  const before = openDb(file, 22);
+  before.exec(`
+    INSERT INTO people (id, login, name, color, role, created_at) VALUES ('marija', 'marija@example.com', 'Marija', '#7CC4FA', 'member', 1);
+    INSERT INTO bots (id, name, face_seed, chat_id, owner_id, model, created_at) VALUES
+      ('ivy', 'Ivy', 'Ivy', 'c-ivy', 'marija', 'opencode-go-members::muse-spark-1.3-contributor', 1),
+      ('jo', 'Jo', 'Jo', 'c-jo', 'marija', 'opencode-go-members::glm-5.3', 1),
+      ('luke', 'Luke', 'Luke', 'c-luke', 'owner', 'opencode-go::muse-spark-1.3-contributor', 1);
+  `);
+  before.close();
+  const db = openDb(file);
+  expect(db.prepare("SELECT id, model FROM bots ORDER BY id").all().map((row) => ({ ...row }))).toEqual([
+    { id: "ivy", model: "opencode-members::deepseek-v4.1-flash-free" },
+    { id: "jo", model: "opencode-members::glm-5.3" },
+    { id: "luke", model: "opencode-go::muse-spark-1.3-contributor" },
+  ]);
+  db.close();
+});
+
+test("saved members' models keep only what Zen offers; none left means the free default", () => {
+  const load = (members: object) => {
+    fs.writeFileSync(path.join(dataDir, "settings.json"), JSON.stringify({ providers: [], members }));
+    settings.loadSettings();
+    return settings.memberPolicy();
+  };
+  const goOnly = load({ models: ["muse-spark-1.3-contributor"], defaultModel: "muse-spark-1.3-contributor", defaultCap: 5, caps: { marija: 3 } });
+  expect(goOnly).toEqual({ models: ["deepseek-v4.1-flash-free"], defaultModel: "deepseek-v4.1-flash-free", defaultCap: 5, caps: { marija: 3 } });
+  // Written back, so the file says what members get.
+  expect(JSON.parse(fs.readFileSync(path.join(dataDir, "settings.json"), "utf8")).members.models).toEqual(["deepseek-v4.1-flash-free"]);
+  expect(load({ models: ["muse-spark-1.3-contributor", "glm-5.3"], defaultModel: "muse-spark-1.3-contributor" })).toMatchObject({ models: ["glm-5.3"], defaultModel: "glm-5.3" });
+  // None allowed on purpose stays none; nothing saved is the default.
+  expect(load({ models: [], defaultModel: "" })).toMatchObject({ models: [], defaultModel: "" });
+  expect(load({ defaultCap: 2 })).toMatchObject({ models: ["deepseek-v4.1-flash-free"], defaultModel: "deepseek-v4.1-flash-free", defaultCap: 2 });
+  expect(settings.defaultModelFor({ id: "marija", role: "member" })).toBe("opencode-members::deepseek-v4.1-flash-free");
 });
 
 test("HOUSEHOLD.md folds into the admin's USER.md once; members' own USER.md files stay", () => {

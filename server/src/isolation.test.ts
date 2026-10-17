@@ -84,7 +84,7 @@ type Things = ReturnType<typeof own>;
 /** A Colony with the admin and two members, Alice and Bob, each owning one of everything. */
 async function world() {
   // Members' models as a fresh Colony has them (routes above change them).
-  settings.setMemberPolicy({ models: ["muse-spark-1.3-contributor"], defaultModel: "muse-spark-1.3-contributor", defaultCap: null });
+  settings.setMemberPolicy({ models: ["deepseek-v4.1-flash-free"], defaultModel: "deepseek-v4.1-flash-free", defaultCap: null });
   const db = openDb(":memory:");
   const events = new EventLog(db);
   const store = new Store(db, events);
@@ -528,7 +528,7 @@ describe("what each person sees", () => {
     expect(alice.routines.map((routine: { id: string }) => routine.id)).toEqual([w.things.alice.routine.id]);
     expect([alice.accounts, alice.access, alice.nodes]).toEqual([[], [], []]);
     // Members' Bots only ever get the members' models, never the admin's.
-    expect(alice.models.map((model: { ref: string }) => model.ref)).toEqual(["opencode-go-members::muse-spark-1.3-contributor"]);
+    expect(alice.models.map((model: { ref: string }) => model.ref)).toEqual(["opencode-members::deepseek-v4.1-flash-free"]);
     const admin = (await w.call("admin", "GET", "/state")).json;
     expect(admin.me).toMatchObject({ id: "owner", role: "admin" });
     // The admin doesn't see members' things either.
@@ -576,7 +576,7 @@ describe("what each person sees", () => {
   test("members read a reduced Settings; the admin reads all of it", async () => {
     const w = await world();
     const member = (await w.call("alice", "GET", "/settings")).json;
-    expect(member).toMatchObject({ role: "member", defaultModel: "opencode-go-members::muse-spark-1.3-contributor", cap: null, spent: 0 });
+    expect(member).toMatchObject({ role: "member", defaultModel: "opencode-members::deepseek-v4.1-flash-free", cap: null, spent: 0 });
     expect(member).not.toHaveProperty("providers");
     expect(member).not.toHaveProperty("signIns");
     expect(JSON.stringify(member)).not.toContain("keyHint");

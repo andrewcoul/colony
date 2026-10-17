@@ -184,11 +184,12 @@ computers, and nobody sees anyone else's, not even the admin.
   tailnet or this PC. See [docs/deploy-accounts.md](docs/deploy-accounts.md).
 - Settings, sign-ins, connected accounts, lending a PC and updates are the admin's.
   A member may have 2 Bot computers running at once (`COLONY_MEMBER_MAX_COMPUTERS`).
-- Members' Bots never use your sign-ins. They run on OpenCode Go with an OpenCode
-  API key you add in Settings › Members' models (kept in `data/credentials.json`;
-  only its last four characters are ever shown), on the models you allow there
-  (`muse-spark-1.3-contributor` to start). Until you add the key, members' Bots
-  can't run. In Settings › People you can give each member a monthly spending cap
+- Members' Bots never use your sign-ins. They run on OpenCode Zen with an OpenCode
+  Zen API key (from the OpenCode Console at opencode.ai, under API keys) that you add
+  in Settings › Members' models (kept in `data/credentials.json`; only its last four
+  characters are ever shown), on the Zen models you allow there
+  (`deepseek-v4.1-flash-free`, which is free, to start). Until you add the key,
+  members' Bots can't run. In Settings › People you can give each member a monthly spending cap
   (none by default; months run on Chicago time), turn members off, or remove them.
 - Requests made directly on the PC are always the admin's.
 

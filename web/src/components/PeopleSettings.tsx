@@ -88,7 +88,7 @@ function MemberRow({ person, onChanged, onError }: { person: PersonSummary; onCh
   );
 }
 
-/** Settings › Members' models (the admin's): the members' OpenCode API key, the models members may use, and the default cap. */
+/** Settings › Members' models (the admin's): the members' OpenCode Zen API key, the Zen models members may use, and the default cap. */
 export function MembersModelsPage({ members, onBack, onSaved }: { members: MembersView; onBack: () => void; onSaved: (settings: Settings) => void }) {
   const [key, setKey] = useState("");
   const [models, setModels] = useState(members.models);
@@ -112,11 +112,11 @@ export function MembersModelsPage({ members, onBack, onSaved }: { members: Membe
       <Back onBack={onBack} />
       <div className="mb-5 flex flex-col gap-2.5 rounded-xl border border-rule p-3.5">
         <span className="flex items-center gap-2 text-sm"><KeyRound size={15} className="shrink-0 text-muted" />
-          {members.keySet ? <span className="flex items-center gap-1 text-mint"><Check size={14} />OpenCode API key set{members.keyHint ? ` (ends in ${members.keyHint})` : ""}</span> : <span className="text-lemon">No OpenCode API key yet</span>}
+          {members.keySet ? <span className="flex items-center gap-1 text-mint"><Check size={14} />OpenCode Zen API key set{members.keyHint ? ` (ends in ${members.keyHint})` : ""}</span> : <span className="text-lemon">No OpenCode Zen API key yet</span>}
         </span>
-        <span className="text-meta leading-relaxed text-muted">Members' Bots run on OpenCode Go with this key, never with your own sign-ins. Without it, members can't use any model.</span>
+        <span className="text-meta leading-relaxed text-muted">Members' Bots run on OpenCode Zen with this key, never with your own sign-ins. Make one in the OpenCode Console (opencode.ai, API keys). Without it, members can't use any model.</span>
         <div className="flex gap-2">
-          <Input value={key} onChange={(e) => setKey(e.target.value)} type="password" autoComplete="off" placeholder={members.keySet ? "Paste a new key to replace it" : "Paste an OpenCode Go API key"} aria-label="Members' OpenCode API key" className="h-9 flex-1 font-mono text-[13px]" />
+          <Input value={key} onChange={(e) => setKey(e.target.value)} type="password" autoComplete="off" placeholder={members.keySet ? "Paste a new key to replace it" : "Paste an OpenCode Zen API key"} aria-label="Members' OpenCode Zen API key" className="h-9 flex-1 font-mono text-[13px]" />
           <Button variant="outline" size="pill" disabled={busy || !key.trim()} onClick={() => void run(async () => { const next = await api.setMemberKey(key.trim()); setKey(""); return next; }, "Couldn't save the key.")}>Save</Button>
           {members.keySet && <Button variant="outline" size="pill" disabled={busy} onClick={() => { if (confirm("Remove the members' key? Members' Bots stop until you add one.")) void run(() => api.clearMemberKey(), "Couldn't remove the key."); }}>Remove</Button>}
         </div>
@@ -128,12 +128,12 @@ export function MembersModelsPage({ members, onBack, onSaved }: { members: Membe
         {models.map((id) => (
           <span key={id} className="inline-flex max-w-full items-center gap-1 rounded-full border border-rule py-1 pr-1 pl-2.5 text-meta text-soft">
             <span className="truncate font-mono">{id}</span>
-            {members.prices[id] && <span className="shrink-0 text-muted">${members.prices[id].input}/${members.prices[id].output}</span>}
+            {members.prices[id] && <span className="shrink-0 text-muted">{members.prices[id].input || members.prices[id].output ? `$${members.prices[id].input}/$${members.prices[id].output}` : "free"}</span>}
             <button type="button" aria-label={`Remove ${id}`} onClick={() => setModels(models.filter((item) => item !== id))} className="shrink-0 rounded-full p-0.5 text-muted hover:text-ink"><X size={12} /></button>
           </span>
         ))}
       </div>
-      <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`Search OpenCode Go's ${members.catalog.length} models…`} aria-label="Find a model for members" className="mb-1 h-9 font-mono text-[13px]" />
+      <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`Search OpenCode Zen's ${members.catalog.length} models…`} aria-label="Find a model for members" className="mb-1 h-9 font-mono text-[13px]" />
       {draft.trim() && suggestions.length > 0 && (
         <div className="mb-2 flex max-h-40 flex-col overflow-y-auto rounded-lg border border-rule p-1">
           {suggestions.map((model) => (

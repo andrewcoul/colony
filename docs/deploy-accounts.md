@@ -47,11 +47,19 @@ browser ──> colony-site Worker ──> Cloudflare Tunnel ──> Colony on y
 
 ## Members' models and spending
 
-- Members' Bots never use your ChatGPT or OpenCode sign-ins. In **Settings › Members' models**, paste
-  an OpenCode Go API key. Colony keeps it in `data/credentials.json` and only ever shows its last
-  four characters. Until you add it, members' Bots can't run.
-- On the same page, choose the OpenCode Go models members may use and their default
-  (`muse-spark-1.3-contributor` to start).
+- Members' Bots never use your ChatGPT or OpenCode sign-ins. They run on **OpenCode Zen** (not Go)
+  with a key of their own: make an API key in the OpenCode Console (opencode.ai, **API keys**), and
+  paste it in **Settings › Members' models**. Colony keeps it in `data/credentials.json` (as
+  `opencode-key`) and only ever shows its last four characters. Until you add it, members' Bots
+  can't run.
+- On the same page, choose the Zen models members may use and their default. To start, that's only
+  `deepseek-v4.1-flash-free` (Bots get `opencode-members::deepseek-v4.1-flash-free`). Colony only
+  accepts models in Zen's catalog.
+- What members spend is priced at Zen's list price. Models Zen lists as free count as $0.
+- Bots and settings from when members ran on OpenCode Go (`opencode-go-members`) move over by
+  themselves. Saved models that Zen doesn't offer drop out (none left means the default). Bots on
+  Go's old default, `muse-spark-1.3-contributor`, get the new one. Other Bots keep their model id;
+  if members may not use it, the Bot says so and asks for another.
 - In **Settings › People**, give each member a monthly spending cap, or set one default cap for all
   members on the Members' models page. There's none until you set one. Months run on Chicago time.
   At the cap, a member's Bots wait until the 1st.
@@ -83,7 +91,7 @@ pages with a short "Colony is offline" note.
    `ORIGIN_URL` set to that hostname.
 3. From the tailnet or the PC, open **Settings › People** and set up your own web sign-in.
 4. Open the website, sign in, and check that your Bots are there.
-5. Add the members' OpenCode API key, then invite people from **Settings › People**.
+5. Add the members' OpenCode Zen API key, then invite people from **Settings › People**.
 6. Remove any old Access policy that let people's emails straight through to Colony.
 
 Your data stays where it is: everything from before accounts is yours (the admin's).

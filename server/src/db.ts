@@ -342,6 +342,15 @@ const MIGRATIONS = [
   );
   CREATE INDEX invites_by_email ON invites (email);
   `,
+  // v23: members' Bots moved from OpenCode Go ("opencode-go-members") to Zen ("opencode-members").
+  // Go's muse-spark-1.3-contributor isn't on Zen, so those Bots take the members' new default.
+  `
+  UPDATE bots SET model = CASE
+    WHEN model = 'opencode-go-members::muse-spark-1.3-contributor' THEN 'opencode-members::deepseek-v4.1-flash-free'
+    ELSE 'opencode-members::' || substr(model, length('opencode-go-members::') + 1)
+  END
+  WHERE substr(model, 1, length('opencode-go-members::')) = 'opencode-go-members::';
+  `,
 ];
 
 export type Db = DatabaseSync;

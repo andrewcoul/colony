@@ -108,7 +108,7 @@ export class ColonyModels implements ModelSource {
     setMemberKeyStatus(this.credentials.has(MEMBER_KEY) ? this.credentials.keyHint(MEMBER_KEY) : false);
   }
 
-  /** Sets (or replaces) the OpenCode API key members' Bots run on. It's kept here only. */
+  /** Sets (or replaces) the OpenCode Zen API key members' Bots run on. It's kept here only. */
   async setMemberKey(key: string) {
     await this.credentials.modify(MEMBER_KEY, async () => ({ type: "api_key", key }));
   }
@@ -118,17 +118,17 @@ export class ColonyModels implements ModelSource {
   }
 
   /**
-   * Members' OpenCode Go: pi-ai's own provider (same address and APIs), but its only key is the
+   * Members' OpenCode Zen: pi-ai's own provider (same address and APIs), but its only key is the
    * members' one. Not the admin's sign-in, and not OPENCODE_API_KEY from the environment: with no
    * members' key, it has no auth at all.
    */
   private memberPiProvider(provider: Provider): PiProvider {
-    const builtin = builtins["opencode-go"];
+    const builtin = builtins.opencode;
     const byId = new Map(builtin.getModels().map((model) => [model.id, model as Model<Api>]));
     const models = provider.models.flatMap((id) => { const base = byId.get(id); return base ? [colonyModel(base, provider)] : []; });
-    const name = "Members' OpenCode API key";
+    const name = "Members' OpenCode Zen API key";
     return createProvider({
-      id: provider.id, name: "OpenCode Go (members)", headers: { "User-Agent": `colony/${VERSION}` },
+      id: provider.id, name: "OpenCode Zen (members)", headers: { "User-Agent": `colony/${VERSION}` },
       auth: {
         apiKey: {
           name,
