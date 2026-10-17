@@ -8,7 +8,7 @@ import { MenuContent, MenuItem, MenuRoot, MenuTrigger } from "./ui/menu";
 
 const HELP: Partial<Record<PushStatus, string>> = {
   "needs-install": "On iPhone, tap Share → Add to Home Screen, then open Colony from there to turn on notifications.",
-  insecure: "Notifications need HTTPS. Open Colony through your tailscale serve address (https://…ts.net).",
+  insecure: "Notifications need HTTPS. Open Colony through its https:// address (e.g. your tailscale serve address).",
   unsupported: "This browser can't receive notifications.",
   blocked: "Notifications are blocked for Colony. Allow them in this browser's site settings.",
 };

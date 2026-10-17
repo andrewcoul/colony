@@ -17,6 +17,8 @@ const home = process.env.COLONY_HOME ? path.resolve(process.env.COLONY_HOME) : n
  */
 const dev = { baseURL: process.env.COLONY_DEV_BASE_URL ?? "", models: list(process.env.COLONY_DEV_MODELS) };
 
+const cloudflareEmails = list(process.env.COLONY_CF_ACCESS_ALLOWED_EMAILS);
+
 /** Server configuration from environment variables (see .env.example). */
 export const config = {
   host: process.env.COLONY_HOST ?? "127.0.0.1",
@@ -31,6 +33,15 @@ export const config = {
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
   /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */
   allowedUsers: list(process.env.COLONY_ALLOWED_USERS),
+  /**
+   * Optional: Cloudflare Access in front of a Cloudflare Tunnel to this server. Requests through
+   * the tunnel are refused unless the team domain and AUD are set and the sign-in's email is allowed.
+   */
+  cloudflareAccess: {
+    teamDomain: process.env.COLONY_CF_ACCESS_TEAM_DOMAIN?.trim() ?? "",
+    aud: process.env.COLONY_CF_ACCESS_AUD?.trim() ?? "",
+    emails: cloudflareEmails.length ? cloudflareEmails : list(process.env.COLONY_ALLOWED_USERS),
+  },
   limits: {
     historyMessages: 40,
     maxSteps: 25,
