@@ -28,8 +28,11 @@ import { ComputerService } from "./computer/docker.js";
 import { IdleStopper } from "./computer/idle.js";
 import { Updater } from "./updates.js";
 import { VERSION } from "./version.js";
-import { requirePerson, resolver, standardSources } from "./access.js";
-import { createApi } from "./api.js";
+import { requirePerson, resolver, standardSources, upgradePerson } from "./access.js";
+import { createApi, isPublicApi } from "./api.js";
+import { Invites } from "./invites.js";
+import { mailerFromEnv } from "./mailer.js";
+import { WebAccounts, webSessionsFromEnv } from "./webauth.js";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
@@ -138,11 +141,14 @@ accounts.onNeedsReauth = (account) => void push.notify({
 // Who's asking: every request and WebSocket upgrade is a person (see access.ts), or refused.
 const owner = { allowed: config.allowedUsers, login: ownerLogin, claim: (login: string) => setOwnerLogin(login) };
 const people = new People(store, { adminEmails: config.adminEmails });
-// The admin's emails may sign in through Cloudflare Access too, besides the allowed ones.
-const cloudflare = { ...config.cloudflareAccess, emails: [...config.cloudflareAccess.emails, ...config.adminEmails] };
-const resolve = resolver(standardSources(owner, cloudflare), people);
+// Web sign-in (through the colony-site Worker): invite-only accounts, and email through Resend.
+const invites = new Invites(db, config.inviteTtlDays);
+const mailer = mailerFromEnv();
+const webAccounts = new WebAccounts(store, people, invites, webSessionsFromEnv());
+const resolve = resolver(standardSources(owner, config.cloudflareAccess), people, (header) => webAccounts.personFor(header));
 const app = new Hono();
-app.use(requirePerson(resolve));
+// Pages load without a sign-in (that's where you sign in); /api needs one, except signing in itself.
+app.use(requirePerson(resolve, { origins: config.publicOrigins, isPublic: (path) => !path.startsWith("/api/") || isPublicApi(path) }));
 const updater = new Updater({
   version: VERSION,
   home: config.home,
@@ -153,7 +159,8 @@ const updater = new Updater({
 });
 updater.start();
 app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access: resolve, models, modelSignIns,
-  memberKey: { set: (key) => models.setMemberKey(key), clear: () => models.clearMemberKey() }, integrations, signIns, calls, nodes }));
+  memberKey: { set: (key) => models.setMemberKey(key), clear: () => models.clearMemberKey() }, integrations, signIns, calls, nodes,
+  web: { accounts: webAccounts, invites, mailer, origins: config.publicOrigins } }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -195,13 +202,14 @@ server.on("upgrade", (request, socket, head) => {
   // Checking a Cloudflare Access sign-in can take a moment; the socket holds its data until then.
   const failed = () => socket.destroy();
   socket.on("error", failed);
-  void resolve(header).then((identity) => {
+  // Through the website, upgrades need a web sign-in and must come from Colony's own pages.
+  void upgradePerson(resolve, header, config.publicOrigins).then((person) => {
     socket.off("error", failed);
-    if ("refused" in identity || socket.destroyed) { socket.destroy(); return; }
+    if (!person || socket.destroyed) { socket.destroy(); return; }
     // Only the admin lends PCs, and only a chat's or a Bot's owner calls it or watches it.
-    const upgrade = authorizeUpgrade(store, identity.person, request.url ?? "");
+    const upgrade = authorizeUpgrade(store, person, request.url ?? "");
     if (!upgrade) { socket.destroy(); return; }
-    routeUpgrade(upgrade, identity.person.id, request, socket, head);
+    routeUpgrade(upgrade, person.id, request, socket, head);
   }, () => socket.destroy());
 });
 function routeUpgrade(upgrade: Upgrade, personId: string, request: IncomingMessage, socket: Duplex, head: Buffer) {

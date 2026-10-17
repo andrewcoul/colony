@@ -31,7 +31,10 @@ import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
 import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
-import { localOnly, requirePerson, type AccessEnv, type Resolver } from "./access.js";
+import { localOnly, publicOrigin, requirePerson, type AccessEnv, type Resolver } from "./access.js";
+import { looksLikeEmail, normalEmail, type Invites } from "./invites.js";
+import { inviteMail, type Mailer } from "./mailer.js";
+import type { WebAccounts } from "./webauth.js";
 import { config } from "./config.js";
 import { isAdmin, meOf, People, readAbout, removeAbout, writeAbout, type Person } from "./people.js";
 
@@ -56,6 +59,14 @@ export type Services = {
   calls?: Calls;
   /** PCs lent through the desktop app. */
   nodes?: NodeHub;
+  /** Web sign-in: accounts, invites, the email they go out by, and Colony's own web origins. */
+  web?: { accounts: WebAccounts; invites: Invites; mailer: Mailer; origins: readonly string[] };
+};
+
+/** API paths anyone through the website may reach before signing in: signing in itself, and checking an invite. */
+export const isPublicApi = (path: string) => {
+  const route = path.replace(/^\/api(?=\/)/, "");
+  return route === "/auth-status" || route === "/invites/check" || route.startsWith("/auth/");
 };
 
 /**
@@ -66,8 +77,9 @@ export type Services = {
  *   (their Bot, their chat, …; an approval waiting for them, a call ringing them). Anything else
  *   is "not found" (404), so nobody learns what others have.
  * - admin-bot: the admin, on one of their own Bots.
+ * - public: anyone, signed in or not (only isPublicApi paths): the website's sign-in status, invite checks.
  */
-export type Policy = "anyone" | "admin" | "bot" | "chat" | "folder" | "message" | "file" | "routine" | "approval" | "call" | "admin-bot";
+export type Policy = "anyone" | "admin" | "bot" | "chat" | "folder" | "message" | "file" | "routine" | "approval" | "call" | "admin-bot" | "public";
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "ALL";
 export type RouteSpec = { method: Method; path: string; policy: Policy };
 
@@ -136,15 +148,15 @@ async function fetchImage(url: string) {
 
 const ADMIN_ONLY = { error: "Only this Colony's admin can do that." };
 
-export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access, models, modelSignIns, memberKey, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access, models, modelSignIns, memberKey, integrations, signIns, connectVault = connectOnePassword, calls, nodes, web }: Services) {
   const api = new Hono<AccessEnv>();
   const table: RouteSpec[] = [];
   tables.set(api, table);
 
-  api.use("*", requirePerson(access ?? localOnly(new People(store, { adminEmails: config.adminEmails }))));
+  api.use("*", requirePerson(access ?? localOnly(new People(store, { adminEmails: config.adminEmails })), { origins: web?.origins ?? [], isPublic: isPublicApi }));
 
   /** Whose each kind of thing is (undefined: there's no such thing). */
-  const ownerOf: Record<Exclude<Policy, "anyone" | "admin" | "admin-bot">, (id: string) => string | null | undefined> = {
+  const ownerOf: Record<Exclude<Policy, "anyone" | "admin" | "admin-bot" | "public">, (id: string) => string | null | undefined> = {
     bot: (id) => store.getBot(id)?.ownerId,
     chat: (id) => store.getChat(id)?.ownerId,
     folder: (id) => store.getFolder(id)?.ownerId,
@@ -159,7 +171,10 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     routine: "Routine not found.", approval: "This approval is no longer waiting.", call: "That call has ended.",
   };
   const guard = (policy: Policy): MiddlewareHandler<AccessEnv> => async (c, next) => {
+    if (policy === "public") return next();
     const person = c.get("person");
+    // Only public paths get here with nobody signed in (requirePerson answers 401 elsewhere).
+    if (!person) return c.json({ error: "Sign in to Colony.", signIn: true }, 401);
     if ((policy === "admin" || policy === "admin-bot") && !isAdmin(person)) return c.json(ADMIN_ONLY, 403);
     const kind = policy === "admin-bot" ? "bot" : policy;
     if (kind !== "anyone" && kind !== "admin" && ownerOf[kind](c.req.param("id") ?? "") !== person.id) return c.json({ error: missing[kind] }, 404);
@@ -739,17 +754,28 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     if (!person) return c.json({ error: "That isn't a member." }, 404);
     const patch = z.object({ cap: z.union([capInput, z.literal("default")]), disabled: z.boolean() }).partial().parse(await c.req.json());
     if (patch.cap !== undefined) settings.setSpendCap(person.id, patch.cap);
-    if (patch.disabled !== undefined) {
-      store.setPersonDisabled(person.id, patch.disabled);
-      if (patch.disabled) await stopEverything(person.id);
+    if (patch.disabled === true) {
+      // Their web sessions end too, and they can't sign in again until turned back on.
+      if (web) await web.accounts.disable(person.id); else store.setPersonDisabled(person.id, true);
+      await stopEverything(person.id);
+    } else if (patch.disabled === false) {
+      store.setPersonDisabled(person.id, false);
     }
     return c.json(summary(store.getPerson(person.id)!));
   });
-  /** Removes a member and everything of theirs. Nobody else's things change. */
+  /**
+   * Removes a member's web account: they're turned off and can't sign in, and their Colony things
+   * stay (to look at later, or to remove). With ?data=delete, everything of theirs goes too, and
+   * nobody else's things change.
+   */
   route("DELETE", "/people/:id", "admin", async (c) => {
     const person = memberById(c.req.param("id"));
     if (!person) return c.json({ error: "That isn't a member." }, 404);
+    const deleteData = c.req.query("data") === "delete";
+    if (web) { await web.accounts.disable(person.id); await web.accounts.deleteAccount(person.id); }
+    else store.setPersonDisabled(person.id, true);
     await stopEverything(person.id);
+    if (!deleteData) return c.json(summary(store.getPerson(person.id)!));
     for (const botId of store.removePerson(person.id)) {
       await computer?.remove(botId).catch(() => {});
       files.removeBotFolder(botId);
@@ -757,6 +783,70 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     removeAbout(person.id);
     settings.setSpendCap(person.id, "default");
     return c.body(null, 204);
+  });
+
+  // ---------- Web sign-in: its status (public), the admin's own sign-in, and invites ----------
+  const noWeb = { error: "Web sign-in isn't available here." };
+  /** What the website needs before anyone signs in: whether web sign-in is on, and whether email works. */
+  route("GET", "/auth-status", "public", (c) => {
+    const person = c.get("person");
+    return c.json({ webSignIn: web?.accounts.enabled ?? false, email: web?.mailer.enabled ?? false, signedIn: Boolean(person), via: c.get("via") ?? null });
+  });
+  /** Whether an invite link works, and for which email (the signup page fills it in and locks it). */
+  route("GET", "/invites/check", "public", (c) => {
+    if (!web) return c.json(noWeb, 503);
+    const checked = web.invites.check(c.req.query("invite") ?? "");
+    return c.json("problem" in checked ? { valid: false, error: checked.problem } : { valid: true, email: checked.invite.email, expiresAt: checked.invite.expiresAt });
+  });
+  route("GET", "/web-signin", "admin", (c) => c.json({
+    enabled: web?.accounts.enabled ?? false, email: web?.mailer.enabled ?? false, adminEmails: web?.accounts.adminEmails ?? [], origins: web?.origins ?? [],
+  }));
+  /** The admin sets up their own web sign-in (from the tailnet or this PC): no invite, and never from an open sign-up. */
+  route("POST", "/web-signin/admin", "admin", async (c) => {
+    if (!web) return c.json(noWeb, 503);
+    const { email, password } = z.object({ email: z.string().trim().max(320), password: z.string().min(10, "Use at least 10 characters.").max(256) }).parse(await c.req.json());
+    try { await web.accounts.setUpAdmin(email, password); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }
+    return c.body(null, 204);
+  });
+
+  /** The link an invite's token makes, on the website the admin is on (else the first of Colony's origins). */
+  const inviteLink = (c: { req: { header(name: string): string | undefined; url: string } }, via: string | undefined, token: string) => {
+    const origin = publicOrigin((name) => c.req.header(name), via, web?.origins ?? []) ?? new URL(c.req.url).origin;
+    return `${origin}/signup?invite=${encodeURIComponent(token)}`;
+  };
+  /** Emails an invite's link, or hands it back to copy when email isn't set up (or didn't work). */
+  const deliver = async (email: string, inviteId: string, link: string) => {
+    if (!web!.mailer.enabled) return { emailed: false, link };
+    try {
+      await web!.mailer.send(inviteMail(email, link, config.inviteTtlDays));
+      web!.invites.markSent(inviteId);
+      return { emailed: true };
+    } catch (failure) {
+      return { emailed: false, link, error: `Couldn't email it: ${(failure as Error).message} Copy the link instead.` };
+    }
+  };
+  route("GET", "/invites", "admin", (c) => web ? c.json(web.invites.list()) : c.json(noWeb, 503));
+  route("POST", "/invites", "admin", async (c) => {
+    if (!web) return c.json(noWeb, 503);
+    const { email } = z.object({ email: z.string().trim().max(320) }).parse(await c.req.json());
+    const address = normalEmail(email);
+    if (!looksLikeEmail(address)) return c.json({ error: "That isn't an email address." }, 400);
+    if (web.accounts.isAdminEmail(address)) return c.json({ error: "That's an admin email: set up its web sign-in instead." }, 400);
+    const { invite, token } = web.invites.create(address);
+    const sent = await deliver(address, invite.id, inviteLink(c, c.get("via"), token));
+    return c.json({ invite: web.invites.get(invite.id), ...sent }, 201);
+  });
+  /** A fresh link for an invite (the old one stops working), emailed again. */
+  route("POST", "/invites/:id/resend", "admin", async (c) => {
+    if (!web) return c.json(noWeb, 503);
+    let rotated: ReturnType<Invites["resend"]>;
+    try { rotated = web.invites.resend(c.req.param("id")); } catch (failure) { return c.json({ error: (failure as Error).message }, 409); }
+    const sent = await deliver(rotated.invite.email, rotated.invite.id, inviteLink(c, c.get("via"), rotated.token));
+    return c.json({ invite: web.invites.get(rotated.invite.id), ...sent });
+  });
+  route("DELETE", "/invites/:id", "admin", (c) => {
+    if (!web) return c.json(noWeb, 503);
+    return web.invites.revoke(c.req.param("id")) ? c.body(null, 204) : c.json({ error: "That invite isn't waiting any more." }, 409);
   });
 
   // ---------- Voice (the admin's) ----------

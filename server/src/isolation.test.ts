@@ -30,6 +30,9 @@ const { writeChatFile } = await import("./chatFiles.js");
 const files = await import("./files.js");
 const settings = await import("./settings.js");
 const { ColonyModels } = await import("./agent/pi/models.js");
+const { Invites } = await import("./invites.js");
+const { Mailer } = await import("./mailer.js");
+const { WebAccounts } = await import("./webauth.js");
 settings.loadSettings();
 /** The real credential store (data/credentials.json in this test's folder), for the members' key. */
 const colonyModels = new ColonyModels();
@@ -111,7 +114,12 @@ async function world() {
   const rings = new Map<string, string>();
   const calls = { ownerOf: (id: string) => rings.get(id) ?? null, miss: (id: string) => { rings.delete(id); } } as unknown as Calls;
   const memberKey = { set: (key: string) => colonyModels.setMemberKey(key), clear: () => colonyModels.clearMemberKey() };
-  const api = createApi({ store, events, gate, runner, push, computer, calls, memberKey, access: resolver([testSource], people) });
+  // Web sign-in with a stand-in sign-in service, no email, and one pending invite.
+  const invites = new Invites(db, 7);
+  const { invite, token: inviteToken } = invites.create("invited@example.com");
+  const webSessions = { emailFor: async () => null, revoke: async () => {}, deleteAccount: async () => {}, setUpAdmin: async () => {} };
+  const web = { accounts: new WebAccounts(store, people, invites, webSessions), invites, mailer: new Mailer(null), origins: ["https://colony.example"] };
+  const api = createApi({ store, events, gate, runner, push, computer, calls, memberKey, web, access: resolver([testSource], people) });
   const things: Record<Who, Things> = {
     admin: own(store, ids.admin, "Max", rings),
     alice: own(store, ids.alice, "Ana", rings),
@@ -129,7 +137,7 @@ async function world() {
     const json = response.headers.get("content-type")?.includes("json") ? await response.json() : null;
     return { status: response.status, json: json as any };
   };
-  return { db, events, store, gate, people, ids, api, things, call, pushed, push, rings, started };
+  return { db, events, store, gate, people, ids, api, things, call, pushed, push, rings, started, inviteId: invite.id, inviteToken };
 }
 type World = Awaited<ReturnType<typeof world>>;
 
@@ -252,6 +260,14 @@ const CASES: Record<string, Case> = {
   "GET /people": get(() => "/people"),
   "PUT /people/:id": send((_t, w) => `/people/${w.ids.bob}`, () => ({ cap: 3 })),
   "DELETE /people/:id": send((_t, w) => `/people/${w.ids.bob}`),
+  "GET /auth-status": get(() => "/auth-status"),
+  "GET /invites/check": get((_t, w) => `/invites/check?invite=${w.inviteToken}`),
+  "GET /web-signin": get(() => "/web-signin"),
+  "POST /web-signin/admin": send(() => "/web-signin/admin", () => ({ email: "admin@example.com", password: "a long password" })),
+  "GET /invites": get(() => "/invites"),
+  "POST /invites": send(() => "/invites", () => ({ email: "new@example.com" })),
+  "POST /invites/:id/resend": send((_t, w) => `/invites/${w.inviteId}/resend`),
+  "DELETE /invites/:id": send((_t, w) => `/invites/${w.inviteId}`),
 };
 
 /**
@@ -273,8 +289,10 @@ const EXPECTED: Record<Policy, string[]> = {
     "GET /accounts/signin/:id", "POST /accounts/signin/:id/cancel", "POST /accounts/onepassword", "DELETE /accounts/:id",
     "PUT /settings/members/key", "DELETE /settings/members/key", "PUT /settings/members",
     "GET /people", "PUT /people/:id", "DELETE /people/:id",
+    "GET /web-signin", "POST /web-signin/admin", "GET /invites", "POST /invites", "POST /invites/:id/resend", "DELETE /invites/:id",
   ],
   "admin-bot": ["PUT /bots/:id/access/:accountId"],
+  public: ["GET /auth-status", "GET /invites/check"],
   bot: [
     "PATCH /bots/:id", "DELETE /bots/:id", "GET /bots/:id/terminal", "GET /bots/:id/files", "GET /bots/:id/file", "POST /bots/:id/computer/stop",
     "GET /bots/:id/screen-link", "ALL /bots/:id/screen/*", "GET /bots/:id/browser", "POST /bots/:id/browser/open", "POST /bots/:id/browser/input",
@@ -352,7 +370,7 @@ describe("every route", () => {
         const mine = await w.call("admin", verb, request.url(w.things.admin, w), request.body?.(w.things.admin, w));
         expect(refused(mine), `admin: ${key} → ${mine.status}`).toBe(false);
       });
-    } else if (policy === "anyone") {
+    } else if (policy === "anyone" || policy === "public") {
       test(`${key}: anyone signed in, on their own things`, async () => {
         const w = await world();
         const request = CASES[key];

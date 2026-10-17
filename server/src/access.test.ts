@@ -1,10 +1,10 @@
 import crypto from "node:crypto";
 import { Hono } from "hono";
 import { expect, test } from "vitest";
-import { localOnly, requirePerson, resolver, standardSources, type AccessEnv, type CloudflareAccess, type IdentitySource, type Owner } from "./access.js";
+import { localOnly, publicOrigin, requirePerson, resolver, standardSources, upgradePerson, type AccessEnv, type CloudflareAccess, type IdentitySource, type Owner, type WebSession } from "./access.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
-import { People } from "./people.js";
+import { People, type Person } from "./people.js";
 import { Store } from "./store.js";
 
 /** An owner record kept in memory, as settings.json keeps it. */
@@ -18,20 +18,32 @@ const directory = (adminEmails: string[] = []) => {
   const store = new Store(db, new EventLog(db));
   return { db, store, people: new People(store, { adminEmails }) };
 };
-const app = (who: Owner, cloudflare?: CloudflareAccess, people = directory().people, before: IdentitySource[] = []) =>
-  new Hono<AccessEnv>().use(requirePerson(resolver(standardSources(who, cloudflare, before), people))).get("/", (c) => c.json(c.get("person")));
-const ask = async (who: Owner, headers: Record<string, string> = {}, cloudflare?: CloudflareAccess, people?: People, before?: IdentitySource[]) => {
-  const response = await app(who, cloudflare, people, before).request("/", { headers });
+const SITE = "https://colony.example";
+const ORIGINS = [SITE, "https://colony-site.example.workers.dev"];
+/** Web sessions as cookies: "session=<person id>" is that person (or "disabled"). */
+const sessions = (people: Record<string, Person | "disabled">): WebSession => async (header) => {
+  const id = /(?:^|;\s*)session=([^;]+)/.exec(header("Cookie") ?? "")?.[1];
+  return id ? people[id] ?? null : null;
+};
+const app = (who: Owner, cloudflare?: CloudflareAccess, people = directory().people, before: IdentitySource[] = [], webSession?: WebSession) =>
+  new Hono<AccessEnv>()
+    .use(requirePerson(resolver(standardSources(who, cloudflare, before), people, webSession), { origins: ORIGINS, isPublic: (path) => path === "/public" }))
+    .get("/", (c) => c.json(c.get("person")))
+    .post("/", (c) => c.json(c.get("person")))
+    .get("/public", (c) => c.json({ person: c.get("person") ?? null }));
+const ask = async (who: Owner, headers: Record<string, string> = {}, cloudflare?: CloudflareAccess, people?: People, before?: IdentitySource[], webSession?: WebSession, init: RequestInit = {}) => {
+  const response = await app(who, cloudflare, people, before, webSession).request("/", { headers, ...init });
   return { status: response.status, person: response.status === 200 ? await response.json() as { id: string; role: string; login: string | null } : null };
 };
 const status = async (who: Owner, headers: Record<string, string> = {}, cloudflare?: CloudflareAccess) => (await ask(who, headers, cloudflare)).status;
 
-// A stand-in Cloudflare Access team: its signing key, served by a fake JWKS fetch.
+// A stand-in Cloudflare Access team for the origin app: its signing key, served by a fake JWKS fetch.
 const team = "team.cloudflareaccess.com";
-const aud = "colony-aud";
+const aud = "colony-origin-aud";
+const SERVICE = "0123abcd.access";
 const signer = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
-const cloudflare = (fetches: string[] = [], emails = ["Me@Example.com"]): CloudflareAccess => ({
-  teamDomain: team, aud, emails,
+const cloudflare = (fetches: string[] = []): CloudflareAccess => ({
+  teamDomain: team, aud, serviceClientId: SERVICE,
   keys: async (url) => { fetches.push(url); return [{ ...signer.publicKey.export({ format: "jwk" }), kid: "k1" }]; },
 });
 const jwt = (claims: Record<string, unknown>, { key = signer.privateKey, kid = "k1" } = {}) => {
@@ -40,6 +52,8 @@ const jwt = (claims: Record<string, unknown>, { key = signer.privateKey, kid = "
   const data = `${part({ alg: "RS256", kid })}.${part({ aud: [aud], iss: `https://${team}`, email: "me@example.com", iat: now, nbf: now, exp: now + 600, ...claims })}`;
   return `${data}.${crypto.sign("RSA-SHA256", Buffer.from(data), key).toString("base64url")}`;
 };
+/** The colony-site Worker's service token, as Access signs it: no email, its client id as common_name. */
+const serviceJwt = (claims: Record<string, unknown> = {}) => jwt({ email: undefined, common_name: SERVICE, type: "app", ...claims });
 /** Headers as cloudflared delivers a tunnel request. */
 const tunnel = (token?: string, extra: Record<string, string> = {}) => {
   const headers: Record<string, string> = { "Cf-Connecting-Ip": "203.0.113.7", "Cf-Ray": "8abc-LHR", ...extra };
@@ -47,58 +61,122 @@ const tunnel = (token?: string, extra: Record<string, string> = {}) => {
   return headers;
 };
 const lookup = (headers: Record<string, string>) => (name: string) => headers[name];
+const member = (id = "m1"): Person => ({ id, role: "member", name: "Ana", login: "ana@example.com", color: "#fff", disabled: false, createdAt: 1 });
 
-// ---------- The rules every request passes (unchanged by accounts) ----------
+// ---------- The rules every request passes ----------
 
 test("Cloudflare requests are refused when Colony has no Cloudflare Access settings", async () => {
   expect(await status(owner(), { "Cf-Connecting-Ip": "203.0.113.7" })).toBe(403);
   expect(await status(owner(), { "Cf-Ray": "8abc-LHR" })).toBe(403);
-  expect(await status(owner(), tunnel(jwt({})))).toBe(403);
-  expect(await status(owner(), tunnel(jwt({})), { ...cloudflare(), aud: "" })).toBe(403);
+  expect(await status(owner(), tunnel(serviceJwt()))).toBe(403);
+  expect(await status(owner(), tunnel(serviceJwt()), { ...cloudflare(), aud: "" })).toBe(403);
 });
 
-test("a valid Cloudflare Access sign-in for an allowed email gets in", async () => {
-  const fetches: string[] = [];
-  const cf = cloudflare(fetches);
-  // The raw resolver WebSocket upgrades use.
-  const resolve = resolver(standardSources(owner(), cf), directory().people);
-  expect(await resolve(lookup(tunnel(jwt({ email: "ME@example.com", aud }))))).toMatchObject({ via: "cloudflare" });
-  expect(await resolve(lookup({ "Cf-Connecting-Ip": "203.0.113.7", Cookie: `a=b; CF_Authorization=${jwt({})}` }))).toMatchObject({ via: "cloudflare" });
-  expect(fetches).toEqual([`https://${team}/cdn-cgi/access/certs`]); // Keys are kept.
-  expect(await status(owner(), tunnel(jwt({})), cf)).toBe(200);
-});
-
-test("missing, forged, expired or mismatched Cloudflare Access tokens are refused", async () => {
+test("without a valid origin token, a Cloudflare request is refused before anything else (even with a session)", async () => {
   const cf = cloudflare();
   const now = Math.floor(Date.now() / 1000);
   const other = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
-  const good = jwt({});
+  const good = serviceJwt();
+  const signedIn = sessions({ m1: member() });
   for (const token of [
     undefined,
     "not-a-jwt",
+    serviceJwt({}).replace(/\.[^.]+$/, ".AAAA"),
     jwt({}, { key: other }),
     jwt({}, { kid: "unknown" }),
     jwt({ exp: now - 600 }),
     jwt({ nbf: now + 600 }),
     jwt({ exp: undefined }),
-    jwt({ aud: ["someone-else"] }),
+    jwt({ aud: ["the-site-app-aud"] }),
     jwt({ iss: "https://other.cloudflareaccess.com" }),
+    // No email, and not the Worker's service token.
     jwt({ email: undefined }),
-    `${good.split(".")[0]}.${Buffer.from(JSON.stringify({ aud: [aud], iss: `https://${team}`, email: "me@example.com", exp: now + 600 })).toString("base64url")}.${good.split(".")[2]}`,
-  ]) expect(await status(owner(), tunnel(token), cf)).toBe(403);
+    serviceJwt({ common_name: "someone-elses.access" }),
+    `${good.split(".")[0]}.${Buffer.from(JSON.stringify({ aud: [aud], iss: `https://${team}`, common_name: SERVICE, exp: now + 600 })).toString("base64url")}.${good.split(".")[2]}`,
+  ]) {
+    const response = await ask(owner(), tunnel(token, { Cookie: "session=m1" }), cf, undefined, [], signedIn);
+    expect(response.status).toBe(403);
+  }
 });
 
-test("a Cloudflare Access sign-in for another email is refused", async () => {
-  expect(await status(owner(), tunnel(jwt({ email: "guest@example.com" })), cloudflare())).toBe(403);
+test("with the origin token but no web sign-in: 401 (except public paths); with a sign-in, that person", async () => {
+  const fetches: string[] = [];
+  const cf = cloudflare(fetches);
+  const { people } = directory();
+  const ana = member();
+  const web = sessions({ m1: ana, gone: "disabled" });
+  // The Worker's service token, then nobody signed in.
+  expect((await ask(owner(), tunnel(serviceJwt()), cf, people, [], web)).status).toBe(401);
+  const unauthenticated = await app(owner(), cf, people, [], web).request("/", { headers: tunnel(serviceJwt()) });
+  expect(await unauthenticated.json()).toMatchObject({ signIn: true });
+  // A public path (signing in) is let through, with nobody in it.
+  const open = await app(owner(), cf, people, [], web).request("/public", { headers: tunnel(serviceJwt()) });
+  expect(open.status).toBe(200);
+  expect(await open.json()).toEqual({ person: null });
+  // Signed in: that person. Turned off: refused.
+  expect(await ask(owner(), tunnel(serviceJwt(), { Cookie: "session=m1" }), cf, people, [], web)).toMatchObject({ status: 200, person: { id: "m1", role: "member" } });
+  expect((await ask(owner(), tunnel(serviceJwt(), { Cookie: "session=gone" }), cf, people, [], web)).status).toBe(403);
+  // A person the origin app let in (an email token) also needs a web sign-in.
+  expect((await ask(owner(), tunnel(jwt({})), cf, people, [], web)).status).toBe(401);
+  expect((await ask(owner(), tunnel(jwt({}), { Cookie: "session=m1" }), cf, people, [], web)).person).toMatchObject({ id: "m1" });
+  // Via the CF_Authorization cookie too; keys are fetched once and kept.
+  expect((await ask(owner(), { "Cf-Connecting-Ip": "203.0.113.7", Cookie: `a=b; CF_Authorization=${serviceJwt()}; session=m1` }, cf, people, [], web)).status).toBe(200);
+  const once: string[] = [];
+  const resolve = resolver(standardSources(owner(), cloudflare(once)), people, web);
+  for (let index = 0; index < 3; index++) expect(await resolve(lookup(tunnel(serviceJwt(), { Cookie: "session=m1" })))).toMatchObject({ person: { id: "m1" }, via: "cloudflare" });
+  expect(once).toEqual([`https://${team}/cdn-cgi/access/certs`]);
+  expect(fetches.length).toBeGreaterThan(0);
+  // No sign-in service at all: still 401, never anyone.
+  expect((await ask(owner(), tunnel(serviceJwt(), { Cookie: "session=m1" }), cf, people)).status).toBe(401);
+});
+
+test("through Cloudflare, changes must come from Colony's own pages (Origin); reading needn't", async () => {
+  const cf = cloudflare();
+  const web = sessions({ m1: member() });
+  const post = (headers: Record<string, string>) => ask(owner(), tunnel(serviceJwt(), { Cookie: "session=m1", ...headers }), cf, undefined, [], web, { method: "POST" });
+  expect((await post({})).status).toBe(403);
+  expect((await post({ Origin: "https://evil.example" })).status).toBe(403);
+  expect((await post({ Origin: "null" })).status).toBe(403);
+  expect((await post({ Origin: SITE })).status).toBe(200);
+  expect((await post({ Origin: "https://colony-site.example.workers.dev" })).status).toBe(200);
+  expect((await ask(owner(), tunnel(serviceJwt(), { Cookie: "session=m1" }), cf, undefined, [], web)).status).toBe(200);
+  // On this PC and the tailnet, nothing changes.
+  expect((await ask(owner(), {}, cf, undefined, [], web, { method: "POST" })).status).toBe(200);
+  expect((await ask(owner(["me@example.com"]), { "Tailscale-User-Login": "me@example.com" }, cf, undefined, [], web, { method: "POST" })).status).toBe(200);
+});
+
+test("WebSocket upgrades through Cloudflare need the origin token, a web sign-in and Colony's own Origin", async () => {
+  const cf = cloudflare();
+  const { people } = directory();
+  const resolve = resolver(standardSources(owner(), cf), people, sessions({ m1: member() }));
+  expect(await upgradePerson(resolve, lookup(tunnel(undefined, { Cookie: "session=m1", Origin: SITE })), ORIGINS)).toBeNull();
+  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Origin: SITE })), ORIGINS)).toBeNull();
+  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1" })), ORIGINS)).toBeNull();
+  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1", Origin: "https://evil.example" })), ORIGINS)).toBeNull();
+  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1", Origin: SITE })), ORIGINS)).toMatchObject({ id: "m1" });
+  // This PC: the admin, as before.
+  expect(await upgradePerson(resolve, lookup({}), ORIGINS)).toMatchObject({ id: "owner" });
+});
+
+test("forwarded hosts count only on requests verified through the origin app, and only Colony's own", () => {
+  const forwarded = { "X-Forwarded-Host": "colony-site.example.workers.dev", "X-Forwarded-Proto": "https" };
+  expect(publicOrigin(lookup(forwarded), "cloudflare", ORIGINS)).toBe("https://colony-site.example.workers.dev");
+  // Not through Cloudflare (anyone on the tailnet could send it): ignored.
+  expect(publicOrigin(lookup(forwarded), "tailnet", ORIGINS)).toBe(SITE);
+  expect(publicOrigin(lookup(forwarded), undefined, ORIGINS)).toBe(SITE);
+  // Through Cloudflare but not one of Colony's: ignored.
+  expect(publicOrigin(lookup({ "X-Forwarded-Host": "evil.example" }), "cloudflare", ORIGINS)).toBe(SITE);
+  expect(publicOrigin(lookup({ "X-Forwarded-Host": "colony.example", "X-Forwarded-Proto": "http" }), "cloudflare", ORIGINS)).toBe(SITE);
+  expect(publicOrigin(lookup({ Origin: "https://colony-site.example.workers.dev" }), "local", ORIGINS)).toBe("https://colony-site.example.workers.dev");
+  expect(publicOrigin(lookup({}), "local", [])).toBeNull();
 });
 
 test("Tailscale headers on Cloudflare requests are ignored, and claim nothing", async () => {
-  const who = owner(["guest@example.com"]);
-  expect(await status(who, tunnel(undefined, { "Tailscale-User-Login": "guest@example.com" }), cloudflare())).toBe(403);
   const fresh = owner();
-  // The admin's tailnet login on a tunnel request doesn't make it the admin's: the Access email decides.
-  const signedIn = await ask(fresh, tunnel(jwt({}), { "Tailscale-User-Login": "guest@example.com" }), cloudflare());
-  expect(signedIn).toMatchObject({ status: 200, person: { role: "member", login: "me@example.com" } });
+  const cf = cloudflare();
+  expect(await status(owner(["guest@example.com"]), tunnel(undefined, { "Tailscale-User-Login": "guest@example.com" }), cf)).toBe(403);
+  // A good origin token plus the admin's tailnet login is still not the admin: it needs a web sign-in.
+  expect((await ask(fresh, tunnel(serviceJwt(), { "Tailscale-User-Login": "me@example.com" }), cf, undefined, [], sessions({}))).status).toBe(401);
   expect(await status(fresh, tunnel(undefined, { "Tailscale-User-Login": "guest@example.com" }))).toBe(403);
   expect(fresh.current()).toBeNull();
 });
@@ -140,40 +218,6 @@ test("COLONY_ALLOWED_USERS decides which tailnet logins get in", async () => {
   expect(who.current()).toBeNull(); // Nothing is claimed while the list decides.
 });
 
-// ---------- Who each request is ----------
-
-test("a Cloudflare Access email that isn't the admin's becomes a member on first sign-in, and stays that member", async () => {
-  const { store, people } = directory(["boss@example.com"]);
-  const cf = cloudflare([], ["Ana@Example.com", "boss@example.com"]);
-  const first = await ask(owner(), tunnel(jwt({ email: "ANA@example.com" })), cf, people);
-  expect(first).toMatchObject({ status: 200, person: { role: "member", login: "ana@example.com" } });
-  expect(first.person!.id).not.toBe("owner");
-  const again = await ask(owner(), tunnel(jwt({ email: "ana@example.com" })), cf, people);
-  expect(again.person!.id).toBe(first.person!.id);
-  expect(store.listPeople().map((person) => [person.role, person.login])).toEqual([["admin", null], ["member", "ana@example.com"]]);
-  expect(store.getPerson(first.person!.id)).toMatchObject({ name: "Ana", role: "member" });
-});
-
-test("the admin's email (COLONY_ADMIN_EMAILS) signs in as the admin; nothing else ever does", async () => {
-  const { store, people } = directory(["Boss@Example.com"]);
-  const cf = cloudflare([], ["boss@example.com", "ana@example.com"]);
-  expect(await ask(owner(), tunnel(jwt({ email: "boss@example.com" })), cf, people)).toMatchObject({ status: 200, person: { id: "owner", role: "admin" } });
-  // No admin emails set: the same sign-in is just a member.
-  expect(await ask(owner(), tunnel(jwt({ email: "boss@example.com" })), cf, directory().people)).toMatchObject({ status: 200, person: { role: "member" } });
-  // A member's email never reaches the admin, and nobody is added as one.
-  const ana = await ask(owner(), tunnel(jwt({ email: "ana@example.com" })), cf, people);
-  expect(ana.person).toMatchObject({ role: "member" });
-  expect(store.listPeople().filter((person) => person.role === "admin").map((person) => person.id)).toEqual(["owner"]);
-});
-
-test("an email that's the admin's recorded login can't sign in as a member (or as the admin, unless listed)", async () => {
-  const { db, store, people } = directory();
-  db.prepare("UPDATE people SET login = 'me@example.com' WHERE id = 'owner'").run();
-  const refused = await ask(owner(), tunnel(jwt({ email: "me@example.com" })), cloudflare(), people);
-  expect(refused.status).toBe(403);
-  expect(store.listPeople()).toHaveLength(1);
-});
-
 test("requests on this PC and the admin's tailnet login are the admin; other tailnet logins are refused", async () => {
   const { people } = directory();
   expect(await ask(owner(), {}, undefined, people)).toMatchObject({ status: 200, person: { id: "owner", role: "admin" } });
@@ -183,26 +227,26 @@ test("requests on this PC and the admin's tailnet login are the admin; other tai
   expect((await ask(owner(["me@example.com"]), { "Tailscale-User-Login": "ana@example.com" }, undefined, people)).status).toBe(403);
 });
 
-test("more identity sources plug in ahead of the standard ones (a Worker that signs who it let in)", async () => {
+test("more identity sources plug in ahead of the standard ones", async () => {
   const { people } = directory();
-  const worker: IdentitySource = {
-    name: "worker",
+  const signed: IdentitySource = {
+    name: "signed",
     claim: async (header) => {
-      const signed = header("X-Test-Worker");
-      if (!signed) return null;
-      return signed === "bad" ? { kind: "refused", reason: "Bad signature." } : { kind: "email", email: signed };
+      const value = header("X-Test-Signed");
+      if (!value) return null;
+      return value === "bad" ? { kind: "refused", reason: "Bad signature." } : { kind: "email", email: value };
     },
   };
-  expect(await ask(owner(), { "X-Test-Worker": "ana@example.com" }, undefined, people, [worker])).toMatchObject({ status: 200, person: { role: "member", login: "ana@example.com" } });
-  expect((await ask(owner(), { "X-Test-Worker": "bad" }, undefined, people, [worker])).status).toBe(403);
+  expect(await ask(owner(), { "X-Test-Signed": "ana@example.com" }, undefined, people, [signed])).toMatchObject({ status: 200, person: { role: "member", login: "ana@example.com" } });
+  expect((await ask(owner(), { "X-Test-Signed": "bad" }, undefined, people, [signed])).status).toBe(403);
   // Requests it doesn't recognize go on to the standard sources.
-  expect(await ask(owner(), {}, undefined, people, [worker])).toMatchObject({ status: 200, person: { id: "owner" } });
+  expect(await ask(owner(), {}, undefined, people, [signed])).toMatchObject({ status: 200, person: { id: "owner" } });
 });
 
 test("without sign-ins set up, only requests on this PC get in", async () => {
   const resolve = localOnly(directory().people);
   expect(await resolve(lookup({}))).toMatchObject({ person: { id: "owner" } });
   expect(await resolve(lookup({ "Tailscale-User-Login": "me@example.com" }))).toHaveProperty("refused");
-  expect(await resolve(lookup(tunnel(jwt({}))))).toHaveProperty("refused");
+  expect(await resolve(lookup(tunnel(serviceJwt())))).toHaveProperty("refused");
   expect(await resolve(lookup({ "Tailscale-Funnel-Request": "?1" }))).toHaveProperty("refused");
 });

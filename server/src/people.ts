@@ -55,6 +55,11 @@ export class People {
     return this.adminEmails.has(email.trim().toLowerCase());
   }
 
+  /** The admin's emails (COLONY_ADMIN_EMAILS), lowercase. */
+  listAdminEmails() {
+    return [...this.adminEmails];
+  }
+
   byEmail(email: string): Person | Refusal {
     const login = email.trim().toLowerCase();
     if (!login) return { refused: "That sign-in has no email." };

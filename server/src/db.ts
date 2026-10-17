@@ -327,6 +327,21 @@ const MIGRATIONS = [
   `,
   // v21: the admin can turn a member off (they can't sign in, and their Bots don't run).
   `ALTER TABLE people ADD COLUMN disabled_at INTEGER;`,
+  // v22: invites to sign up on the web. Only a hash of each link's token is kept.
+  `
+  CREATE TABLE invites (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    sent_at INTEGER,
+    used_at INTEGER,
+    person_id TEXT
+  );
+  CREATE INDEX invites_by_email ON invites (email);
+  `,
 ];
 
 export type Db = DatabaseSync;

@@ -38,7 +38,7 @@ test("a database from before accounts stays the admin's: every row is the owner'
   before.close();
 
   const db = openDb(file);
-  expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(21);
+  expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(22);
   expect(counts(db)).toEqual(was);
   const store = new Store(db, new EventLog(db));
   expect(store.listPeople().map((person) => [person.id, person.role])).toEqual([["owner", "admin"]]);

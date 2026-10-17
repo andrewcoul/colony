@@ -298,7 +298,7 @@ describe("People", () => {
     await call("alice", "PUT", "/me/about", { text: "- Alice's notes" });
     await call("admin", "PUT", "/me/about", { text: "- The admin's notes" });
     const adminBefore = JSON.stringify([store.listBots("owner"), store.listChats("owner").map(({ updatedAt: _, ...chat }) => chat), store.listMessages(max.chatId)]);
-    expect((await call("admin", "DELETE", `/people/${alice}`)).status).toBe(204);
+    expect((await call("admin", "DELETE", `/people/${alice}?data=delete`)).status).toBe(204);
     expect(store.getPerson(alice)).toBeNull();
     expect(store.listBots(alice)).toEqual([]);
     expect(store.listChats(alice)).toEqual([]);
