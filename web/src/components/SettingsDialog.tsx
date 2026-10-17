@@ -153,7 +153,7 @@ function AdminSettingsDialog({ open, onOpenChange }: DialogProps) {
             <SettingsRow icon={<Users size={16} />} title="People" onClick={() => setPeopleOpen(true)}
               detail="Invites, web sign-in, and members: what they spend, their caps and computers" />
             <SettingsRow icon={<KeyRound size={16} />} title="Members' models" onClick={() => setMembersOpen(true)} disabled={!settings?.members}
-              detail={settings?.members ? `${settings.members.keySet ? `Key set${settings.members.keyHint ? ` (…${settings.members.keyHint})` : ""}` : "No OpenCode Zen API key yet"} · ${settings.members.models.length} model${settings.members.models.length === 1 ? "" : "s"} · ${settings.members.defaultCap === null ? "no cap set" : `cap $${settings.members.defaultCap}`}` : "OpenCode Zen for members' Bots"} />
+              detail={settings?.members ? `${settings.members.keySet ? `Key set${settings.members.keyHint ? ` (…${settings.members.keyHint})` : ""}` : "No OpenCode API key yet"} · ${settings.members.models.length} model${settings.members.models.length === 1 ? "" : "s"} · ${settings.members.defaultCap === null ? "no cap set" : `cap $${settings.members.defaultCap}`}` : "OpenCode Go for members' Bots"} />
             <SettingsRow icon={<AudioLines size={16} />} title="Voice" onClick={() => setVoicing(true)} disabled={!settings}
               detail={settings?.voice.baseURL
                 ? settings.voice.allowCalls ? `Talk to your Bots · they can ring you · quiet ${settings.voice.quietFrom}–${settings.voice.quietTo}` : "Talk to your Bots · they can't ring you"

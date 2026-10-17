@@ -159,7 +159,7 @@ describe("sign-up is invite-only", () => {
     expect(person).toMatchObject({ role: "member", login: "ana@example.com", disabled: false });
     expect(store.getPerson(person.id)).not.toBeNull();
     expect(invites.get(invite.id)).toMatchObject({ status: "used", personId: person.id });
-    expect(settings.defaultModelFor(person)).toBe("opencode-members::deepseek-v4.1-flash-free");
+    expect(settings.defaultModelFor(person)).toBe("opencode-go-members::muse-spark-1.3-contributor");
     expect(settings.spendCapOf(person.id)).toEqual({ cap: settings.memberPolicy().defaultCap, own: false });
     expect(() => accounts.afterSignUp("ana@example.com", token)).toThrow();
   });

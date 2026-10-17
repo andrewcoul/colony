@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterAll, beforeEach, describe, expect, test } from "vitest";
 
 /*
- * Members' models and money: their Bots run on the members' OpenCode Zen provider (the admin's
+ * Members' models and money: their Bots run on the members' OpenCode Go provider (the admin's
  * members' key, never the admin's sign-ins), only on the models the admin allows, and stop taking
  * new turns once a month's spending reaches the cap the admin set. The admin is unaffected.
  */
@@ -36,8 +36,8 @@ type ModelSource = import("./agent/pi/models.js").ModelSource;
 
 afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-const FREE = "deepseek-v4.1-flash-free";
-const FREE_REF = `opencode-members::${FREE}`;
+const MUSE = "muse-spark-1.3-contributor";
+const MUSE_REF = `opencode-go-members::${MUSE}`;
 
 /** The scripted model, recording which provider and model each turn was given. */
 const scripted = scriptedModels();
@@ -88,7 +88,7 @@ async function setup() {
 beforeEach(() => {
   targets.length = 0;
   scripted.play([textTurn("Hello!")]);
-  settings.setMemberPolicy({ models: [FREE], defaultModel: FREE, defaultCap: null });
+  settings.setMemberPolicy({ models: [MUSE], defaultModel: MUSE, defaultCap: null });
   settings.setMemberKeyStatus("abcd");
 });
 
@@ -96,11 +96,12 @@ describe("members' models", () => {
   test("a member's Bots run on the members' provider and its default model; the admin's on the admin's", async () => {
     const { store, alice, call, reply } = await setup();
     const ana = (await call("alice", "POST", "/bots", { name: "Ana" })).json;
-    expect(ana.model).toBe(FREE_REF);
+    expect(ana.model).toBe(MUSE_REF);
     expect(await reply(ana.chatId)).toMatchObject({ status: "done", text: "Hello!" });
-    expect(new Set(targets)).toEqual(new Set([FREE_REF]));
-    // What it used is priced at OpenCode Zen's own catalog price (free: $0, not unpriced), and counted as hers.
-    expect(store.listUsage(0, alice).map((row) => [row.providerId, row.model, row.costMicros])).toEqual([["opencode-members", FREE, 0]]);
+    expect(new Set(targets)).toEqual(new Set([MUSE_REF]));
+    // What it used is priced at OpenCode Go's own catalog price, and counted as hers.
+    expect(store.listUsage(0, alice).map((row) => [row.providerId, row.model, row.costMicros !== null])).toEqual([["opencode-go-members", MUSE, true]]);
+    expect(settings.priceOf(settings.memberProvider(), MUSE)).toEqual({ input: 0.1, output: 0.2, cached: 0.002 });
 
     targets.length = 0;
     const max = (await call("admin", "POST", "/bots", { name: "Max" })).json;
@@ -111,15 +112,13 @@ describe("members' models", () => {
 
   test("a member may only pick an allowed model, at create, at update and when a turn runs", async () => {
     const { store, call, reply } = await setup();
-    for (const model of ["dev::mock-model", `opencode::${FREE}`, "opencode-go::muse-spark-1.3-contributor", "opencode-members::glm-5.3"]) {
+    for (const model of ["dev::mock-model", "opencode-go::muse-spark-1.3-contributor", "opencode-go-members::glm-5.3"]) {
       expect((await call("alice", "POST", "/bots", { name: "Nope", model })).status, model).toBe(400);
     }
-    const ana = (await call("alice", "POST", "/bots", { name: "Ana", model: FREE_REF })).json;
+    const ana = (await call("alice", "POST", "/bots", { name: "Ana", model: MUSE_REF })).json;
     await reply(ana.chatId);
     expect((await call("alice", "PATCH", `/bots/${ana.id}`, { model: "dev::mock-model" })).status).toBe(400);
-    expect((await call("alice", "PATCH", `/bots/${ana.id}`, { model: FREE_REF })).status).toBe(200);
-    // A ref from before members moved to Zen still names the members' provider.
-    expect((await call("alice", "PATCH", `/bots/${ana.id}`, { model: `opencode-go-members::${FREE}` })).json.model).toBe(FREE_REF);
+    expect((await call("alice", "PATCH", `/bots/${ana.id}`, { model: MUSE_REF })).status).toBe(200);
     expect(settings.resolveModelFor({ id: "x", role: "member" }, "dev::mock-model", { fallback: false })).toBeNull();
 
     // A model that slipped in some other way doesn't run: no fallback to anything else.
@@ -130,44 +129,34 @@ describe("members' models", () => {
     expect(targets).toEqual([]);
 
     // The admin narrows what members may use: a Bot left on a removed model stops too.
-    store.updateBot(ana.id, { model: FREE_REF });
+    store.updateBot(ana.id, { model: MUSE_REF });
     expect((await call("admin", "PUT", "/settings/members", { models: ["glm-5.3"], defaultModel: "glm-5.3" })).status).toBe(200);
     await call("alice", "POST", `/chats/${ana.chatId}/messages`, { text: "Hi again" });
     expect((await reply(ana.chatId)).error).toMatch(/isn't one of the models members may use/);
     expect(targets).toEqual([]);
-    expect((await call("alice", "GET", "/state")).json.models.map((model: { ref: string }) => model.ref)).toEqual(["opencode-members::glm-5.3"]);
-    // Only OpenCode Zen's own models (not Go's), and a default from the allowed ones.
+    expect((await call("alice", "GET", "/state")).json.models.map((model: { ref: string }) => model.ref)).toEqual(["opencode-go-members::glm-5.3"]);
+    // Only OpenCode Go's own models, and a default from the allowed ones.
     expect((await call("admin", "PUT", "/settings/members", { models: ["not-a-model"] })).status).toBe(400);
-    expect((await call("admin", "PUT", "/settings/members", { models: ["muse-spark-1.3-contributor"] })).json.error).toBe("OpenCode Zen doesn't offer muse-spark-1.3-contributor.");
-    expect((await call("admin", "PUT", "/settings/members", { defaultModel: FREE })).status).toBe(400);
+    expect((await call("admin", "PUT", "/settings/members", { defaultModel: MUSE })).status).toBe(400);
   });
 
-  test("defaults to exactly deepseek-v4.1-flash-free on Zen, and the admin's own models don't change", async () => {
+  test("defaults to exactly muse-spark-1.3-contributor, and the admin's own models don't change", async () => {
     const { call } = await setup();
     const admin = (await call("admin", "GET", "/settings")).json;
-    expect(admin.members).toMatchObject({ models: [FREE], defaultModel: FREE, defaultCap: null, keySet: true, prices: { [FREE]: { input: 0, output: 0, cached: 0 } } });
-    expect(admin.members.catalog.map((model: { id: string }) => model.id)).toContain(FREE);
-    expect(admin.members.catalog.map((model: { id: string }) => model.id)).not.toContain("muse-spark-1.3-contributor");
+    expect(admin.members).toMatchObject({ models: [MUSE], defaultModel: MUSE, defaultCap: null, keySet: true });
     expect(admin.defaultModel).toBe("dev::mock-model");
     expect((await call("admin", "GET", "/state")).json.models.map((model: { ref: string }) => model.ref)).toEqual(["dev::mock-model"]);
-    expect((await call("alice", "GET", "/settings")).json).toMatchObject({ models: [{ ref: FREE_REF, providerName: "OpenCode Zen" }], defaultModel: FREE_REF, configured: true });
+    expect((await call("alice", "GET", "/settings")).json).toMatchObject({ models: [{ ref: MUSE_REF, providerName: "OpenCode Go" }], defaultModel: MUSE_REF, configured: true });
     // The admin can't run on the members' provider either.
-    expect(settings.resolveModel(FREE_REF, { fallback: false })).toBeNull();
+    expect(settings.resolveModel(MUSE_REF, { fallback: false })).toBeNull();
   });
 
-  test("models the catalog lists as free cost $0; priced ones cost their list price; unlisted ones keep the built-in price", () => {
+  test("a model OpenCode Go's catalog lists as free costs $0; one the catalog lacks keeps the built-in price", () => {
     const members = settings.memberProvider();
-    expect(settings.priceOf(members, FREE)).toEqual({ input: 0, output: 0, cached: 0 });
-    expect(settings.priceOf(members, "glm-5.3")).toEqual({ input: 1.4, output: 4.4, cached: 0.26 });
+    expect(settings.priceOf(members, "cat-jam-free")).toEqual({ input: 0, output: 0, cached: 0 });
+    expect(costMicros({ input: 50_000, cached: 10_000, output: 5_000 }, settings.priceOf(members, "cat-jam-free"))).toBe(0);
     expect(settings.priceOf(members, "deepseek-unlisted")).toEqual(builtInPrice("deepseek-unlisted"));
-    expect(builtInPrice(FREE)).not.toBeNull(); // What it used to fall back to.
-    expect(costMicros({ input: 50_000, cached: 10_000, output: 5_000 }, settings.priceOf(members, FREE))).toBe(0);
-    // The admin's providers too: free is $0 unless the admin set a price; the rest keep the built-in table.
-    const zen = settings.providerById("opencode")!;
-    expect(settings.priceOf(zen, FREE)).toEqual({ input: 0, output: 0, cached: 0 });
-    expect(settings.priceOf({ ...zen, prices: { [FREE]: { input: 1, output: 2 } } }, FREE)).toEqual({ input: 1, output: 2 });
-    expect(settings.priceOf(zen, "glm-5.3")).toEqual(builtInPrice("glm-5.3"));
-    expect(settings.priceOf(settings.providerById("opencode-go")!, "deepseek-v4.1-flash")).toEqual(builtInPrice("deepseek-v4.1-flash"));
+    expect(builtInPrice("deepseek-unlisted")).not.toBeNull();
   });
 
   test("with no members' key, members get a clear error and nothing falls back to the admin's sign-in", async () => {
@@ -192,13 +181,11 @@ describe("members' models", () => {
     const models = new ColonyModels({ credentials: new FileCredentialStore(file) });
     try {
       expect(settings.memberKeyStatus()).toEqual({ set: false, hint: null });
-      expect(await models.models.getAuth("opencode-members")).toBeUndefined();
-      expect(models.models.getProvider("opencode-go-members")).toBeUndefined();
-      // pi-ai's Zen model as it is (its address and API), at Colony's own (zero) cost.
-      expect(models.models.getProvider("opencode-members")?.getModels().map((model) => [model.id, model.baseUrl, model.api])).toEqual([[FREE, "https://opencode.ai/inference/v1", "openai-completions"]]);
+      expect(await models.models.getAuth("opencode-go-members")).toBeUndefined();
+      expect(models.models.getProvider("opencode-go-members")?.getModels().map((model) => model.id)).toEqual([MUSE]);
       await models.setMemberKey("sk-members-key-WXYZ");
       expect(settings.memberKeyStatus()).toEqual({ set: true, hint: "WXYZ" });
-      expect((await models.models.getAuth("opencode-members"))?.auth).toMatchObject({ apiKey: "sk-members-key-WXYZ" });
+      expect((await models.models.getAuth("opencode-go-members"))?.auth).toMatchObject({ apiKey: "sk-members-key-WXYZ" });
       // Stored under its own id, beside (and separate from) the admin's sign-in, readable only by Colony.
       const saved = JSON.parse(fs.readFileSync(file, "utf8"));
       expect(saved["opencode-key"]).toEqual({ type: "api_key", key: "sk-members-key-WXYZ" });
@@ -206,7 +193,7 @@ describe("members' models", () => {
       expect(fs.statSync(file).mode & 0o777).toBe(0o600);
       await models.clearMemberKey();
       expect(settings.memberKeyStatus().set).toBe(false);
-      expect(await models.models.getAuth("opencode-members")).toBeUndefined();
+      expect(await models.models.getAuth("opencode-go-members")).toBeUndefined();
     } finally {
       delete process.env.OPENCODE_API_KEY;
       models.close();
@@ -216,7 +203,7 @@ describe("members' models", () => {
 
 describe("members' monthly spending caps", () => {
   const spend = (store: InstanceType<typeof Store>, botId: string, dollars: number, at: number) =>
-    store.recordUsage({ botId, providerId: "opencode-members", model: "glm-5.3", inputTokens: 1000, outputTokens: 100, cachedTokens: 0, costMicros: Math.round(dollars * 1_000_000) }, at);
+    store.recordUsage({ botId, providerId: "opencode-go-members", model: MUSE, inputTokens: 1000, outputTokens: 100, cachedTokens: 0, costMicros: Math.round(dollars * 1_000_000) }, at);
 
   test("months are America/Chicago's", () => {
     // Oct 31, 22:00 in Chicago is already November in UTC.
@@ -228,7 +215,7 @@ describe("members' monthly spending caps", () => {
 
   test("no cap by default; below it turns run, at or above it they wait; a new month starts over", async () => {
     const { store, alice, call } = await setup();
-    const ana = store.createBot({ name: "Ana", title: "", description: "", model: FREE_REF, computer: false, ownerId: alice });
+    const ana = store.createBot({ name: "Ana", title: "", description: "", model: MUSE_REF, computer: false, ownerId: alice });
     const member = { id: alice, role: "member" as const };
     const october = Date.UTC(2026, 9, 20, 17);
     spend(store, ana.id, 4, Date.UTC(2026, 9, 15, 17));

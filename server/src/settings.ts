@@ -15,15 +15,13 @@ export type ProviderId = "openai" | "opencode-go" | "opencode" | "dev" | typeof 
 export type SignInId = "chatgpt" | "opencode";
 
 /**
- * Members' Bots run on OpenCode Zen through a provider of their own, with an OpenCode Zen API key
- * the admin sets (kept in data/credentials.json as MEMBER_KEY), never with the admin's sign-ins.
+ * Members' Bots run on OpenCode Go through a provider of their own, with an OpenCode API key the
+ * admin sets (kept in data/credentials.json as MEMBER_KEY), never with the admin's sign-ins.
  */
-export const MEMBER_PROVIDER = "opencode-members";
+export const MEMBER_PROVIDER = "opencode-go-members";
 export const MEMBER_KEY = "opencode-key";
-/** The members' provider before it moved from OpenCode Go to Zen (bots.model is migrated in db.ts). */
-export const LEGACY_MEMBER_PROVIDER = "opencode-go-members";
-/** What members may use until the admin says otherwise: free on Zen. */
-export const MEMBER_DEFAULT_MODEL = "deepseek-v4.1-flash-free";
+/** What members may use until the admin says otherwise. */
+const MEMBER_DEFAULT_MODEL = "muse-spark-1.3-contributor";
 export const NO_MEMBER_MODELS = "Your Colony admin hasn't set up models for members yet.";
 
 /** A turn that can't start, in words for the chat (shown as they are). */
@@ -122,7 +120,7 @@ let owner: string | null = null;
 /** Which sign-ins are done, and the account each is for (kept in step by the sign-in store). */
 const signedIn = new Map<SignInId, string | null>();
 /**
- * What members may use: OpenCode Zen models (ids), the default for their new Bots, and what each
+ * What members may use: OpenCode Go models (ids), the default for their new Bots, and what each
  * may spend a month in dollars (`caps` per member; anyone not listed has `defaultCap`; null: no cap).
  */
 export type MemberPolicy = { models: string[]; defaultModel: string; defaultCap: number | null; caps: Record<string, number | null> };
@@ -185,11 +183,8 @@ export function loadSettings() {
     deviceId = saved.deviceId ?? deviceId;
     aliases = { ...saved.aliases };
     defaultRef = saved.defaultModel ?? "";
+    if (saved.members) members = { ...freshPolicy(), ...saved.members, caps: { ...saved.members.caps } };
     let migrated = false;
-    if (saved.members) {
-      members = savedPolicy(saved.members);
-      migrated = members.models.join() !== (saved.members.models ?? []).join() || members.defaultModel !== saved.members.defaultModel;
-    }
     for (const item of saved.providers ?? []) {
       const legacy = "baseURL" in item && typeof item.baseURL === "string" && item.id !== "dev" ? item as LegacyProvider : null;
       if (legacy?.ownerId) { migrated = true; continue; }
@@ -215,24 +210,6 @@ export function loadSettings() {
     ensureDefault();
   }
   changed();
-}
-
-/** The models OpenCode Zen offers, which members may be allowed. */
-const zenOffers = () => new Set(catalogOf({ id: MEMBER_PROVIDER, models: [] }).map((model) => model.id));
-
-/**
- * The saved members' policy, with only models Zen offers. Models from when members ran on OpenCode
- * Go (muse-spark-1.3-contributor) drop out; if none are left, members get the default again.
- */
-function savedPolicy(saved: Partial<MemberPolicy>): MemberPolicy {
-  const policy = { ...freshPolicy(), ...saved, caps: { ...saved.caps } };
-  const offered = zenOffers();
-  const models = policy.models.filter((model) => offered.has(model));
-  policy.models = models.length || !policy.models.length ? models : [MEMBER_DEFAULT_MODEL];
-  if (!policy.models.includes(policy.defaultModel)) {
-    policy.defaultModel = policy.models.includes(MEMBER_DEFAULT_MODEL) ? MEMBER_DEFAULT_MODEL : policy.models[0] ?? "";
-  }
-  return policy;
 }
 
 /** The provider a ref names, following ids from before sign-ins. */
@@ -311,8 +288,8 @@ export function modelOptions(): ModelOption[] {
 // ---------- What members may use ----------
 type Someone = { id: string; role: "admin" | "member" };
 
-/** The provider members' Bots run on: OpenCode Zen with the members' key, limited to the allowed models. */
-export const memberProvider = (): Provider => ({ id: MEMBER_PROVIDER, name: "OpenCode Zen", signIn: null, models: [...members.models], desktop: [] });
+/** The provider members' Bots run on: OpenCode Go with the members' key, limited to the allowed models. */
+export const memberProvider = (): Provider => ({ id: MEMBER_PROVIDER, name: "OpenCode Go", signIn: null, models: [...members.models], desktop: [] });
 export const memberPolicy = (): Readonly<MemberPolicy> => members;
 export const memberKeyStatus = () => ({ ...memberKey });
 
@@ -324,12 +301,12 @@ export function setMemberKeyStatus(hint: string | null | false) {
   changed();
 }
 
-/** Changes which OpenCode Zen models members may use, their default, and the cap for members without their own. */
+/** Changes which OpenCode Go models members may use, their default, and the cap for members without their own. */
 export function setMemberPolicy(patch: { models?: string[]; defaultModel?: string; defaultCap?: number | null }) {
-  const offered = zenOffers();
+  const offered = new Set(catalogOf({ id: "opencode-go", models: [] }).map((model) => model.id));
   const models = patch.models ? [...new Set(patch.models.map((item) => item.trim()).filter(Boolean))] : members.models;
   const unknown = models.find((model) => !offered.has(model));
-  if (unknown) throw new Error(`OpenCode Zen doesn't offer ${unknown}.`);
+  if (unknown) throw new Error(`OpenCode Go doesn't offer ${unknown}.`);
   const preferred = patch.defaultModel ?? members.defaultModel;
   if (patch.defaultModel !== undefined && !models.includes(preferred)) throw new Error("Pick the default from the models members may use.");
   members = {
@@ -356,10 +333,10 @@ export function setSpendCap(personId: string, cap: number | null | "default") {
 
 const memberRef = (model: string) => modelRef(MEMBER_PROVIDER, model);
 
-/** The models this person's Bots may use: the admin's own for the admin; the allowed OpenCode Zen ones for a member. */
+/** The models this person's Bots may use: the admin's own for the admin; the allowed OpenCode Go ones for a member. */
 export function modelOptionsFor(person: Someone): ModelOption[] {
   if (person.role === "admin") return modelOptions();
-  return members.models.map((model) => ({ ref: memberRef(model), providerId: MEMBER_PROVIDER, providerName: "OpenCode Zen", model, desktop: false }));
+  return members.models.map((model) => ({ ref: memberRef(model), providerId: MEMBER_PROVIDER, providerName: "OpenCode Go", model, desktop: false }));
 }
 
 /** The default for this person's new Bots. */
@@ -379,8 +356,7 @@ export const configuredFor = (person: Someone) => (person.role === "admin" ? mod
 export function resolveModelFor(person: Someone, requested: string | undefined, { fallback = true }: { fallback?: boolean } = {}): ModelTarget | null {
   if (person.role === "admin") return resolveModel(requested, { fallback });
   const provider = memberProvider();
-  const prefix = [MEMBER_PROVIDER, LEGACY_MEMBER_PROVIDER].find((id) => requested?.startsWith(`${id}${SEP}`));
-  const asked = prefix ? requested!.slice(prefix.length + SEP.length) : null;
+  const asked = requested?.startsWith(`${MEMBER_PROVIDER}${SEP}`) ? requested.slice(MEMBER_PROVIDER.length + SEP.length) : null;
   if (asked && provider.models.includes(asked)) return { provider, model: asked, ref: memberRef(asked) };
   if (!fallback) return null;
   const preferred = defaultModelFor(person);
@@ -411,16 +387,12 @@ export const listProviders = (): readonly Provider[] => providers;
 export const providerById = (id: string) => providerOf(id) ?? null;
 
 /**
- * A model's price: set by hand on its provider, else $0 if pi-ai's catalog lists it as free, else
- * from the built-in table. Members' models use OpenCode Zen's own catalog price (what the members'
- * key is billed, $0 for the free ones), and the built-in table only for models the catalog lacks.
+ * A model's price: set by hand on its provider, or from the built-in table. Members' models use
+ * OpenCode Go's own catalog price (what the members' key is billed).
  */
-export function priceOf(provider: Provider, model: string): Price | null {
-  if (provider.id === MEMBER_PROVIDER) return catalogPrice("opencode", model) ?? builtInPrice(model);
-  const listed = provider.id === "dev" ? null : catalogPrice(provider.id, model);
-  const free = listed && !listed.input && !listed.output ? listed : null;
-  return provider.prices?.[model] ?? free ?? builtInPrice(model);
-}
+export const priceOf = (provider: Provider, model: string): Price | null => provider.id === MEMBER_PROVIDER
+  ? catalogPrice("opencode-go", model) ?? builtInPrice(model)
+  : provider.prices?.[model] ?? builtInPrice(model);
 
 /** Your tailnet login, once Colony has seen it. */
 export const ownerLogin = () => owner;
@@ -488,7 +460,7 @@ export function settingsView(): SettingsView {
     voice: { ...voice, keySet: Boolean(voiceKey), keyHint: voiceKey.length >= 12 ? voiceKey.slice(-4) : null },
     members: {
       keySet: memberKey.set, keyHint: memberKey.hint, models: [...members.models], defaultModel: members.defaultModel, defaultCap: members.defaultCap,
-      catalog: catalogOf({ id: MEMBER_PROVIDER, models: [] }),
+      catalog: catalogOf({ id: "opencode-go", models: [] }),
       prices: Object.fromEntries(members.models.flatMap((model) => { const price = priceOf(memberProvider(), model); return price ? [[model, price]] : []; })),
     },
   };
