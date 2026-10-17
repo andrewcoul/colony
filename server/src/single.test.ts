@@ -58,8 +58,8 @@ test("a family database becomes yours alone: everyone else's Bots, topics, accou
 test("other people's own model keys are dropped from settings; shared ones become yours", () => {
   fs.writeFileSync(path.join(dataDir, "settings.json"), JSON.stringify({
     providers: [
-      { id: "shared", name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1", protocol: "openai", apiKey: "k1", models: ["m1"], desktop: [], ownerId: null },
-      { id: "hers", name: "Her key", baseURL: "https://api.openai.com/v1", protocol: "openai", apiKey: "k2", models: ["m2"], desktop: [], ownerId: "marija" },
+      { id: "shared", name: "OpenAI", baseURL: "https://api.openai.com/v1", protocol: "openai", apiKey: "k1", models: ["m1"], desktop: [], ownerId: null },
+      { id: "hers", name: "Her key", baseURL: "https://opencode.ai/zen/v1", protocol: "openai", apiKey: "k2", models: ["m2"], desktop: [], ownerId: "marija" },
     ],
     defaultModel: "shared::m1",
     personalDefaults: { marija: "hers::m2" },
@@ -67,9 +67,11 @@ test("other people's own model keys are dropped from settings; shared ones becom
     voice: { voice: "alloy", people: { marija: { allowCalls: false } } },
   }));
   settings.loadSettings();
-  expect(settings.listProviders().map((provider) => provider.id)).toEqual(["shared"]);
+  settings.setSignedIn("chatgpt", null);
+  settings.setSignedIn("opencode", null);
+  expect(settings.listProviders().map((provider) => [provider.id, provider.models])).toEqual([["openai", ["m1"]], ["opencode-go", []], ["opencode", []]]);
   expect(settings.resolveModel("hers::m2", { fallback: false })).toBeNull();
-  expect(settings.defaultModel()).toBe("shared::m1");
+  expect(settings.defaultModel()).toBe("openai::m1");
   expect(settings.voiceSettings()).not.toHaveProperty("people");
   settings.setOwnerLogin("me@example.com");
   const saved = JSON.parse(fs.readFileSync(path.join(dataDir, "settings.json"), "utf8"));

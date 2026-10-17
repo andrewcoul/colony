@@ -1,47 +1,32 @@
 import fs from "node:fs";
-import http from "node:http";
-import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, expect, test } from "vitest";
+import { afterAll, beforeEach, expect, test } from "vitest";
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "colony-settings-"));
 process.env.COLONY_DATA_DIR = dataDir;
-process.env.COLONY_API_BASE_URL = "http://env.invalid/v1";
-process.env.COLONY_API_KEY = "sk-from-env-0000";
-process.env.COLONY_PROVIDER_NAME = "OpenCode Go";
-process.env.COLONY_MODELS = "env-model";
+delete process.env.COLONY_DEV_BASE_URL;
 
 const { openDb } = await import("./db.js");
 const { EventLog } = await import("./events.js");
 const { Store } = await import("./store.js");
 const { ApprovalGate } = await import("./agent/approvals.js");
-const { AgentRunner } = await import("./agent/run.js");
+const { PiRunner } = await import("./agent/pi/runner.js");
+const { MemoryStorage } = await import("@earendil-works/pi-durable");
+const { scriptedModels } = await import("./agent/pi/testkit.js");
 const { createApi } = await import("./api.js");
 const settings = await import("./settings.js");
 
-settings.loadSettings();
+const file = path.join(dataDir, "settings.json");
+const scripted = scriptedModels();
 
-/** A pretend provider that records the auth headers and query it receives. */
-async function fakeProvider(models: string[]) {
-  const seen: (string | undefined)[] = [];
-  const requests: { url: string; apiKey?: string; version?: string }[] = [];
-  const server = http.createServer((request, response) => {
-    seen.push(request.headers.authorization);
-    requests.push({ url: request.url ?? "", apiKey: request.headers["x-api-key"] as string | undefined, version: request.headers["anthropic-version"] as string | undefined });
-    if (!request.url?.startsWith("/v1/models")) { response.writeHead(404).end(); return; }
-    response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ data: models.map((id) => ({ id })) }));
-  });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen, requests, close: () => server.close() };
-}
-
-function app() {
+async function app() {
   const db = openDb(":memory:");
   const events = new EventLog(db);
   const store = new Store(db, events);
   const gate = new ApprovalGate(store);
-  const api = createApi({ store, events, gate, runner: new AgentRunner(store, events, gate) });
+  const runner = await PiRunner.open(store, events, gate, undefined, { storage: new MemoryStorage(), models: scripted.source });
+  const api = createApi({ store, events, gate, runner });
   const call = async (method: string, url: string, body?: unknown) => {
     const response = await api.request(url, { method, headers: { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
     const text = await response.text();
@@ -50,106 +35,94 @@ function app() {
   return { call, events, store };
 }
 
+beforeEach(() => {
+  fs.rmSync(file, { force: true });
+  settings.setSignedIn("chatgpt", false);
+  settings.setSignedIn("opencode", false);
+  settings.loadSettings();
+});
 afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-test("starts from .env as one provider; devices only see a key's last four characters", async () => {
-  const { call } = app();
-  const { text, json } = await call("GET", "/settings");
-  expect(json).toMatchObject({ providers: [{ id: "env", name: "OpenCode Go", models: ["env-model"], keySet: true, keyHint: "0000" }], defaultModel: "env::env-model", source: "env" });
-  expect(text).not.toContain("sk-from-env");
+test("starts with the ChatGPT and OpenCode sign-ins and nothing picked; no API key fields", async () => {
+  const { call } = await app();
+  const { json } = await call("GET", "/settings");
+  expect(json.providers.map((provider: { id: string; name: string; signIn: string; signedIn: boolean; models: string[] }) => [provider.id, provider.name, provider.signIn, provider.signedIn, provider.models]))
+    .toEqual([["openai", "ChatGPT", "chatgpt", false, []], ["opencode-go", "OpenCode Go", "opencode", false, []], ["opencode", "OpenCode Zen", "opencode", false, []]]);
+  expect(json.signIns).toEqual([{ id: "chatgpt", name: "ChatGPT", signedIn: false, account: null }, { id: "opencode", name: "OpenCode", signedIn: false, account: null }]);
+  expect(json).toMatchObject({ defaultModel: "", configured: false });
+  expect(JSON.stringify(json)).not.toContain("apiKey");
 });
 
-test("several providers at once, each Bot on its own provider and model", async () => {
-  const { call, events, store } = app();
-  const before = events.latestSeq();
-  const added = await call("POST", "/settings/providers", { name: "OpenRouter", baseURL: "https://openrouter.ai/api/v1/", apiKey: "sk-or-key-123456789", models: ["anthropic/claude-x", "openai/gpt-y"] });
-  expect(added.status).toBe(201);
-  expect(added.text).not.toContain("sk-or-key");
-  const openrouter = added.json.providers.find((item: { name: string }) => item.name === "OpenRouter");
-  expect(openrouter).toMatchObject({ baseURL: "https://openrouter.ai/api/v1", keyHint: "6789" });
+test("models are offered only while their sign-in is done; Bots fall back to a model that works", async () => {
+  const { call } = await app();
+  expect((await call("PUT", "/settings/providers/opencode-go", { models: ["deepseek-v4.1-flash", "mimo-v2.6-pro"] })).status).toBe(200);
+  expect((await call("PUT", "/settings/providers/openai", { models: ["gpt-5.5"] })).status).toBe(200);
+  expect(settings.modelOptions()).toEqual([]);
+  expect(settings.resolveModel("opencode-go::mimo-v2.6-pro")).toBeNull();
 
-  const updated = events.since(before)!.map((item) => item.event).find((event) => event.type === "settings.updated");
-  expect(updated).toMatchObject({ defaultModel: "env::env-model" });
-  expect((updated as { models: { ref: string }[] }).models.map((item) => item.ref)).toEqual(["env::env-model", `${openrouter.id}::anthropic/claude-x`, `${openrouter.id}::openai/gpt-y`]);
+  settings.setSignedIn("opencode", null);
+  expect(settings.modelOptions().map((option) => option.ref)).toEqual(["opencode-go::deepseek-v4.1-flash", "opencode-go::mimo-v2.6-pro"]);
+  expect(settings.resolveModel("opencode-go::mimo-v2.6-pro")).toMatchObject({ model: "mimo-v2.6-pro", provider: { id: "opencode-go", name: "OpenCode Go" } });
+  // A ChatGPT model while ChatGPT is signed out: the default instead.
+  expect(settings.resolveModel("openai::gpt-5.5")).toMatchObject({ ref: "opencode-go::deepseek-v4.1-flash" });
+  expect((await call("PUT", "/settings/default-model", { model: "openai::gpt-5.5" })).status).toBe(400);
+  expect((await call("PUT", "/settings/default-model", { model: "opencode-go::mimo-v2.6-pro" })).json).toMatchObject({ defaultModel: "opencode-go::mimo-v2.6-pro", configured: true });
 
-  // Bots pick any model from any provider; the runner gets the right provider for each.
-  const john = (await call("POST", "/bots", { name: "John", model: `${openrouter.id}::anthropic/claude-x` })).json;
-  const jeff = (await call("POST", "/bots", { name: "Jeff" })).json;
-  expect(john.model).toBe(`${openrouter.id}::anthropic/claude-x`);
-  expect(jeff.model).toBe("env::env-model");
-  expect(settings.resolveModel(store.getBot(john.id)!.model)).toMatchObject({ model: "anthropic/claude-x", provider: { name: "OpenRouter", apiKey: "sk-or-key-123456789" } });
-  expect(settings.resolveModel(store.getBot(jeff.id)!.model)).toMatchObject({ model: "env-model", provider: { name: "OpenCode Go", apiKey: "sk-from-env-0000" } });
-  expect((await call("PATCH", `/bots/${jeff.id}`, { model: "nope::nope" })).status).toBe(400);
+  settings.setSignedIn("chatgpt", null);
+  expect(settings.resolveModel("openai::gpt-5.5")).toMatchObject({ provider: { id: "openai" } });
+  expect((await call("GET", "/settings")).json.providers[0].catalog).toEqual(expect.arrayContaining([expect.objectContaining({ id: "gpt-5.5", images: true })]));
+});
 
-  // Old plain model ids still resolve to the provider that offers them.
-  expect(settings.resolveModel("openai/gpt-y")!.ref).toBe(`${openrouter.id}::openai/gpt-y`);
-
-  // Changing the default; removing a provider moves Bots on it to the default.
-  expect((await call("PUT", "/settings/default-model", { model: `${openrouter.id}::openai/gpt-y` })).json.defaultModel).toBe(`${openrouter.id}::openai/gpt-y`);
-  await call("DELETE", `/settings/providers/${openrouter.id}`);
-  expect(settings.defaultModel()).toBe("env::env-model");
-  expect(settings.resolveModel(store.getBot(john.id)!.model)!.ref).toBe("env::env-model");
-
-  // Saved to disk and loaded again on restart.
+test("from API keys to sign-ins: OpenCode and OpenAI models carry over, Bots keep them, the keys are dropped", async () => {
+  fs.writeFileSync(file, JSON.stringify({
+    providers: [
+      { id: "env", name: "OpenCode Go", baseURL: "https://opencode.ai/zen/go/v1", protocol: "openai", apiKey: "sk-go-key-1111", models: ["mimo-v2.6-pro", "deepseek-v4.1-flash"], desktop: ["mimo-v2.6-pro"] },
+      { id: "pclaude", name: "Claude (Anthropic)", baseURL: "https://api.anthropic.com/v1", protocol: "anthropic", apiKey: "sk-ant-key-2222", models: ["claude-haiku-5-5"], desktop: ["claude-haiku-5-5"] },
+      { id: "popenai", name: "OpenAI", baseURL: "https://api.openai.com/v1", protocol: "openai", apiKey: "sk-openai-key-33334444", models: ["gpt-5.5"], desktop: [], prices: { "gpt-5.5": { input: 1, output: 2 } } },
+    ],
+    defaultModel: "env::deepseek-v4.1-flash",
+    voice: { providerId: "popenai", voice: "nova" },
+  }));
   settings.loadSettings();
-  expect(settings.settingsView()).toMatchObject({ source: "app", providers: [{ id: "env" }] });
+  settings.setSignedIn("opencode", null);
+  expect(settings.providerById("opencode-go")).toMatchObject({ models: ["mimo-v2.6-pro", "deepseek-v4.1-flash"], desktop: ["mimo-v2.6-pro"] });
+  expect(settings.providerById("openai")).toMatchObject({ models: ["gpt-5.5"], prices: { "gpt-5.5": { input: 1, output: 2 } } });
+  expect(settings.defaultModel()).toBe("opencode-go::deepseek-v4.1-flash");
+  // A Bot that pointed at the old provider still finds its model.
+  expect(settings.resolveModel("env::mimo-v2.6-pro", { fallback: false })).toMatchObject({ ref: "opencode-go::mimo-v2.6-pro" });
+  // Claude by API key has nowhere to go: its Bots use the default.
+  expect(settings.resolveModel("pclaude::claude-haiku-5-5")).toMatchObject({ ref: "opencode-go::deepseek-v4.1-flash" });
+  // Voice keeps the OpenAI key it used; no other key is left on disk.
+  expect(settings.voiceEndpoint()).toEqual({ baseURL: "https://api.openai.com/v1", apiKey: "sk-openai-key-33334444" });
+  expect(settings.voiceSettings().voice).toBe("nova");
+  const saved = fs.readFileSync(file, "utf8");
+  expect(saved).not.toContain("sk-go-key");
+  expect(saved).not.toContain("sk-ant-key");
+  // Loading again changes nothing.
+  settings.loadSettings();
+  expect(settings.resolveModel("env::mimo-v2.6-pro", { fallback: false })).toMatchObject({ ref: "opencode-go::mimo-v2.6-pro" });
+  expect(settings.voiceEndpoint()?.apiKey).toBe("sk-openai-key-33334444");
 });
 
-test("a key is only ever sent to the address it was saved for", async () => {
-  const { call } = app();
-  const home = await fakeProvider(["m1", "m2"]);
-  const other = await fakeProvider(["x"]);
-  try {
-    const created = await call("POST", "/settings/providers", { name: "Home", baseURL: home.url, apiKey: "sk-home-secret-1111", models: ["m1"] });
-    const id = created.json.providers.find((item: { name: string }) => item.name === "Home").id;
-    expect((await call("POST", "/settings/providers/check", { providerId: id, baseURL: home.url })).json).toEqual({ models: ["m1", "m2"] });
-    expect(home.seen.at(-1)).toBe("Bearer sk-home-secret-1111");
-
-    // Same provider, different address: no key goes out, and saving it there clears the key.
-    await call("POST", "/settings/providers/check", { providerId: id, baseURL: other.url });
-    expect(other.seen.at(-1)).toBeUndefined();
-    await call("PUT", `/settings/providers/${id}`, { name: "Home", baseURL: other.url, models: ["x"] });
-    expect(settings.resolveModel(`${id}::x`)!.provider.apiKey).toBe("");
-    // A blank key on the same address keeps it.
-    await call("PUT", `/settings/providers/${id}`, { name: "Home", baseURL: other.url, apiKey: "sk-other-2222-abcd", models: ["x"] });
-    await call("PUT", `/settings/providers/${id}`, { name: "Home renamed", baseURL: other.url, models: ["x"] });
-    expect(settings.resolveModel(`${id}::x`)!.provider).toMatchObject({ name: "Home renamed", apiKey: "sk-other-2222-abcd" });
-  } finally {
-    home.close();
-    other.close();
-  }
+test("voice is the one API key: saved here, only its last four characters go out", async () => {
+  const { call } = await app();
+  const { json, text } = await call("PUT", "/settings/voice", { baseURL: "https://api.openai.com/v1/", apiKey: "sk-voice-secret-9876" });
+  expect(json.voice).toMatchObject({ baseURL: "https://api.openai.com/v1", keySet: true, keyHint: "9876" });
+  expect(text).not.toContain("sk-voice-secret");
+  expect((await call("GET", "/settings")).text).not.toContain("sk-voice-secret");
+  // Leaving the key out keeps it; "" removes it; an empty address turns voice off.
+  await call("PUT", "/settings/voice", { voice: "nova" });
+  expect(settings.voiceEndpoint()).toEqual({ baseURL: "https://api.openai.com/v1", apiKey: "sk-voice-secret-9876" });
+  await call("PUT", "/settings/voice", { apiKey: "" });
+  expect(settings.voiceEndpoint()?.apiKey).toBe("");
+  await call("PUT", "/settings/voice", { baseURL: "" });
+  expect(settings.voiceEndpoint()).toBeNull();
+  expect((await call("PUT", "/settings/voice", { baseURL: "ftp://x" })).status).toBe(400);
 });
 
-test("Claude providers speak Anthropic's API: x-api-key auth, the full model list, and the Messages client", async () => {
-  const { call } = app();
-  const claude = await fakeProvider(["claude-a", "claude-b"]);
-  try {
-    const created = await call("POST", "/settings/providers", { name: "Claude", baseURL: claude.url, protocol: "anthropic", apiKey: "sk-ant-secret-3333", models: ["claude-a"] });
-    const provider = created.json.providers.find((item: { name: string }) => item.name === "Claude");
-    expect(provider.protocol).toBe("anthropic");
-    expect((await call("POST", "/settings/providers/check", { providerId: provider.id, baseURL: claude.url, protocol: "anthropic" })).json).toEqual({ models: ["claude-a", "claude-b"] });
-    expect(claude.requests.at(-1)).toEqual({ url: "/v1/models?limit=1000", apiKey: "sk-ant-secret-3333", version: "2023-06-01" });
-    expect(claude.seen.at(-1)).toBeUndefined(); // No Bearer header for Anthropic.
-    // Editing without naming the protocol keeps it.
-    await call("PUT", `/settings/providers/${provider.id}`, { name: "Claude", baseURL: claude.url, models: ["claude-a", "claude-b"] });
-    const target = settings.resolveModel(`${provider.id}::claude-b`)!;
-    expect(target.provider.protocol).toBe("anthropic");
-
-    const { defaultModelFactory } = await import("./agent/run.js");
-    expect((defaultModelFactory(target, "s") as { provider: string }).provider).toBe("anthropic.messages");
-    expect((defaultModelFactory(settings.resolveModel("env::env-model")!, "s") as { provider: string }).provider).toMatch(/\.chat$/);
-  } finally {
-    claude.close();
-  }
-});
-
-test("bad input explains itself", async () => {
-  const { call } = app();
-  const checked = await call("POST", "/settings/providers/check", { baseURL: "http://127.0.0.1:9/v1" });
-  expect(checked.status).toBe(400);
-  expect(checked.json.error).toContain("Couldn't reach");
-  expect((await call("POST", "/settings/providers", { name: "X", baseURL: "ftp://x", models: ["m"] })).status).toBe(400);
-  expect((await call("POST", "/settings/providers", { name: "X", baseURL: "https://x.dev/v1", models: [] })).status).toBe(400);
-  expect((await call("PUT", "/settings/providers/missing", { name: "X", baseURL: "https://x.dev/v1", models: ["m"] })).status).toBe(404);
-  expect((await call("PUT", "/settings/default-model", { model: "missing::m" })).status).toBe(400);
+test("rejects bad input", async () => {
+  const { call } = await app();
+  expect((await call("PUT", "/settings/providers/missing", { models: ["m"] })).status).toBe(404);
+  expect((await call("PUT", "/settings/providers/openai", { models: "gpt-5.5" })).status).toBe(400);
+  expect((await call("POST", "/settings/signins/chatgpt/start")).status).toBe(503);
 });

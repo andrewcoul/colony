@@ -5,22 +5,15 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, expect, test } from "vitest";
 
-const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "colony-models-"));
-process.env.COLONY_DATA_DIR = dataDir;
-delete process.env.COLONY_API_BASE_URL;
-
-const settings = await import("../../settings.js");
-const { ColonyModels, modelFor, providerIdOf, tokensOf } = await import("./models.js");
-
-/** An OpenAI-compatible endpoint that streams one short answer and remembers who asked, with which key. */
+/** An OpenAI-compatible endpoint that streams one short answer and remembers what it was asked. */
 async function fakeOpenAI() {
-  const seen: { auth: string | undefined; model: string; session: string | undefined }[] = [];
+  const seen: { auth: string | undefined; model: string }[] = [];
   const server = http.createServer((request, response) => {
     let body = "";
     request.on("data", (chunk) => { body += chunk; });
     request.on("end", () => {
       const parsed = JSON.parse(body) as { model: string };
-      seen.push({ auth: request.headers.authorization, model: parsed.model, session: request.headers["x-opencode-session"] as string | undefined });
+      seen.push({ auth: request.headers.authorization, model: parsed.model });
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       const chunk = (data: unknown) => response.write(`data: ${JSON.stringify(data)}\n\n`);
       chunk({ id: "c1", object: "chat.completion.chunk", created: 1, model: parsed.model, choices: [{ index: 0, delta: { role: "assistant", content: "Hello" }, finish_reason: null }] });
@@ -32,41 +25,46 @@ async function fakeOpenAI() {
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen, close: () => server.close() };
 }
 
-afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+const endpoint = await fakeOpenAI();
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "colony-models-"));
+process.env.COLONY_DATA_DIR = dataDir;
+process.env.COLONY_DEV_BASE_URL = endpoint.url;
+process.env.COLONY_DEV_MODELS = "my-finetune";
 
-test("each provider in Settings is a pi provider, and each request carries that provider's own key", async () => {
-  const endpoint = await fakeOpenAI();
-  settings.loadSettings();
-  const a = settings.saveProvider(null, { name: "A", baseURL: endpoint.url, protocol: "openai", apiKey: "key-a-111111111111", models: ["model-a"] });
-  const b = settings.saveProvider(null, { name: "B", baseURL: endpoint.url, protocol: "openai", apiKey: "key-b-222222222222", models: ["model-b"] });
-  const source = new ColonyModels();
-  const ask = (providerId: string, model: string) => {
-    const target = settings.resolveModel(settings.modelRef(providerId, model), { fallback: false })!;
-    const ref = source.ref(target);
-    return source.models.complete(source.models.getModel(ref.provider, ref.modelId)!, { messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] });
-  };
-  const [first, second] = await Promise.all([ask(a, "model-a"), ask(b, "model-b")]);
-  expect(first.content).toEqual([expect.objectContaining({ type: "text", text: "Hello" })]);
-  expect(second.stopReason).toBe("stop");
-  expect(endpoint.seen.map((item) => [item.model, item.auth]).sort()).toEqual([["model-a", "Bearer key-a-111111111111"], ["model-b", "Bearer key-b-222222222222"]]);
+const settings = await import("../../settings.js");
+const { ColonyModels, tokensOf } = await import("./models.js");
+settings.loadSettings();
 
-  // A changed key applies to the next request; a removed provider is gone.
-  settings.saveProvider(a, { name: "A", baseURL: endpoint.url, protocol: "openai", apiKey: "key-a-333333333333", models: ["model-a"] });
-  await ask(a, "model-a");
-  expect(endpoint.seen.at(-1)!.auth).toBe("Bearer key-a-333333333333");
-  settings.deleteProvider(b);
-  expect(source.models.getProvider(providerIdOf({ id: b }))).toBeUndefined();
-  expect(source.models.getProvider(providerIdOf({ id: a }))).toBeDefined();
-  source.close();
+afterAll(() => {
   endpoint.close();
+  fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("models borrow what the catalog knows, and Anthropic addresses lose their /v1", () => {
-  const claude = modelFor({ id: "p", name: "Claude", baseURL: "https://api.anthropic.com/v1", protocol: "anthropic", apiKey: "", models: ["claude-sonnet-4-5"], desktop: [] }, "claude-sonnet-4-5");
-  expect(claude).toMatchObject({ api: "anthropic-messages", baseUrl: "https://api.anthropic.com", reasoning: true, input: ["text", "image"] });
-  expect(claude.contextWindow).toBeGreaterThanOrEqual(200_000);
-  const local = modelFor({ id: "q", name: "Ollama", baseURL: "http://localhost:11434/v1", protocol: "openai", apiKey: "", models: ["my-finetune"], desktop: [] }, "my-finetune");
-  expect(local).toMatchObject({ api: "openai-completions", baseUrl: "http://localhost:11434/v1", input: ["text"], contextWindow: 128_000 });
+test("the dev server answers without a key", async () => {
+  const source = new ColonyModels();
+  const target = settings.resolveModel("dev::my-finetune", { fallback: false })!;
+  const ref = source.ref(target);
+  const model = source.models.getModel(ref.provider, ref.modelId)!;
+  expect(model).toMatchObject({ api: "openai-completions", baseUrl: endpoint.url, input: ["text"], contextWindow: 128_000 });
+  const reply = await source.models.complete(model, { messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] });
+  expect(reply.content).toEqual([expect.objectContaining({ type: "text", text: "Hello" })]);
+  expect(endpoint.seen).toEqual([{ auth: "Bearer not-needed", model: "my-finetune" }]);
+  source.close();
+});
+
+test("picked models are pi-ai's own, priced by Colony and capped; signed out, they won't run", async () => {
+  const source = new ColonyModels();
+  settings.saveProvider("opencode-go", { models: ["deepseek-v4.1-flash", "glm-5.3"], desktop: ["glm-5.3"] });
+  const flash = source.models.getModel("opencode-go", "deepseek-v4.1-flash")!;
+  expect(flash).toMatchObject({ api: "openai-completions", baseUrl: "https://opencode.ai/inference/go/v1", input: ["text", "image"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } });
+  expect(flash.maxTokens).toBeLessThanOrEqual(32_000);
+  // The desktop check can give a model screenshots the catalog doesn't know it takes.
+  expect(source.models.getModel("opencode-go", "glm-5.3")!.input).toEqual(["text", "image"]);
+  expect(source.models.getModel("opencode-go", "kimi-k3")).toBeUndefined();
+  expect(await source.models.getAuth("opencode-go")).toBeUndefined();
+  const reply = await source.models.complete(flash, { messages: [{ role: "user", content: "Hi", timestamp: Date.now() }] });
+  expect(reply.stopReason).toBe("error");
+  source.close();
 });
 
 test("cache reads and writes count as input, priced as before", () => {

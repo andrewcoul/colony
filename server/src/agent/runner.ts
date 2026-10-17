@@ -3,9 +3,8 @@ import type { Card, Message } from "../shared/types.js";
 import type { ColonyTool } from "./tools.js";
 
 /**
- * What the rest of Colony asks of an agent runtime. Two implement it: the AI SDK one
- * (agent/run.ts, per-step checkpoints) and pi durable (agent/pi/runner.ts, one persistent
- * conversation per Bot per chat). COLONY_RUNTIME picks one.
+ * What the rest of Colony asks of the agent runtime: pi durable (agent/pi/runner.ts, one
+ * persistent conversation per Bot per chat).
  */
 export interface Runner {
   isRunning(chatId: string, botId?: string): boolean;

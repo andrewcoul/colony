@@ -6,20 +6,20 @@ import type { Runner } from "./agent/runner.js";
 import type { ToolRegistry } from "./agent/tools.js";
 import type { EventLog } from "./events.js";
 import { sendUserMessage } from "./send.js";
-import { voiceProvider, voiceSettings } from "./settings.js";
+import { voiceEndpoint, voiceSettings } from "./settings.js";
 import type { Store } from "./store.js";
 
 /*
  * Voice calls with a Bot, in the Colony app (no phone network: Colony stays on your tailnet).
  * The app sends each thing you say as a short WAV clip; it's transcribed and posted as your
  * message, so the Bot answers the normal way (talking while it works steers it). Its reply is
- * spoken sentence by sentence as it streams. Transcription and speech use one provider's
- * OpenAI-compatible /audio endpoints, so local Whisper and Kokoro servers work too.
+ * spoken sentence by sentence as it streams. Transcription and speech use OpenAI-compatible
+ * /audio endpoints (OpenAI with an API key, or local Whisper and Kokoro servers).
  */
 
 function provider() {
-  const found = voiceProvider();
-  if (!found) throw new Error("Voice isn't set up. Pick a voice provider in Settings → Voice.");
+  const found = voiceEndpoint();
+  if (!found) throw new Error("Voice isn't set up. Turn it on in Settings → Voice.");
   return found;
 }
 
@@ -113,7 +113,7 @@ export class Calls {
   ring(botId: string, chatId: string, reason: string, now = Date.now()): { ringing: boolean; why?: string } {
     const settings = voiceSettings();
     if (!settings.allowCalls) return { ringing: false, why: "The user has turned calls from Bots off." };
-    if (!voiceProvider()) return { ringing: false, why: "Voice isn't set up, so calls can't happen." };
+    if (!voiceEndpoint()) return { ringing: false, why: "Voice isn't set up, so calls can't happen." };
     if (inQuietHours(settings, new Date(now))) return { ringing: false, why: `It's the user's quiet hours (${settings.quietFrom}–${settings.quietTo}).` };
     if (now - (this.lastRing.get(botId) ?? 0) < 30 * 60_000) return { ringing: false, why: "You called less than 30 minutes ago." };
     this.lastRing.set(botId, now);

@@ -6,8 +6,9 @@ import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import { ApprovalGate } from "./agent/approvals.js";
-import { AgentRunner } from "./agent/run.js";
+import { ColonyModels } from "./agent/pi/models.js";
 import { PiRunner } from "./agent/pi/runner.js";
+import { ModelSignIns } from "./agent/pi/signins.js";
 import type { Runner } from "./agent/runner.js";
 import { browserTools } from "./agent/browserTools.js";
 import { computerTools } from "./agent/computerTools.js";
@@ -32,7 +33,7 @@ import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
 import { PushService } from "./push.js";
 import { RoutineScheduler } from "./routines.js";
-import { loadSettings, modelConfigured, ownerLogin, resolveModel, setOwnerLogin } from "./settings.js";
+import { defaultModel, loadSettings, modelConfigured, modelOptions, onProvidersChanged, ownerLogin, resolveModel, setOwnerLogin } from "./settings.js";
 import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
@@ -61,6 +62,11 @@ const store = new Store(db, events);
 // Turns that were running when Colony stopped are resumed once the runner exists (below).
 const resumable = store.recoverAfterRestart(config.limits.turnTimeoutMs);
 loadSettings();
+// Your ChatGPT and OpenCode sign-ins (data/credentials.json) and the models picked from each.
+const models = new ColonyModels();
+const modelSignIns = new ModelSignIns(models);
+// A sign-in finishing or ending changes which models Bots can use.
+onProvidersChanged(() => events.emit({ type: "settings.updated", models: modelOptions(), defaultModel: defaultModel(), configured: modelConfigured() }));
 // Colony is single-user: the family build's host login is yours, and everyone else's things go.
 if (!ownerLogin()) {
   const host = db.prepare("SELECT login FROM people WHERE id = 'owner'").get() as { login: string | null } | undefined;
@@ -69,10 +75,11 @@ if (!ownerLogin()) {
 const othersBots = store.forgetOthers();
 for (const botId of othersBots) removeBotFolder(botId);
 foldHousehold();
-// Bots from before multiple providers stored a plain model id; point them at its provider.
+// Bots from before multiple providers stored a plain model id, and Bots from before sign-ins an
+// API key provider's id; point them at the provider their model is in now.
 for (const bot of store.listBots()) {
-  const target = bot.model.includes("::") ? null : resolveModel(bot.model, { fallback: false });
-  if (target) store.updateBot(bot.id, { model: target.ref });
+  const target = resolveModel(bot.model, { fallback: false });
+  if (target && target.ref !== bot.model) store.updateBot(bot.id, { model: target.ref });
 }
 const gate = new ApprovalGate(store);
 const nodes = new NodeHub(store, events);
@@ -104,11 +111,8 @@ const toolsFor = (botId: string): ToolRegistry => {
   };
 };
 const guidance = (botId: string) => accountsGuidance(integrations, botId, Boolean(store.getBot(botId)?.computer));
-// pi durable keeps each Bot's conversations in data/agent.db; the AI SDK runtime keeps per-step checkpoints in colony.db.
-const runner: Runner = config.runtime === "pi"
-  ? await PiRunner.open(store, events, gate, toolsFor, { storage: path.join(config.dataDir, "agent.db"), desktop, integrations, guidance })
-  : new AgentRunner(store, events, gate, toolsFor, undefined, desktop, { integrations, guidance });
-console.log(`Agent runtime: ${config.runtime === "pi" ? "pi durable (persistent conversations)" : "AI SDK"}`);
+// pi durable keeps each Bot's conversations in data/agent.db.
+const runner: Runner = await PiRunner.open(store, events, gate, toolsFor, { storage: path.join(config.dataDir, "agent.db"), models, desktop, integrations, guidance });
 const calls = new Calls(store, events, runner);
 nodes.stopBot = (botId) => runner.stopBot(botId);
 const ringTools = callTools(calls);
@@ -138,7 +142,7 @@ const updater = new Updater({
   busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => bot.name),
 });
 updater.start();
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, integrations, signIns, calls, nodes }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, models, modelSignIns, integrations, signIns, calls, nodes }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
@@ -154,7 +158,7 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
   // would go back to the previous version if it exited.
   setTimeout(() => { try { updater.confirm(); } catch (error) { console.log(`[colony] Couldn't confirm the update: ${error}`); } }, 15_000).unref();
   console.log(`Data: ${config.dataDir}`);
-  if (!modelConfigured()) console.log("No model configured yet: open Colony and add your API key in Settings.");
+  if (!modelConfigured()) console.log("No model yet: open Colony and sign in to ChatGPT or OpenCode in Settings.");
 });
 
 // The desktop viewer streams video over a WebSocket at /api/bots/<id>/screen/media. Hono doesn't

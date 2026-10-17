@@ -2,19 +2,20 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import { MockLanguageModelV4, convertArrayToReadableStream } from "ai/test";
 
 // Config is read at import time, so point it at a temp data dir first.
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "colony-integrations-"));
 process.env.COLONY_DATA_DIR = dataDir;
-process.env.COLONY_API_BASE_URL = "http://model.invalid/v1";
-process.env.COLONY_MODELS = "mock-model";
+process.env.COLONY_DEV_BASE_URL = "http://model.invalid/v1";
+process.env.COLONY_DEV_MODELS = "mock-model";
 
 const { openDb } = await import("../db.js");
 const { EventLog } = await import("../events.js");
 const { Store } = await import("../store.js");
 const { ApprovalGate } = await import("./approvals.js");
-const { AgentRunner } = await import("./run.js");
+const { PiRunner } = await import("./pi/runner.js");
+const { MemoryStorage } = await import("@earendil-works/pi-durable");
+const { scriptedModels, textTurn, toolTurn, promptText } = await import("./pi/testkit.js");
 const { coreTools } = await import("./tools.js");
 const { mailTools, mailToolsFor, accountsGuidance } = await import("./mailTools.js");
 const { vaultTools, vaultToolsFor } = await import("./vaultTools.js");
@@ -32,38 +33,7 @@ type VaultClient = import("../integrations/onepassword.js").VaultClient;
 
 afterAll(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-const usage = { inputTokens: { total: 10, noCache: 10, cacheRead: 0, cacheWrite: 0 }, outputTokens: { total: 5, text: 5, reasoning: 0 } };
-const textTurn = (text: string) => [
-  { type: "stream-start", warnings: [] },
-  { type: "text-start", id: "t" },
-  { type: "text-delta", id: "t", delta: text },
-  { type: "text-end", id: "t" },
-  { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
-];
-let callCount = 0;
-const toolTurn = (toolName: string, input: unknown) => [
-  { type: "stream-start", warnings: [] },
-  { type: "tool-call", toolCallId: `call-${toolName}-${++callCount}`, toolName, input: JSON.stringify(input) },
-  { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage },
-];
-
-function scriptedModel(turns: unknown[][]) {
-  const prompts: unknown[] = [];
-  const systems: string[] = [];
-  const toolNames: string[][] = [];
-  let call = 0;
-  const model = new MockLanguageModelV4({
-    doStream: async (options) => {
-      prompts.push(options.prompt);
-      const system = (options.prompt as { role: string; content: unknown }[]).find((item) => item.role === "system");
-      systems.push(String(system?.content ?? ""));
-      toolNames.push((options.tools ?? []).map((item) => item.name));
-      const chunks = turns[Math.min(call++, turns.length - 1)];
-      return { stream: convertArrayToReadableStream(chunks as never[]) };
-    },
-  });
-  return { model, prompts, systems, toolNames };
-}
+const scripted = scriptedModels();
 
 /** A mailbox and calendar in memory. */
 function fakeMailbox() {
@@ -131,9 +101,9 @@ function fakeVault(): VaultClient & { created: unknown[] } {
   };
 }
 
-let script: ReturnType<typeof scriptedModel>;
+let script: ReturnType<typeof scripted.play>;
 
-function setup(pageUrl = "https://github.com/login") {
+async function setup(pageUrl = "https://github.com/login") {
   const db = openDb(":memory:");
   const events = new EventLog(db);
   const store = new Store(db, events);
@@ -145,11 +115,11 @@ function setup(pageUrl = "https://github.com/login") {
   const { browser, typed } = fakeBrowser(pageUrl);
   const accountTools = mailTools(integrations);
   const loginTools = vaultTools(browser, integrations);
-  const runner = new AgentRunner(store, events, gate, (botId) => ({
+  const runner = await PiRunner.open(store, events, gate, (botId) => ({
     ...coreTools,
     ...mailToolsFor(accountTools, integrations, botId),
     ...vaultToolsFor(loginTools, integrations, botId),
-  }), () => script.model, undefined, { integrations, guidance: (botId) => accountsGuidance(integrations, botId, true) });
+  }), { storage: new MemoryStorage(), models: scripted.source, integrations, guidance: (botId) => accountsGuidance(integrations, botId, true) });
   const routines = new RoutineScheduler(store, runner);
   const poller = new MailPoller(store, integrations, routines);
   const api = createApi({ store, events, gate, runner, routines, integrations, connectVault: async () => vault });
@@ -176,7 +146,7 @@ const finished = (store: InstanceType<typeof Store>, chatId: string, count: numb
   until(() => { const messages = store.listMessages(chatId).filter((m) => m.author !== "user"); return messages.length >= count && messages.every((m) => m.status !== "streaming") && messages; });
 
 /** A Bot that has said hello, ready for the scripted turns after it. */
-async function bot(context: ReturnType<typeof setup>) {
+async function bot(context: Awaited<ReturnType<typeof setup>>) {
   const { json } = await context.call("POST", "/bots", { name: "Peng" });
   await finished(context.store, json.chatId, 1);
   return json as { id: string; chatId: string };
@@ -184,8 +154,8 @@ async function bot(context: ReturnType<typeof setup>) {
 
 describe("access", () => {
   test("Bots get no mail tools until you give access, then only what that level allows", async () => {
-    script = scriptedModel([textTurn("Hi."), textTurn("Nothing to see."), textTurn("Now I can read.")]);
-    const context = setup();
+    script = scripted.play([textTurn("Hi."), textTurn("Nothing to see."), textTurn("Now I can read.")]);
+    const context = await setup();
     const peng = await bot(context);
     await context.call("POST", `/chats/${peng.chatId}/messages`, { text: "Any mail?" });
     await finished(context.store, peng.chatId, 2);
@@ -199,13 +169,13 @@ describe("access", () => {
     expect(script.toolNames[2]).toEqual(expect.arrayContaining(["mail_search", "mail_read"]));
     expect(script.toolNames[2]).not.toContain("mail_draft");
     expect(script.toolNames[2]).not.toContain("mail_send");
-    expect(script.systems[2]).toContain("Gmail me@gmail.com: mail: read.");
+    expect(promptText(script.prompts[2])).toContain("Gmail me@gmail.com: mail: read.");
     expect((await context.call("GET", "/state")).json.access).toEqual([{ botId: peng.id, accountId: context.gmail.id, mail: "read", calendar: "none", vault: "none" }]);
   });
 
   test("mail content reaches the model fenced as untrusted, and can't close the fence early", async () => {
-    script = scriptedModel([textTurn("Hi."), toolTurn("mail_read", { id: "m1" }), textTurn("Ann asks about lunch.")]);
-    const context = setup();
+    script = scripted.play([textTurn("Hi."), toolTurn("mail_read", { id: "m1" }), textTurn("Ann asks about lunch.")]);
+    const context = await setup();
     const peng = await bot(context);
     context.accounts.setAccess(peng.id, context.gmail.id, { mail: "read" });
     await context.call("POST", `/chats/${peng.chatId}/messages`, { text: "Read Ann's mail." });
@@ -218,13 +188,13 @@ describe("access", () => {
 
 describe("sending mail", () => {
   test("a send waits for approval, which shows the server's copy of the draft", async () => {
-    script = scriptedModel([
+    script = scripted.play([
       textTurn("Hi."),
       toolTurn("mail_draft", { to: ["sarah@acme.com"], subject: "Review", body: "Moving Friday's review to 2 PM." }),
       toolTurn("mail_send", { draftId: "d1" }),
       textTurn("Sent."),
     ]);
-    const context = setup();
+    const context = await setup();
     const peng = await bot(context);
     context.accounts.setAccess(peng.id, context.gmail.id, { mail: "send" });
     await context.call("POST", `/chats/${peng.chatId}/messages`, { text: "Email Sarah." });
@@ -239,8 +209,8 @@ describe("sending mail", () => {
   });
 
   test("a draft that changes after approval isn't sent; a denial sends nothing", async () => {
-    script = scriptedModel([textTurn("Hi."), toolTurn("mail_draft", { to: ["a@x.com"], subject: "Hi", body: "One" }), toolTurn("mail_send", { draftId: "d1" }), textTurn("Hm.")]);
-    const context = setup();
+    script = scripted.play([textTurn("Hi."), toolTurn("mail_draft", { to: ["a@x.com"], subject: "Hi", body: "One" }), toolTurn("mail_send", { draftId: "d1" }), textTurn("Hm.")]);
+    const context = await setup();
     const peng = await bot(context);
     context.accounts.setAccess(peng.id, context.gmail.id, { mail: "send" });
     await context.call("POST", `/chats/${peng.chatId}/messages`, { text: "Email them." });
@@ -253,8 +223,8 @@ describe("sending mail", () => {
   });
 
   test("Bots without send access can draft but get no send tool", async () => {
-    script = scriptedModel([textTurn("Hi."), textTurn("Drafted.")]);
-    const context = setup();
+    script = scripted.play([textTurn("Hi."), textTurn("Drafted.")]);
+    const context = await setup();
     const peng = await bot(context);
     context.accounts.setAccess(peng.id, context.gmail.id, { mail: "draft" });
     await context.call("POST", `/chats/${peng.chatId}/messages`, { text: "Draft it." });
@@ -266,13 +236,13 @@ describe("sending mail", () => {
 
 describe("calendar", () => {
   test("your own events need no approval; inviting people does", async () => {
-    script = scriptedModel([
+    script = scripted.play([
       textTurn("Hi."),
       toolTurn("calendar_create", { title: "Focus time", start: "2026-10-20T09:00", end: "2026-10-20T11:00" }),
       toolTurn("calendar_create", { title: "Planning", start: "2026-10-21T09:00", end: "2026-10-21T10:00", attendees: ["sam@x.com"] }),
       textTurn("Done."),
     ]);
-    const context = setup();
+    const context = await setup();
     const peng = await bot(context);
     context.accounts.setAccess(peng.id, context.gmail.id, { calendar: "write" });
     await context.call("POST", `/chats/${peng.chatId}/messages`, { text: "Block focus time and set up planning with Sam." });
@@ -287,9 +257,9 @@ describe("calendar", () => {
 });
 
 describe("1Password", () => {
-  async function withVault(pageUrl: string, turns: unknown[][]) {
-    script = scriptedModel([textTurn("Hi."), ...turns]);
-    const context = setup(pageUrl);
+  async function withVault(pageUrl: string, turns: import("./pi/testkit.js").Turn[]) {
+    script = scripted.play([textTurn("Hi."), ...turns]);
+    const context = await setup(pageUrl);
     const peng = await bot(context);
     const { status, json: account } = await context.call("POST", "/accounts/onepassword", { token: "ops_test-token" });
     expect(status).toBe(201);
@@ -341,7 +311,7 @@ describe("1Password", () => {
 
     context.browser.url = "https://github.com/login";
     context.accounts.allowItem(context.peng.id, context.vaultAccount.id, "i1");
-    script = scriptedModel([toolTurn("browser_login", { item: "v1/i1", passwordRef: "e1" }), textTurn("Wrong field.")]);
+    script = scripted.play([toolTurn("browser_login", { item: "v1/i1", passwordRef: "e1" }), textTurn("Wrong field.")]);
     await context.call("POST", `/chats/${context.peng.chatId}/messages`, { text: "Try again." });
     const second = (await finished(context.store, context.peng.chatId, 3)).at(-1)!;
     expect(second.steps[0].detail).toContain("isn't a password field");
@@ -351,8 +321,8 @@ describe("1Password", () => {
 
 describe("mail-triggered routines", () => {
   test("new matching mail runs the routine once, batched, at most every 10 minutes", async () => {
-    script = scriptedModel([textTurn("Hi."), textTurn("Summarised your bank mail.")]);
-    const context = setup();
+    script = scripted.play([textTurn("Hi."), textTurn("Summarised your bank mail.")]);
+    const context = await setup();
     const peng = await bot(context);
     const schedule = { type: "mail", accountId: context.gmail.id, from: "bank.com" };
     expect((await context.call("POST", `/bots/${peng.id}/routines`, { title: "Bank mail", prompt: "Summarise it.", schedule })).json.error).toContain("can't read that mailbox");
@@ -384,8 +354,8 @@ describe("mail-triggered routines", () => {
   });
 
   test("removing an account removes the routines watching it", async () => {
-    script = scriptedModel([textTurn("Hi.")]);
-    const context = setup();
+    script = scripted.play([textTurn("Hi.")]);
+    const context = await setup();
     const peng = await bot(context);
     context.accounts.setAccess(peng.id, context.gmail.id, { mail: "read" });
     await context.call("POST", `/bots/${peng.id}/routines`, { title: "Inbox", prompt: "Triage.", schedule: { type: "mail", accountId: context.gmail.id } });

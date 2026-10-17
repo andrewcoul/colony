@@ -1,4 +1,3 @@
-import { tool, type Tool, type ToolSet } from "ai";
 import type { DesktopShot } from "../computer/desktop.js";
 import { z } from "zod";
 import { config } from "../config.js";
@@ -35,7 +34,7 @@ export type ToolContext = {
 };
 
 /**
- * A Colony tool: an AI SDK tool plus how its step reads in the transcript.
+ * A Colony tool: what it does, and how its step reads in the transcript.
  * `describe` titles the step from the input; `summarize` gives a short result.
  */
 export type ColonyTool<I = any, O = any> = {
@@ -44,8 +43,6 @@ export type ColonyTool<I = any, O = any> = {
   execute: (input: I, ctx: ToolContext) => Promise<O>;
   describe: (input: I) => string;
   summarize?: (output: O) => string | undefined;
-  /** A ready-made AI SDK tool (e.g. a provider's computer toolset) used instead of `execute`. */
-  sdkTool?: Tool;
   /** How the result reads to the model, when it isn't plain JSON (e.g. a screenshot). */
   toModelOutput?: (output: O) => unknown;
   /** What a restart that cut this tool off may do (default: by name, see replayOf in runner.ts). */
@@ -54,16 +51,78 @@ export type ColonyTool<I = any, O = any> = {
 
 const define = <I, O>(spec: ColonyTool<I, O>) => spec;
 
-async function firecrawl<T>(path: string, body: unknown, signal: AbortSignal, timeoutMs: number): Promise<T> {
-  const response = await fetch(new URL(path, config.firecrawlUrl), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+/**
+ * Firecrawl answers almost every scrape failure with a 500 plus a code, so the message comes
+ * from the code: a site blocking bots isn't an outage. Mirrored in mcp/firecrawl-server.mjs.
+ */
+function explainFirecrawlFailure(status: number, { code = `HTTP_${status}`, error = "" }: { code?: string; error?: string }) {
+  if (/ANTIBOT/.test(code) || /antibot/i.test(error)) {
+    return "This site blocks automated access, and Firecrawl's anti-bot retries ran out. Retrying won't help; use a different source.";
+  }
+  if (code === "SCRAPE_TIMEOUT") return "The page took too long to load. Try once more, or use a different source.";
+  return `Firecrawl couldn't do that (${code})${error ? `: ${String(error).slice(0, 300)}` : "."}`;
+}
+
+/**
+ * Bots share one self-hosted Firecrawl, which only works a couple of pages at a time. Calls past
+ * the limit wait briefly in line, then fail fast instead of piling up until they all time out.
+ * Mirrored in mcp/firecrawl-server.mjs.
+ */
+const firecrawlLimit = { maxActive: 3, maxWaiting: 6, maxWaitMs: 30_000 };
+let firecrawlActive = 0;
+const firecrawlWaiting: { resolve: () => void; timer: NodeJS.Timeout }[] = [];
+
+const firecrawlBusy = () => new Error(`Self-hosted Firecrawl is busy (${firecrawlActive} calls running, ${firecrawlWaiting.length} waiting). Wait a minute before trying again, and make calls one at a time rather than in parallel.`);
+
+async function acquireFirecrawl(signal: AbortSignal) {
+  if (firecrawlActive < firecrawlLimit.maxActive) { firecrawlActive++; return; }
+  if (firecrawlWaiting.length >= firecrawlLimit.maxWaiting) throw firecrawlBusy();
+  await new Promise<void>((resolve, reject) => {
+    const leave = (error: unknown) => {
+      firecrawlWaiting.splice(firecrawlWaiting.indexOf(entry), 1);
+      clearTimeout(entry.timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(error);
+    };
+    const onAbort = () => leave(signal.reason);
+    const entry = {
+      resolve: () => { signal.removeEventListener("abort", onAbort); resolve(); },
+      timer: setTimeout(() => leave(firecrawlBusy()), firecrawlLimit.maxWaitMs),
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    firecrawlWaiting.push(entry);
   });
-  if (!response.ok) throw new Error(`Firecrawl returned ${response.status}. Is the self-hosted instance running?`);
-  const data = (await response.json()) as { success?: boolean; data?: T; error?: string };
-  if (!data.success || data.data === undefined) throw new Error(data.error || "Firecrawl request failed.");
+}
+
+/** A finished call hands its slot straight to the next one in line. */
+function releaseFirecrawl() {
+  const next = firecrawlWaiting.shift();
+  if (next) { clearTimeout(next.timer); next.resolve(); } else firecrawlActive--;
+}
+
+async function firecrawl<T>(path: string, body: object, signal: AbortSignal, timeoutMs: number): Promise<T> {
+  signal.throwIfAborted();
+  await acquireFirecrawl(signal);
+  try { return await callFirecrawl<T>(path, body, signal, timeoutMs); } finally { releaseFirecrawl(); }
+}
+
+/** timeoutMs is our own deadline; Firecrawl gets a shorter one so it reports its own timeout first. */
+async function callFirecrawl<T>(path: string, body: object, signal: AbortSignal, timeoutMs: number): Promise<T> {
+  let response: Response;
+  try {
+    response = await fetch(new URL(path, config.firecrawlUrl), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, timeout: timeoutMs - 5_000 }),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]),
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    if ((error as Error)?.name === "TimeoutError") throw new Error(`Self-hosted Firecrawl didn't answer within ${timeoutMs / 1000}s. Try once more, or use a different source.`);
+    throw new Error("Self-hosted Firecrawl isn't reachable. Check that its Docker containers are running.");
+  }
+  const data = (await response.json().catch(() => ({}))) as { success?: boolean; data?: T; code?: string; error?: string };
+  if (!response.ok || !data.success || data.data === undefined) throw new Error(explainFirecrawlFailure(response.status, data));
   return data.data;
 }
 
@@ -121,7 +180,9 @@ export const coreTools = {
     execute: async ({ query, limit = 6 }, ctx) => {
       const data = await firecrawl<{ web?: { title?: string; url: string; description?: string }[] }>(
         "/v2/search", { query, limit, sources: ["web"] }, ctx.signal, 30_000);
-      return (data.web ?? []).filter((item) => isPublicWebUrl(item.url)).map((item) => ({
+      // Firecrawl reports blocked search backends as a successful, empty result.
+      if (!data.web?.length) throw new Error("Search returned no results. Try a broader query; if every search comes back empty, the self-hosted search backends are being blocked.");
+      return data.web.filter((item) => isPublicWebUrl(item.url)).map((item) => ({
         title: (item.title || item.url).slice(0, 200), url: item.url, snippet: (item.description || "").slice(0, 600),
       }));
     },
@@ -288,19 +349,3 @@ export const coreTools = {
 } satisfies Record<string, ColonyTool>;
 
 export type ToolRegistry = Record<string, ColonyTool>;
-
-/** Binds Colony tools to one run, producing an AI SDK ToolSet. Results and errors pass through the run's secret scrubber. */
-export function toToolSet(registry: ToolRegistry, ctx: ToolContext): ToolSet {
-  return Object.fromEntries(Object.entries(registry).map(([name, spec]) => [name, spec.sdkTool ?? tool({
-    description: spec.description,
-    inputSchema: spec.inputSchema,
-    execute: async (input: unknown) => {
-      try {
-        return ctx.secrets.deep(await spec.execute(input, ctx));
-      } catch (error) {
-        throw error instanceof Error ? Object.assign(new Error(ctx.secrets.text(error.message)), { name: error.name }) : error;
-      }
-    },
-    ...(spec.toModelOutput ? { toModelOutput: ({ output }: { output: unknown }) => spec.toModelOutput!(output) as never } : {}),
-  })]));
-}

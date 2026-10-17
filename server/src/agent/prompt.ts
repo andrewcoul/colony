@@ -1,4 +1,3 @@
-import type { ImagePart, ModelMessage } from "ai";
 import * as files from "../files.js";
 import { describeSchedule } from "../shared/schedule.js";
 import { isHuman } from "../people.js";
@@ -53,7 +52,7 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
     section("Your accounts", accounts),
     section("Your desktop", desktop
       ? [
-        `You can see and use your computer's desktop (1280×800 pixels, origin top-left) with ${desktop === "claude" ? "the computer tool" : "the desktop_* tools"}: look at the screen, click, type, press keys and scroll, like a person at the keyboard.`,
+        `You can see and use your computer's desktop (1280×800 pixels, origin top-left) with the desktop_* tools: look at the screen, click, type, press keys and scroll, like a person at the keyboard.`,
         "- Use it for things that need a graphical app or a real screen. Prefer shell, the file tools and the browser_* tools when they can do the job: they're faster and more reliable.",
         "- Look before you act, act in small steps, and check the screen after anything that changes it. Coordinates come from your latest screenshot.",
         "- The dock at the bottom has a terminal, files, a web browser and app search. Apps can also be started from the shell (e.g. `xfce4-terminal &`).",
@@ -91,7 +90,13 @@ export function stripNotes(text: string) {
     .trim();
 }
 
-/** Converts the chat transcript into model messages from this Bot's point of view. */
+/** A photo attached to a message, for models that can see. */
+export type ImagePart = { type: "image"; image: Uint8Array; mediaType?: string };
+/** One message of the history a turn starts from: the user's (and others') words, or this Bot's. */
+export type ModelMessage =
+  | { role: "user"; content: string | ({ type: "text"; text: string } | ImagePart)[] }
+  | { role: "assistant"; content: string };
+
 /**
  * Converts the chat transcript into model messages from this Bot's point of view.
  * `photos` turns a message's image attachments into image parts (only for models that can see).
