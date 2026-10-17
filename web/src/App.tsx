@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { AnimatePresence } from "motion/react";
 import { Plus, WifiOff, X } from "lucide-react";
-import { setFocusedChat, useLive, type RingingCall } from "./lib/live";
+import { setFocusedChat, useIsAdmin, useLive, type RingingCall } from "./lib/live";
 import { useCall } from "./lib/call";
 import { CallBar, CallScreen, IncomingCall } from "./components/CallView";
 import { onOpenSettings, onOpenUpdates } from "./lib/settings";
@@ -62,7 +62,10 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   useEffect(() => onOpenSettings(() => setSettingsOpen(true)), []);
   const [updatesOpen, setUpdatesOpen] = useState(false);
-  useEffect(() => { startUpdates(); return onOpenUpdates(() => setUpdatesOpen(true)); }, []);
+  useEffect(() => onOpenUpdates(() => setUpdatesOpen(true)), []);
+  // Updates are the admin's to see and install.
+  const admin = useIsAdmin();
+  useEffect(() => { if (ready && admin) startUpdates(); }, [ready, admin]);
   const [error, setError] = useState("");
   const chat = chatId ? chats[chatId] : undefined;
   const call = useCall();

@@ -6,7 +6,7 @@ import { pending, useUpdates } from "../lib/updates";
 import type { Bot, Chat, Folder, Presence } from "@shared/types";
 import { api } from "../lib/api";
 import { shortTime } from "../lib/dates";
-import { useLive } from "../lib/live";
+import { useIsAdmin, useLive } from "../lib/live";
 import { rise, snappy, soft } from "../lib/motion";
 import { cn } from "../lib/utils";
 import { Face } from "./Face";
@@ -45,6 +45,7 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
   phone: boolean;
 }) {
   const configured = useLive((s) => s.configured);
+  const admin = useIsAdmin();
   const botMap = useLive((s) => s.bots);
   const chatMap = useLive((s) => s.chats);
   const folderMap = useLive((s) => s.folders);
@@ -122,8 +123,8 @@ export function Roster({ activeChatId, onOpen, onNewBot, onNewTopic, onSettings,
             className="mb-4 flex w-full items-center gap-3 rounded-2xl border border-lemon/30 bg-lemon/8 p-3.5 text-left">
             <KeyRound size={18} className="shrink-0 text-lemon" />
             <span className="flex flex-col gap-0.5">
-              <strong className="text-sm">Connect a model</strong>
-              <span className="text-meta text-soft">Sign in to ChatGPT or OpenCode in Settings so your Bots can think.</span>
+              <strong className="text-sm">{admin ? "Connect a model" : "No model yet"}</strong>
+              <span className="text-meta text-soft">{admin ? "Sign in to ChatGPT or OpenCode in Settings so your Bots can think." : "Ask the person who runs this Colony to connect one so your Bots can think."}</span>
             </span>
           </button>
         )}

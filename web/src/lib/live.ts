@@ -1,10 +1,12 @@
 import { useSyncExternalStore } from "react";
-import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Message, ModelOption, PcNode, Routine, ServerEvent } from "@shared/types";
+import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Me, Message, ModelOption, PcNode, Routine, ServerEvent } from "@shared/types";
 import { api } from "./api";
 
 export type LiveState = {
   ready: boolean;
   connected: boolean;
+  /** Who's signed in: the admin runs this Colony; a member has their own Bots and nothing else. */
+  me: Me | null;
   bots: Record<string, Bot>;
   chats: Record<string, Chat>;
   folders: Record<string, Folder>;
@@ -34,7 +36,7 @@ export type LiveState = {
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], persistent: false, ringing: {}, error: null,
+  ready: false, connected: false, me: null, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], persistent: false, ringing: {}, error: null,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -121,7 +123,7 @@ async function loadState() {
   const snapshot = await api.state();
   seq = snapshot.seq;
   set({
-    ready: true, error: null,
+    ready: true, error: null, me: snapshot.me ?? null,
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
     accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [], persistent: Boolean(snapshot.persistent),
@@ -218,6 +220,9 @@ export async function loadOlder(chatId: string) {
   set({ messages: { ...state.messages, [chatId]: [...older, ...state.messages[chatId] ?? []] } });
   return older.length > 0;
 }
+
+/** Whether you run this Colony (Settings, sign-ins, accounts, PCs, updates). An older server: yes. */
+export const useIsAdmin = () => useLive((s) => s.me?.role !== "member");
 
 export function useLive<T>(select: (state: LiveState) => T): T {
   return useSyncExternalStore(

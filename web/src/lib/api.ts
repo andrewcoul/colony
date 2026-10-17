@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, ModelOption, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -58,7 +58,12 @@ export type VoiceSettings = {
 };
 /** Voice as devices see it: the key's last four characters at most. */
 export type VoiceView = VoiceSettings & { keySet: boolean; keyHint: string | null };
-export type Settings = { providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
+export type Settings = { role?: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
+/** What a member sees of Settings: the models they may use, and whether voice is on (server/src/settings.ts). */
+export type MemberSettings = {
+  role: "member"; models: ModelOption[]; defaultModel: string; configured: boolean;
+  voice: { on: boolean; allowCalls: boolean; quietFrom: string; quietTo: string };
+};
 
 /** The server's version and updates (server/src/updates.ts). */
 export type SystemInfo = {
@@ -146,6 +151,8 @@ export const api = {
   file: (botId: string, path: string) => request<{ path: string; content: string; size: number; truncated: boolean }>("GET", `/bots/${botId}/file?path=${encodeURIComponent(path)}`),
   stopComputer: (botId: string) => request<void>("POST", `/bots/${botId}/computer/stop`),
   settings: () => request<Settings>("GET", "/settings"),
+  /** A member's reduced Settings. */
+  memberSettings: () => request<MemberSettings>("GET", "/settings"),
   spending: () => request<Spending>("GET", "/spending"),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   startModelSignIn: (id: SignInId) => request<ModelSignInStart>("POST", `/settings/signins/${id}/start`),
