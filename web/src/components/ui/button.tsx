@@ -26,6 +26,10 @@ export const buttonVariants = cva(
 
 export type ButtonProps = ComponentProps<"button"> & VariantProps<typeof buttonVariants>;
 
+/**
+ * A button. It's `type="button"` unless you say otherwise, so it never submits a form by accident:
+ * a form's own submit button must be `type="submit"`, or tapping it does nothing.
+ */
 export function Button({ className, variant, size, type = "button", ...props }: ButtonProps) {
   return <button type={type} className={cn(buttonVariants({ variant, size }), className)} {...props} />;
 }

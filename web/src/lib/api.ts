@@ -11,16 +11,20 @@ export class ApiError extends Error {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api${path}`, {
-    method,
-    headers: body === undefined ? undefined : { "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`/api${path}`, {
+      method,
+      headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch { throw new ApiError("Couldn't reach Colony. Check your connection, then try again.", 0); }
   if (!response.ok) {
-    const data = await response.json().catch(() => null) as { error?: string; signIn?: boolean; offline?: boolean } | null;
-    throw new ApiError(data?.error || `Request failed (${response.status}).`, response.status, response.status === 401 && Boolean(data?.signIn), Boolean(data?.offline));
+    const data = await response.json().catch(() => null) as { error?: string; message?: string; signIn?: boolean; offline?: boolean } | null;
+    throw new ApiError(data?.error || data?.message || `Request failed (${response.status}).`, response.status, response.status === 401 && Boolean(data?.signIn), Boolean(data?.offline));
   }
-  return (response.status === 204 ? undefined : await response.json()) as T;
+  if (response.status === 204) return undefined as T;
+  try { return await response.json() as T; } catch { throw new ApiError(`Colony sent back something unexpected (${response.status}).`, response.status); }
 }
 
 /** An invite as the admin sees it (server/src/invites.ts). */

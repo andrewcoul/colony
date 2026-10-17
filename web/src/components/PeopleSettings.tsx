@@ -174,7 +174,7 @@ function InvitesSection({ onChanged }: { onChanged: () => void }) {
   const [link, setLink] = useState<{ email: string; link: string; note?: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const reload = useCallback(() => { void api.invites().then(setInvites).catch(() => {}); }, []);
+  const reload = useCallback(() => { void api.invites().then(setInvites).catch((failure) => setError(message(failure, "Couldn't load the invites."))); }, []);
   useEffect(reload, [reload]);
   const sent = (result: InviteSent) => {
     setLink(result.emailed ? null : { email: result.invite.email, link: result.link ?? "", note: result.error });
@@ -187,9 +187,13 @@ function InvitesSection({ onChanged }: { onChanged: () => void }) {
   return (
     <div className="mb-4 flex flex-col gap-2 rounded-xl border border-rule p-3.5">
       <span className="text-label text-muted">Invite someone</span>
-      <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void act(async () => { const result = await api.invite(email.trim()); setEmail(""); return result; }, "Couldn't invite them."); }}>
+      <form className="flex gap-2" noValidate onSubmit={(event) => {
+        event.preventDefault();
+        if (!email.trim()) { setError("Enter their email."); return; }
+        void act(async () => { const result = await api.invite(email.trim()); setEmail(""); return result; }, "Couldn't invite them.");
+      }}>
         <Input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required placeholder="their@email.com" aria-label="Email to invite" className="h-9 flex-1 text-[13px]" />
-        <Button variant="outline" size="pill" disabled={busy || !email.trim()}><Mail size={14} />Invite</Button>
+        <Button type="submit" variant="outline" size="pill" disabled={busy}><Mail size={14} />{busy ? "Inviting…" : "Invite"}</Button>
       </form>
       {link && (
         <div className="flex flex-col gap-1.5 rounded-lg bg-raised/60 p-2.5">
@@ -224,30 +228,36 @@ function InvitesSection({ onChanged }: { onChanged: () => void }) {
 }
 
 /** "Set up web sign-in": a password for one of the admin's own emails (from the tailnet or this PC). */
-function WebSignInSection() {
+export function WebSignInSection() {
   const [info, setInfo] = useState<WebSignIn | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
-  useEffect(() => { void api.webSignIn().then((next) => { setInfo(next); setEmail(next.adminEmails[0] ?? ""); }).catch(() => {}); }, []);
-  if (!info) return null;
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void api.webSignIn().then((next) => { setInfo(next); setEmail(next.adminEmails[0] ?? ""); }).catch((failure) => setError(message(failure, "Couldn't load web sign-in."))); }, []);
+  if (!info && !error) return null;
   return (
     <div className="mb-4 flex flex-col gap-2 rounded-xl border border-rule p-3.5">
       <span className="text-label text-muted">Set up web sign-in for yourself</span>
-      {!info.enabled ? <span className="text-meta text-muted">Web sign-in is off on this Colony (BETTER_AUTH_SECRET isn't set).</span>
+      {!info ? null : !info.enabled ? <span className="text-meta text-muted">Web sign-in is off on this Colony (BETTER_AUTH_SECRET isn't set).</span>
         : !info.adminEmails.length ? <span className="text-meta text-muted">Add your email to COLONY_ADMIN_EMAILS first.</span> : (
-          <form className="flex flex-col gap-2" onSubmit={(event) => {
+          <form className="flex flex-col gap-2" noValidate onSubmit={(event) => {
             event.preventDefault(); setError(""); setNote("");
-            void api.setUpAdminSignIn(email, password).then(() => { setPassword(""); setNote(`Done: sign in on the web as ${email}.`); }, (failure) => setError(message(failure, "Couldn't set it up.")));
+            if (password.length < 10) { setError("Use at least 10 characters."); return; }
+            setBusy(true);
+            void api.setUpAdminSignIn(email, password)
+              .then(() => { setPassword(""); setNote(`Done: sign in on the web as ${email}.`); }, (failure) => setError(message(failure, "Couldn't set it up.")))
+              .finally(() => setBusy(false));
           }}>
             <select value={email} onChange={(e) => setEmail(e.target.value)} aria-label="Your admin email" className="h-9 rounded-lg border border-rule bg-ground px-3 text-[13px] text-ink outline-none">
               {info.adminEmails.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
             <div className="flex gap-2">
               <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={10} required autoComplete="new-password" placeholder="A password, 10 characters or more" aria-label="Web sign-in password" className="h-9 flex-1 text-[13px]" />
-              <Button variant="outline" size="pill" disabled={password.length < 10}>Save</Button>
+              <Button type="submit" variant="outline" size="pill" disabled={busy}>{busy ? "Saving…" : "Save"}</Button>
             </div>
+            <span className="text-meta text-muted">At least 10 characters.</span>
           </form>
         )}
       {note && <span className="text-meta text-mint">{note}</span>}

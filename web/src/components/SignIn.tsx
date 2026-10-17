@@ -13,6 +13,10 @@ import { Field, Input } from "./ui/input";
 
 const message = (failure: unknown, fallback: string) => (failure instanceof Error ? failure.message : fallback);
 const home = () => { location.href = "/"; };
+/** A missing field is a visible error, never a silent no-op (Safari's own bubbles are easy to miss). */
+const need = (ok: boolean, text: string) => { if (!ok) throw new Error(text); };
+const MIN_PASSWORD = 10;
+const LONG_ENOUGH = "Use at least 10 characters.";
 
 function Frame({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -30,7 +34,7 @@ function Frame({ title, children }: { title: string; children: ReactNode }) {
 
 function useStatus() {
   const [status, setStatus] = useState<AuthStatus | null>(null);
-  useEffect(() => { void auth.status().then(setStatus); }, []);
+  useEffect(() => { void auth.status().then(setStatus).catch(() => {}); }, []);
   return status;
 }
 
@@ -56,23 +60,25 @@ export function SignInPage() {
   return (
     <Frame title={mode === "forgot" ? "Reset your password" : "Sign in to Colony"}>
       {mode === "password" && (
-        <form onSubmit={run(() => auth.signIn(email.trim(), password), "Couldn't sign in.", home)}>
+        <form noValidate onSubmit={run(() => { need(Boolean(email.trim()), "Enter your email."); need(Boolean(password), "Enter your password."); return auth.signIn(email.trim(), password); }, "Couldn't sign in.", home)}>
           <Field label="Email" htmlFor="signin-email"><Input id="signin-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
           <Field label="Password" htmlFor="signin-password"><Input id="signin-password" type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
-          <Button variant="primary" className="mt-1 w-full" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</Button>
+          <Button type="submit" variant="primary" className="mt-1 w-full" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</Button>
         </form>
       )}
       {mode === "code" && (
-        <form onSubmit={codeSent ? run(() => auth.signInWithCode(email.trim(), code.trim()), "That code didn't work.", home) : run(() => auth.sendCode(email.trim()), "Couldn't send a code.", () => { setCodeSent(true); setNote("If that email has an account, a code is on its way."); })}>
+        <form noValidate onSubmit={codeSent
+          ? run(() => { need(Boolean(code.trim()), "Enter the code from the email."); return auth.signInWithCode(email.trim(), code.trim()); }, "That code didn't work.", home)
+          : run(() => { need(Boolean(email.trim()), "Enter your email."); return auth.sendCode(email.trim()); }, "Couldn't send a code.", () => { setCodeSent(true); setNote("If that email has an account, a code is on its way."); })}>
           <Field label="Email" htmlFor="code-email"><Input id="code-email" type="email" autoComplete="username" required value={email} disabled={codeSent} onChange={(e) => setEmail(e.target.value)} /></Field>
           {codeSent && <Field label="Code from the email" htmlFor="code-otp"><Input id="code-otp" inputMode="numeric" autoComplete="one-time-code" required value={code} onChange={(e) => setCode(e.target.value)} /></Field>}
-          <Button variant="primary" className="mt-1 w-full" disabled={busy}>{codeSent ? "Sign in" : "Email me a code"}</Button>
+          <Button type="submit" variant="primary" className="mt-1 w-full" disabled={busy}>{busy ? (codeSent ? "Signing in…" : "Sending…") : codeSent ? "Sign in" : "Email me a code"}</Button>
         </form>
       )}
       {mode === "forgot" && (
-        <form onSubmit={run(() => auth.requestReset(email.trim()), "Couldn't send the email.", () => setNote("If that email has an account, a link to reset its password is on its way."))}>
+        <form noValidate onSubmit={run(() => { need(Boolean(email.trim()), "Enter your email."); return auth.requestReset(email.trim()); }, "Couldn't send the email.", () => setNote("If that email has an account, a link to reset its password is on its way."))}>
           <Field label="Email" htmlFor="forgot-email"><Input id="forgot-email" type="email" autoComplete="username" required value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
-          <Button variant="primary" className="mt-1 w-full" disabled={busy}>Email me a link</Button>
+          <Button type="submit" variant="primary" className="mt-1 w-full" disabled={busy}>{busy ? "Sending…" : "Email me a link"}</Button>
         </form>
       )}
       {note && <p className="m-0 mt-3 text-center text-label text-muted">{note}</p>}
@@ -98,6 +104,7 @@ export function SignUpPage({ invite }: { invite: string }) {
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!checked?.valid) return;
+    if (password.length < MIN_PASSWORD) { setError(LONG_ENOUGH); return; }
     if (password !== again) { setError("Those passwords don't match."); return; }
     setBusy(true); setError("");
     try { await auth.signUp(checked.email, password, invite); home(); } catch (failure) { setError(message(failure, "Couldn't create your account.")); } finally { setBusy(false); }
@@ -110,13 +117,13 @@ export function SignUpPage({ invite }: { invite: string }) {
           <Button variant="outline" className="mt-5 w-full" onClick={home}>Sign in instead</Button>
         </>
       ) : (
-        <form onSubmit={(event) => void submit(event)}>
+        <form noValidate onSubmit={(event) => void submit(event)}>
           <Field label="Email" htmlFor="signup-email"><Input id="signup-email" type="email" value={checked.email} readOnly disabled /></Field>
           <Field label="Choose a password" htmlFor="signup-password"><Input id="signup-password" type="password" autoComplete="new-password" minLength={10} required value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
           <Field label="Once more" htmlFor="signup-again"><Input id="signup-again" type="password" autoComplete="new-password" minLength={10} required value={again} onChange={(e) => setAgain(e.target.value)} /></Field>
           <span className="mb-3 block text-meta text-muted">At least 10 characters.</span>
           {error && <p role="alert" className="m-0 mb-3 text-label text-danger">{error}</p>}
-          <Button variant="primary" className="w-full" disabled={busy}>{busy ? "Creating your account…" : "Create my account"}</Button>
+          <Button type="submit" variant="primary" className="w-full" disabled={busy}>{busy ? "Creating your account…" : "Create my account"}</Button>
         </form>
       )}
     </Frame>
@@ -128,18 +135,21 @@ export function ResetPage({ token }: { token: string }) {
   const [password, setPassword] = useState("");
   const [done, setDone] = useState(false);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
-    setError("");
-    try { await auth.resetPassword(token, password); setDone(true); } catch (failure) { setError(message(failure, "Couldn't reset it. Ask for a new link.")); }
+    if (password.length < MIN_PASSWORD) { setError(LONG_ENOUGH); return; }
+    setBusy(true); setError("");
+    try { await auth.resetPassword(token, password); setDone(true); } catch (failure) { setError(message(failure, "Couldn't reset it. Ask for a new link.")); } finally { setBusy(false); }
   }
   return (
     <Frame title="Choose a new password">
       {done ? <Button variant="primary" className="w-full" onClick={home}>Sign in</Button> : (
-        <form onSubmit={(event) => void submit(event)}>
+        <form noValidate onSubmit={(event) => void submit(event)}>
           <Field label="New password" htmlFor="reset-password"><Input id="reset-password" type="password" autoComplete="new-password" minLength={10} required value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
+          <span className="mb-3 block text-meta text-muted">At least 10 characters.</span>
           {error && <p role="alert" className="m-0 mb-3 text-label text-danger">{error}</p>}
-          <Button variant="primary" className="w-full">Save it</Button>
+          <Button type="submit" variant="primary" className="w-full" disabled={busy}>{busy ? "Saving…" : "Save it"}</Button>
         </form>
       )}
     </Frame>
