@@ -3,7 +3,8 @@ import path from "node:path";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
 /**
- * The model sign-ins (ChatGPT, OpenCode), one per pi provider id, in data/credentials.json.
+ * The model sign-ins (ChatGPT, OpenCode), one per pi provider id, and the members' OpenCode API
+ * key (under its own id, "opencode-key"), in data/credentials.json.
  * Readable only by you; tokens never leave the server. Writes for one provider run one at a
  * time, so a refresh and a sign-in never both rotate a token.
  */
@@ -18,6 +19,12 @@ export class FileCredentialStore implements CredentialStore {
 
   /** Whether a provider has a credential saved (possibly expired). */
   has(providerId: string) { return providerId in this.credentials; }
+
+  /** The last four characters of a saved API key (to tell keys apart), or null. The key itself never leaves. */
+  keyHint(id: string): string | null {
+    const credential = this.credentials[id];
+    return credential?.type === "api_key" && credential.key && credential.key.length >= 8 ? credential.key.slice(-4) : null;
+  }
 
   /** Saved details that aren't secret, e.g. the account a sign-in belongs to. */
   detail(providerId: string): string | null {

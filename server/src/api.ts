@@ -25,15 +25,15 @@ import { MIN_INTERVAL_MINUTES, parseTime } from "./shared/schedule.js";
 import * as ws from "./computer/workspace.js";
 import type { Store } from "./store.js";
 import { BusyError, type Updater } from "./updates.js";
-import type { AppState, Chat, ServerEvent, TopicIcon } from "./shared/types.js";
-import { spendingFor } from "./spending.js";
+import type { AppState, Chat, PersonSummary, ServerEvent, TopicIcon } from "./shared/types.js";
+import { monthSpend, spendingFor, spendLimitProblem } from "./spending.js";
 import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
 import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
 import { localOnly, requirePerson, type AccessEnv, type Resolver } from "./access.js";
 import { config } from "./config.js";
-import { isAdmin, meOf, People, readAbout, writeAbout, type Person } from "./people.js";
+import { isAdmin, meOf, People, readAbout, removeAbout, writeAbout, type Person } from "./people.js";
 
 export type Services = {
   store: Store; events: EventLog; gate: ApprovalGate; runner: Runner;
@@ -45,6 +45,8 @@ export type Services = {
   models?: ModelSource;
   /** Signing in to ChatGPT and OpenCode. */
   modelSignIns?: ModelSignIns;
+  /** The OpenCode API key members' Bots run on (kept in the credential store; never sent out). */
+  memberKey?: { set(key: string): Promise<void>; clear(): Promise<void> };
   /** Connected accounts (mail, calendar, 1Password) and signing in to them. */
   integrations?: Integrations;
   signIns?: SignIns;
@@ -134,7 +136,7 @@ async function fetchImage(url: string) {
 
 const ADMIN_ONLY = { error: "Only this Colony's admin can do that." };
 
-export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access, models, modelSignIns, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
+export function createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access, models, modelSignIns, memberKey, integrations, signIns, connectVault = connectOnePassword, calls, nodes }: Services) {
   const api = new Hono<AccessEnv>();
   const table: RouteSpec[] = [];
   tables.set(api, table);
@@ -187,7 +189,14 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   });
 
   /** Whether this person's Bots have a model to use. */
-  const configuredFor = (person: Person) => (isAdmin(person) ? settings.modelConfigured() : settings.memberSettingsView(person).configured);
+  const configuredFor = (person: Person) => settings.configuredFor(person);
+  /** Why this person's Bots can't take a new turn now (a member with no models set up, or at their cap), with a status. */
+  const runRefusal = (person: Person): { error: string; status: 402 | 503 } | null => {
+    if (isAdmin(person)) return null;
+    if (!settings.memberKeyStatus().set) return { error: settings.NO_MEMBER_MODELS, status: 503 };
+    const limit = spendLimitProblem(store, person);
+    return limit ? { error: limit, status: 402 } : null;
+  };
 
   /** Everything the app shows: the asker's own things (and, for the admin, what runs this Colony). */
   route("GET", "/state", "anyone", (c) => {
@@ -243,7 +252,10 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   route("POST", "/bots", "anyone", async (c) => {
     const person = c.get("person");
     const input = botInput.parse(await c.req.json());
-    // A model you may use: the one asked for, or your default.
+    // A model you may use: the one asked for, or your default. A member asking for another is refused.
+    if (!isAdmin(person) && input.model && !settings.resolveModelFor(person, input.model, { fallback: false })) {
+      return c.json({ error: "That model isn't one members may use." }, 400);
+    }
     const target = settings.resolveModelFor(person, input.model);
     const problem = desktopProblem(input.computer, input.desktop, target?.ref);
     if (problem) return c.json({ error: problem }, 400);
@@ -517,6 +529,9 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     const attached = attachmentIds.map((id) => store.getFile(id)).filter((file) => file?.chatId === chat.id);
     if (attached.length !== attachmentIds.length) return c.json({ error: "One of those files isn't in this chat any more." }, 400);
     if (!text && !attached.length) return c.json({ error: "Write something, or attach a file." }, 400);
+    // Say so now, rather than in a failed reply.
+    const refusal = runRefusal(c.get("person"));
+    if (refusal) return c.json({ error: refusal.error }, refusal.status);
     const attachments = attached.map((file) => ({ id: file!.id, name: file!.name, mime: file!.mime, size: file!.size }));
     return c.json(sendUserMessage(store, runner, chat, { text, mode, attachments }), 201);
   });
@@ -662,15 +677,87 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     events.emit({ type: "settings.updated", models: settings.modelOptions(), defaultModel: settings.defaultModel(), configured: settings.modelConfigured() }, null);
     return settings.settingsView();
   };
-  /** The admin sees all of Settings; a member, the models they may use and whether voice is on. */
+  /** The admin sees all of Settings; a member, the models they may use, their spending and cap, and whether voice is on. */
   route("GET", "/settings", "anyone", (c) => {
     const person = c.get("person");
-    return c.json(isAdmin(person) ? settings.settingsView() : settings.memberSettingsView(person));
+    if (isAdmin(person)) return c.json(settings.settingsView());
+    return c.json({ ...settings.memberSettingsView(person), spent: monthSpend(store, person.id), cap: settings.spendCapOf(person.id).cap });
   });
 
   // ---------- Spending ----------
-  /** Your spending: this month by Bot and the last 30 days. */
-  route("GET", "/spending", "anyone", (c) => c.json(spendingFor(store, c.get("person").id)));
+  /** Your spending: this month by Bot and the last 30 days (and a member's cap). */
+  route("GET", "/spending", "anyone", (c) => {
+    const person = c.get("person");
+    return c.json(spendingFor(store, person.id, Date.now(), isAdmin(person) ? null : settings.spendCapOf(person.id).cap));
+  });
+
+  // ---------- Members' models (the admin's): the members' OpenCode API key, and what members may use ----------
+  /** Sets or replaces the members' key. Only whether it's set, and its last four characters, ever come back. */
+  route("PUT", "/settings/members/key", "admin", async (c) => {
+    if (!memberKey) return c.json({ error: "Models aren't available here." }, 503);
+    const { key } = z.object({ key: z.string().trim().min(8, "Paste the whole OpenCode API key.").max(500).regex(/^\S+$/, "An API key has no spaces.") }).parse(await c.req.json());
+    await memberKey.set(key);
+    return c.json(settingsChanged());
+  });
+  route("DELETE", "/settings/members/key", "admin", async (c) => {
+    if (!memberKey) return c.json({ error: "Models aren't available here." }, 503);
+    await memberKey.clear();
+    return c.json(settingsChanged());
+  });
+  const capInput = z.number().min(0).max(100_000).nullable();
+  /** The OpenCode Go models members may use, their default, and the cap for members without their own. */
+  route("PUT", "/settings/members", "admin", async (c) => {
+    const patch = z.object({ models: z.array(z.string().trim().min(1).max(200)).max(50), defaultModel: z.string().max(200), defaultCap: capInput }).partial().parse(await c.req.json());
+    try { settings.setMemberPolicy(patch); } catch (failure) { return c.json({ error: (failure as Error).message }, 400); }
+    return c.json(settingsChanged());
+  });
+
+  // ---------- People (the admin's): everyone's spending, caps and computers; turning members off or removing them ----------
+  const summary = (person: Person): PersonSummary => {
+    const bots = store.listBots(person.id);
+    const { cap, own } = isAdmin(person) ? { cap: null, own: false } : settings.spendCapOf(person.id);
+    return {
+      ...meOf(person), disabled: person.disabled, createdAt: person.createdAt,
+      spent: monthSpend(store, person.id), cap, capOwn: own, bots: bots.length,
+      computers: bots.filter((bot) => bot.computerState === "on" || bot.computerState === "starting").length,
+    };
+  };
+  /** A member by id (the admin has no cap and can't be turned off or removed). */
+  const memberById = (id: string) => { const person = store.getPerson(id); return person && !isAdmin(person) ? person : null; };
+  /** Stops a member's Bots and switches their computers off. */
+  const stopEverything = async (personId: string) => {
+    for (const bot of store.listBots(personId)) {
+      runner.stopBot(bot.id);
+      await browser?.close(bot.id);
+      desktop?.forget(bot.id);
+      if (bot.computer) await computer?.stop(bot.id).catch(() => {});
+    }
+  };
+  route("GET", "/people", "admin", (c) => c.json(store.listPeople().map(summary)));
+  route("PUT", "/people/:id", "admin", async (c) => {
+    const person = memberById(c.req.param("id"));
+    if (!person) return c.json({ error: "That isn't a member." }, 404);
+    const patch = z.object({ cap: z.union([capInput, z.literal("default")]), disabled: z.boolean() }).partial().parse(await c.req.json());
+    if (patch.cap !== undefined) settings.setSpendCap(person.id, patch.cap);
+    if (patch.disabled !== undefined) {
+      store.setPersonDisabled(person.id, patch.disabled);
+      if (patch.disabled) await stopEverything(person.id);
+    }
+    return c.json(summary(store.getPerson(person.id)!));
+  });
+  /** Removes a member and everything of theirs. Nobody else's things change. */
+  route("DELETE", "/people/:id", "admin", async (c) => {
+    const person = memberById(c.req.param("id"));
+    if (!person) return c.json({ error: "That isn't a member." }, 404);
+    await stopEverything(person.id);
+    for (const botId of store.removePerson(person.id)) {
+      await computer?.remove(botId).catch(() => {});
+      files.removeBotFolder(botId);
+    }
+    removeAbout(person.id);
+    settings.setSpendCap(person.id, "default");
+    return c.body(null, 204);
+  });
 
   // ---------- Voice (the admin's) ----------
   const hhmm = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "Use a time like 22:00.");
@@ -963,7 +1050,12 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
     // Flush headers right away so the client sees the connection open.
     await stream.writeSSE({ event: "ready", data: String(last) });
 
-    const heartbeat = setInterval(() => { void stream.writeSSE({ event: "ping", data: "" }); }, 15_000);
+    const heartbeat = setInterval(() => {
+      // A member turned off or removed meanwhile loses their stream.
+      const now = store.getPerson(person.id);
+      if (!now || now.disabled) { stream.abort(); wake?.(); return; }
+      void stream.writeSSE({ event: "ping", data: "" });
+    }, 15_000);
     try {
       while (!stream.aborted) {
         if (!queue.length) await new Promise<void>((resolve) => { wake = resolve; });

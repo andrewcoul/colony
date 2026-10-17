@@ -14,9 +14,9 @@ import type { DesktopService, DesktopShot } from "../../computer/desktop.js";
 import type { EventLog } from "../../events.js";
 import type { Integrations } from "../../integrations/index.js";
 import { isHuman } from "../../people.js";
-import { canDriveDesktop, priceOf, resolveModel, type ModelTarget } from "../../settings.js";
+import { canDriveDesktop, modelForBot, priceOf, RunRefused, type ModelTarget } from "../../settings.js";
 import type { Message, Step } from "../../shared/types.js";
-import { usageEntry } from "../../spending.js";
+import { spendLimitProblem, usageEntry } from "../../spending.js";
 import type { RunCheckpoint, Store } from "../../store.js";
 import type { ApprovalGate } from "../approvals.js";
 import { genericDesktopTools, type DesktopMode } from "../desktopTools.js";
@@ -442,6 +442,7 @@ export class PiRunner implements Runner {
 
   /** Why a turn failed, in words for the chat (provider errors can echo request details; log only the shape). */
   private explain(failure: unknown, run: PiRun) {
+    if (failure instanceof RunRefused) return failure.message;
     if (failure instanceof Error) {
       if (/configured|Nothing to reply|picked up/.test(failure.message)) return failure.message;
       console.warn(`[colony] ${run.botId} run failed:`, `${failure.name}: ${failure.message.slice(0, 300)}`);
@@ -457,8 +458,12 @@ export class PiRunner implements Runner {
   /** The turn's model, tools, and the context the tools act in. */
   private prepare(run: PiRun) {
     const bot = this.store.getBot(run.botId)!;
-    const target = resolveModel(bot.model);
-    if (!target) throw new Error("No model yet. Open Settings (the gear on the Bots screen) and sign in to ChatGPT or OpenCode.");
+    // Whose Bot it is decides its model: the admin's own, or the members' provider and allowed models.
+    const owner = this.store.getPerson(bot.ownerId);
+    if (!owner || owner.disabled) throw new RunRefused("This account is turned off, so its Bots can't work. Ask the person who runs this Colony.");
+    const target = modelForBot(bot, owner);
+    const limit = spendLimitProblem(this.store, owner);
+    if (limit) throw new RunRefused(limit);
     run.target = target;
     const botName = bot.name;
     const depth = run.options.depth ?? 0;

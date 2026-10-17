@@ -242,6 +242,21 @@ export type Spending = {
   days: { date: string; cost: number }[];
   /** Models used this month that have no price, so their tokens count but cost nothing here. */
   unpriced: string[];
+  /** A member's monthly cap in dollars, set by the admin (null: none). New turns wait once `total` reaches it. */
+  cap: number | null;
+};
+
+/** A member as the admin sees them in Settings › People. `cap` null: no cap. */
+export type PersonSummary = Me & {
+  disabled: boolean; createdAt: number;
+  /** This month's spending (America/Chicago), dollars. */
+  spent: number;
+  cap: number | null;
+  /** Whether the cap is set for them, or the default for members. */
+  capOwn: boolean;
+  bots: number;
+  /** Bot computers running (or starting) now. */
+  computers: number;
 };
 
 /** Your PC, lent to Bots through the Colony desktop app. `online`: its desktop app is connected now. */

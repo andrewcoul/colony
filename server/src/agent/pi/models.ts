@@ -5,7 +5,7 @@ import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/pro
 import type { ModelRef } from "@earendil-works/pi-durable";
 import { config } from "../../config.js";
 import { FileCredentialStore } from "../../credentials.js";
-import { listProviders, onProvidersChanged, setSignedIn, type ModelTarget, type Provider, type SignInId } from "../../settings.js";
+import { listProviders, MEMBER_KEY, MEMBER_PROVIDER, memberProvider, onProvidersChanged, setMemberKeyStatus, setSignedIn, type ModelTarget, type Provider, type SignInId } from "../../settings.js";
 import type { TokenUsage } from "../../spending.js";
 import { VERSION } from "../../version.js";
 import { builtins } from "./catalog.js";
@@ -100,14 +100,52 @@ export class ColonyModels implements ModelSource {
     this.stops = [onProvidersChanged(() => this.sync()), this.credentials.onChange(() => this.signIns())];
   }
 
-  /** Tells Settings which sign-ins are done. */
+  /** Tells Settings which sign-ins are done, and whether the members' key is set. */
   private signIns() {
     for (const [signIn, providerId] of Object.entries(SIGN_IN_PROVIDER) as [SignInId, string][]) {
       setSignedIn(signIn, this.credentials.has(providerId) ? this.credentials.detail(providerId) : false);
     }
+    setMemberKeyStatus(this.credentials.has(MEMBER_KEY) ? this.credentials.keyHint(MEMBER_KEY) : false);
+  }
+
+  /** Sets (or replaces) the OpenCode API key members' Bots run on. It's kept here only. */
+  async setMemberKey(key: string) {
+    await this.credentials.modify(MEMBER_KEY, async () => ({ type: "api_key", key }));
+  }
+
+  async clearMemberKey() {
+    await this.credentials.delete(MEMBER_KEY);
+  }
+
+  /**
+   * Members' OpenCode Go: pi-ai's own provider (same address and APIs), but its only key is the
+   * members' one. Not the admin's sign-in, and not OPENCODE_API_KEY from the environment: with no
+   * members' key, it has no auth at all.
+   */
+  private memberPiProvider(provider: Provider): PiProvider {
+    const builtin = builtins["opencode-go"];
+    const byId = new Map(builtin.getModels().map((model) => [model.id, model as Model<Api>]));
+    const models = provider.models.flatMap((id) => { const base = byId.get(id); return base ? [colonyModel(base, provider)] : []; });
+    const name = "Members' OpenCode API key";
+    return createProvider({
+      id: provider.id, name: "OpenCode Go (members)", headers: { "User-Agent": `colony/${VERSION}` },
+      auth: {
+        apiKey: {
+          name,
+          check: async () => (this.credentials.has(MEMBER_KEY) ? { type: "api_key", source: name } : undefined),
+          resolve: async () => {
+            const credential = await this.credentials.read(MEMBER_KEY);
+            return credential?.type === "api_key" && credential.key ? { auth: { apiKey: credential.key }, source: name } : undefined;
+          },
+        },
+      },
+      models,
+      api: through(builtin),
+    });
   }
 
   private piProvider(provider: Provider): PiProvider {
+    if (provider.id === MEMBER_PROVIDER) return this.memberPiProvider(provider);
     const headers = { "User-Agent": `colony/${VERSION}` };
     if (provider.id === "dev") {
       return createProvider({
@@ -118,7 +156,7 @@ export class ColonyModels implements ModelSource {
         api: openAICompletionsApi(),
       });
     }
-    const builtin = builtins[provider.id];
+    const builtin = builtins[provider.id as keyof typeof builtins];
     const byId = new Map(builtin.getModels().map((model) => [model.id, model as Model<Api>]));
     const models = provider.models.flatMap((id) => { const base = byId.get(id); return base ? [colonyModel(base, provider)] : []; });
     if (provider.id === "openai") {
@@ -148,7 +186,7 @@ export class ColonyModels implements ModelSource {
 
   private sync() {
     const current = new Set<string>();
-    for (const provider of listProviders()) {
+    for (const provider of [...listProviders(), memberProvider()]) {
       this.models.setProvider(this.piProvider(provider));
       current.add(provider.id);
     }

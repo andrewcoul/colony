@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { catalogOf } from "./agent/pi/catalog.js";
+import { catalogOf, catalogPrice } from "./agent/pi/catalog.js";
 import { config } from "./config.js";
 import { builtInPrice } from "./prices.js";
 import type { ModelOption, Price } from "./shared/types.js";
@@ -11,8 +11,23 @@ import type { ModelOption, Price } from "./shared/types.js";
  * (one console sign-in for Zen and Go). No API keys. "dev" is a keyless OpenAI-compatible
  * server from .env (COLONY_DEV_BASE_URL), for development and tests.
  */
-export type ProviderId = "openai" | "opencode-go" | "opencode" | "dev";
+export type ProviderId = "openai" | "opencode-go" | "opencode" | "dev" | typeof MEMBER_PROVIDER;
 export type SignInId = "chatgpt" | "opencode";
+
+/**
+ * Members' Bots run on OpenCode Go through a provider of their own, with an OpenCode API key the
+ * admin sets (kept in data/credentials.json as MEMBER_KEY), never with the admin's sign-ins.
+ */
+export const MEMBER_PROVIDER = "opencode-go-members";
+export const MEMBER_KEY = "opencode-key";
+/** What members may use until the admin says otherwise. */
+const MEMBER_DEFAULT_MODEL = "muse-spark-1.3-contributor";
+export const NO_MEMBER_MODELS = "Your Colony admin hasn't set up models for members yet.";
+
+/** A turn that can't start, in words for the chat (shown as they are). */
+export class RunRefused extends Error {
+  constructor(message: string) { super(message); this.name = "RunRefused"; }
+}
 
 const SIGNED: { id: Exclude<ProviderId, "dev">; name: string; signIn: SignInId }[] = [
   { id: "openai", name: "ChatGPT", signIn: "chatgpt" },
@@ -67,7 +82,15 @@ export const OPENAI_AUDIO = "https://api.openai.com/v1";
 /** Voice as devices see it: the key stays here, only its last four characters go out. */
 export type VoiceView = VoiceSettings & { keySet: boolean; keyHint: string | null };
 /** Settings as the admin sees them: everything, to change. */
-export type SettingsView = { role: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
+/**
+ * What the admin sees of members' models: whether the members' OpenCode API key is set (and its
+ * last four characters, never the key), the models members may use, and the cap for new members.
+ */
+export type MembersView = {
+  keySet: boolean; keyHint: string | null; models: string[]; defaultModel: string; defaultCap: number | null;
+  catalog: CatalogModel[]; prices: Record<string, Price>;
+};
+export type SettingsView = { role: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView; members: MembersView };
 /**
  * Settings as a member sees them: the models they may give their Bots, and whether voice is on.
  * Nothing about sign-ins, keys or where voice goes.
@@ -96,6 +119,15 @@ let deviceId: string = randomUUID();
 let owner: string | null = null;
 /** Which sign-ins are done, and the account each is for (kept in step by the sign-in store). */
 const signedIn = new Map<SignInId, string | null>();
+/**
+ * What members may use: OpenCode Go models (ids), the default for their new Bots, and what each
+ * may spend a month in dollars (`caps` per member; anyone not listed has `defaultCap`; null: no cap).
+ */
+export type MemberPolicy = { models: string[]; defaultModel: string; defaultCap: number | null; caps: Record<string, number | null> };
+const freshPolicy = (): MemberPolicy => ({ models: [MEMBER_DEFAULT_MODEL], defaultModel: MEMBER_DEFAULT_MODEL, defaultCap: null, caps: {} });
+let members: MemberPolicy = freshPolicy();
+/** The last four characters of the members' key once it's set (kept in step by the credential store). */
+let memberKey: { set: boolean; hint: string | null } = { set: false, hint: null };
 /** Called whenever providers or sign-ins change (the agent runtime keeps one pi provider per provider). */
 const listeners = new Set<() => void>();
 
@@ -131,7 +163,9 @@ export function loadSettings() {
   aliases = {};
   owner = null;
   deviceId = randomUUID();
+  members = freshPolicy();
   let saved: {
+    members?: Partial<MemberPolicy>;
     providers?: (Partial<Provider> | LegacyProvider)[];
     aliases?: Record<string, ProviderId>;
     defaultModel?: string;
@@ -149,6 +183,7 @@ export function loadSettings() {
     deviceId = saved.deviceId ?? deviceId;
     aliases = { ...saved.aliases };
     defaultRef = saved.defaultModel ?? "";
+    if (saved.members) members = { ...freshPolicy(), ...saved.members, caps: { ...saved.members.caps } };
     let migrated = false;
     for (const item of saved.providers ?? []) {
       const legacy = "baseURL" in item && typeof item.baseURL === "string" && item.id !== "dev" ? item as LegacyProvider : null;
@@ -194,7 +229,7 @@ function persist() {
   // Write then rename, so a crash never leaves half a file. Readable only by you.
   const temp = `${settingsFile()}.${process.pid}.tmp`;
   const saved = providers.filter((provider) => provider.id !== "dev").map(({ id, models, desktop, prices }) => ({ id, models, desktop, ...(prices ? { prices } : {}) }));
-  fs.writeFileSync(temp, JSON.stringify({ providers: saved, aliases, defaultModel: defaultRef, voice, voiceKey, ownerLogin: owner, deviceId }, null, 2), { mode: 0o600 });
+  fs.writeFileSync(temp, JSON.stringify({ providers: saved, aliases, defaultModel: defaultRef, voice, voiceKey, ownerLogin: owner, deviceId, members }, null, 2), { mode: 0o600 });
   fs.renameSync(temp, settingsFile());
 }
 
@@ -253,41 +288,111 @@ export function modelOptions(): ModelOption[] {
 // ---------- What members may use ----------
 type Someone = { id: string; role: "admin" | "member" };
 
-/**
- * Whether a member may give their Bots one of the admin's models. A placeholder: every model the
- * admin picked is allowed until the admin can choose, per member, which ones (the next phase).
- */
-export function memberMayUse(_personId: string, _model: ModelOption): boolean {
-  return true;
+/** The provider members' Bots run on: OpenCode Go with the members' key, limited to the allowed models. */
+export const memberProvider = (): Provider => ({ id: MEMBER_PROVIDER, name: "OpenCode Go", signIn: null, models: [...members.models], desktop: [] });
+export const memberPolicy = (): Readonly<MemberPolicy> => members;
+export const memberKeyStatus = () => ({ ...memberKey });
+
+/** Records whether the members' key is set, and its last four characters (kept in step by the credential store). */
+export function setMemberKeyStatus(hint: string | null | false) {
+  const next = hint === false ? { set: false, hint: null } : { set: true, hint };
+  if (next.set === memberKey.set && next.hint === memberKey.hint) return;
+  memberKey = next;
+  changed();
 }
 
-/** The models this person's Bots may use: all of them for the admin, the allowed ones for a member. */
-export const modelOptionsFor = (person: Someone) =>
-  person.role === "admin" ? modelOptions() : modelOptions().filter((option) => memberMayUse(person.id, option));
+/** Changes which OpenCode Go models members may use, their default, and the cap for members without their own. */
+export function setMemberPolicy(patch: { models?: string[]; defaultModel?: string; defaultCap?: number | null }) {
+  const offered = new Set(catalogOf({ id: "opencode-go", models: [] }).map((model) => model.id));
+  const models = patch.models ? [...new Set(patch.models.map((item) => item.trim()).filter(Boolean))] : members.models;
+  const unknown = models.find((model) => !offered.has(model));
+  if (unknown) throw new Error(`OpenCode Go doesn't offer ${unknown}.`);
+  const preferred = patch.defaultModel ?? members.defaultModel;
+  if (patch.defaultModel !== undefined && !models.includes(preferred)) throw new Error("Pick the default from the models members may use.");
+  members = {
+    ...members, models,
+    defaultModel: models.includes(preferred) ? preferred : models[0] ?? "",
+    ...(patch.defaultCap !== undefined ? { defaultCap: patch.defaultCap } : {}),
+  };
+  persist();
+  changed();
+}
 
-/** The default for this person's new Bots: the Colony's default if they may use it, else their first model. */
+/** What a member may spend a month, in dollars (null: no cap), and whether it's their own or the default. */
+export function spendCapOf(personId: string): { cap: number | null; own: boolean } {
+  return personId in members.caps ? { cap: members.caps[personId], own: true } : { cap: members.defaultCap, own: false };
+}
+
+/** Sets one member's monthly cap (a number, or null for none), or puts them back on the default. */
+export function setSpendCap(personId: string, cap: number | null | "default") {
+  const caps = { ...members.caps };
+  if (cap === "default") delete caps[personId]; else caps[personId] = cap;
+  members = { ...members, caps };
+  persist();
+}
+
+const memberRef = (model: string) => modelRef(MEMBER_PROVIDER, model);
+
+/** The models this person's Bots may use: the admin's own for the admin; the allowed OpenCode Go ones for a member. */
+export function modelOptionsFor(person: Someone): ModelOption[] {
+  if (person.role === "admin") return modelOptions();
+  return members.models.map((model) => ({ ref: memberRef(model), providerId: MEMBER_PROVIDER, providerName: "OpenCode Go", model, desktop: false }));
+}
+
+/** The default for this person's new Bots. */
 export function defaultModelFor(person: Someone) {
-  const options = modelOptionsFor(person);
-  const fallback = defaultModel();
-  return options.some((option) => option.ref === fallback) ? fallback : options[0]?.ref ?? "";
+  if (person.role === "admin") return defaultModel();
+  return members.defaultModel && members.models.includes(members.defaultModel) ? memberRef(members.defaultModel) : "";
 }
 
-/** resolveModel, within the models this person may use (falling back to their default unless `fallback` is false). */
+/** Whether this person's Bots have a model they can use right now. */
+export const configuredFor = (person: Someone) => (person.role === "admin" ? modelConfigured() : memberKey.set && Boolean(defaultModelFor(person)));
+
+/**
+ * The model a person picks for a Bot: for the admin, resolveModel as always; for a member, one of
+ * the allowed models (the one asked for, else their default unless `fallback` is false). A member
+ * gets nothing else, whether or not the members' key is set yet.
+ */
 export function resolveModelFor(person: Someone, requested: string | undefined, { fallback = true }: { fallback?: boolean } = {}): ModelTarget | null {
-  const allowed = new Set(modelOptionsFor(person).map((option) => option.ref));
-  const target = resolveModel(requested, { fallback: false });
-  if (target && allowed.has(target.ref)) return target;
+  if (person.role === "admin") return resolveModel(requested, { fallback });
+  const provider = memberProvider();
+  const asked = requested?.startsWith(`${MEMBER_PROVIDER}${SEP}`) ? requested.slice(MEMBER_PROVIDER.length + SEP.length) : null;
+  if (asked && provider.models.includes(asked)) return { provider, model: asked, ref: memberRef(asked) };
   if (!fallback) return null;
-  const mine = resolveModel(defaultModelFor(person), { fallback: false });
-  return mine && allowed.has(mine.ref) ? mine : null;
+  const preferred = defaultModelFor(person);
+  return preferred ? { provider, model: members.defaultModel, ref: preferred } : null;
+}
+
+/**
+ * The model a Bot's turn runs on, or why it can't run. The admin's Bots use the admin's models; a
+ * member's Bots only ever use the members' provider and an allowed model, never the admin's sign-ins.
+ */
+export function modelForBot(bot: { model: string; ownerId: string }, owner: Someone): ModelTarget {
+  if (owner.role === "admin") {
+    const target = resolveModel(bot.model);
+    if (!target) throw new RunRefused("No model yet. Open Settings (the gear on the Bots screen) and sign in to ChatGPT or OpenCode.");
+    return target;
+  }
+  if (!memberKey.set) throw new RunRefused(NO_MEMBER_MODELS);
+  const target = resolveModelFor(owner, bot.model || undefined, { fallback: !bot.model });
+  if (!target) {
+    const name = bot.model.split(SEP).pop() || "That model";
+    throw new RunRefused(`${name} isn't one of the models members may use. Pick another in this Bot's profile.`);
+  }
+  return target;
 }
 
 /** Every provider. */
 export const listProviders = (): readonly Provider[] => providers;
 export const providerById = (id: string) => providerOf(id) ?? null;
 
-/** A model's price: set by hand on its provider, or from the built-in table. */
-export const priceOf = (provider: Provider, model: string): Price | null => provider.prices?.[model] ?? builtInPrice(model);
+/**
+ * A model's price: set by hand on its provider, or from the built-in table. Members' models use
+ * OpenCode Go's own catalog price (what the members' key is billed).
+ */
+export const priceOf = (provider: Provider, model: string): Price | null => provider.id === MEMBER_PROVIDER
+  ? catalogPrice("opencode-go", model) ?? builtInPrice(model)
+  : provider.prices?.[model] ?? builtInPrice(model);
 
 /** Your tailnet login, once Colony has seen it. */
 export const ownerLogin = () => owner;
@@ -353,15 +458,18 @@ export function settingsView(): SettingsView {
     defaultModel: defaultModel(),
     configured: modelConfigured(),
     voice: { ...voice, keySet: Boolean(voiceKey), keyHint: voiceKey.length >= 12 ? voiceKey.slice(-4) : null },
+    members: {
+      keySet: memberKey.set, keyHint: memberKey.hint, models: [...members.models], defaultModel: members.defaultModel, defaultCap: members.defaultCap,
+      catalog: catalogOf({ id: "opencode-go", models: [] }),
+      prices: Object.fromEntries(members.models.flatMap((model) => { const price = priceOf(memberProvider(), model); return price ? [[model, price]] : []; })),
+    },
   };
 }
 
 /** A member's reduced settings. */
 export function memberSettingsView(person: Someone): MemberSettingsView {
-  const models = modelOptionsFor(person);
-  const preferred = defaultModelFor(person);
   return {
-    role: "member", models, defaultModel: preferred, configured: Boolean(resolveModelFor(person, preferred, { fallback: false })),
+    role: "member", models: modelOptionsFor(person), defaultModel: defaultModelFor(person), configured: configuredFor(person),
     voice: { on: Boolean(voice.baseURL), allowCalls: voice.allowCalls, quietFrom: voice.quietFrom, quietTo: voice.quietTo },
   };
 }

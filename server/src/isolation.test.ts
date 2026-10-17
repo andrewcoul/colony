@@ -29,7 +29,10 @@ const { coreTools } = await import("./agent/tools.js");
 const { writeChatFile } = await import("./chatFiles.js");
 const files = await import("./files.js");
 const settings = await import("./settings.js");
+const { ColonyModels } = await import("./agent/pi/models.js");
 settings.loadSettings();
+/** The real credential store (data/credentials.json in this test's folder), for the members' key. */
+const colonyModels = new ColonyModels();
 
 type Runner = import("./agent/runner.js").Runner;
 type Policy = import("./api.js").Policy;
@@ -77,6 +80,8 @@ type Things = ReturnType<typeof own>;
 
 /** A Colony with the admin and two members, Alice and Bob, each owning one of everything. */
 async function world() {
+  // Members' models as a fresh Colony has them (routes above change them).
+  settings.setMemberPolicy({ models: ["muse-spark-1.3-contributor"], defaultModel: "muse-spark-1.3-contributor", defaultCap: null });
   const db = openDb(":memory:");
   const events = new EventLog(db);
   const store = new Store(db, events);
@@ -105,7 +110,8 @@ async function world() {
   const computer = new ComputerService(store, events, { docker: async () => ({ code: 1, stdout: "", stderr: "" }) });
   const rings = new Map<string, string>();
   const calls = { ownerOf: (id: string) => rings.get(id) ?? null, miss: (id: string) => { rings.delete(id); } } as unknown as Calls;
-  const api = createApi({ store, events, gate, runner, push, computer, calls, access: resolver([testSource], people) });
+  const memberKey = { set: (key: string) => colonyModels.setMemberKey(key), clear: () => colonyModels.clearMemberKey() };
+  const api = createApi({ store, events, gate, runner, push, computer, calls, memberKey, access: resolver([testSource], people) });
   const things: Record<Who, Things> = {
     admin: own(store, ids.admin, "Max", rings),
     alice: own(store, ids.alice, "Ana", rings),
@@ -240,6 +246,12 @@ const CASES: Record<string, Case> = {
   "POST /focus": send(() => "/focus", () => ({ clientId: "w1", chatId: null, visible: true })),
   "POST /approvals/:id": send((t) => `/approvals/${t.approval.id}`, () => ({ approve: false })),
   "GET /events": get(() => "/events"),
+  "PUT /settings/members/key": send(() => "/settings/members/key", () => ({ key: "sk-test-replacement-0000" })),
+  "DELETE /settings/members/key": send(() => "/settings/members/key"),
+  "PUT /settings/members": send(() => "/settings/members", () => ({ defaultCap: 5 })),
+  "GET /people": get(() => "/people"),
+  "PUT /people/:id": send((_t, w) => `/people/${w.ids.bob}`, () => ({ cap: 3 })),
+  "DELETE /people/:id": send((_t, w) => `/people/${w.ids.bob}`),
 };
 
 /**
@@ -259,6 +271,8 @@ const EXPECTED: Record<Policy, string[]> = {
     "POST /settings/signins/session/:session/cancel", "DELETE /settings/signins/:id",
     "GET /accounts", "POST /accounts/google/start", "POST /accounts/google/finish", "POST /accounts/microsoft/start",
     "GET /accounts/signin/:id", "POST /accounts/signin/:id/cancel", "POST /accounts/onepassword", "DELETE /accounts/:id",
+    "PUT /settings/members/key", "DELETE /settings/members/key", "PUT /settings/members",
+    "GET /people", "PUT /people/:id", "DELETE /people/:id",
   ],
   "admin-bot": ["PUT /bots/:id/access/:accountId"],
   bot: [
@@ -386,6 +400,66 @@ describe("every route", () => {
   });
 });
 
+describe("the members' OpenCode API key", () => {
+  const KEY = "sk-oc-test-0123456789-QXZW";
+
+  /** A route's whole answer as text (an event stream up to its "ready"). */
+  async function raw(w: World, who: Who, key: string) {
+    const request = CASES[key];
+    const [method] = key.split(" ");
+    const body = request.body?.(w.things[who], w);
+    const form = body instanceof FormData;
+    const controller = new AbortController();
+    const response = await w.api.request(request.url(w.things[who], w), {
+      method: method === "ALL" ? "GET" : method, signal: controller.signal,
+      headers: { "X-Person": who, ...(body !== undefined && !form ? { "Content-Type": "application/json" } : {}) },
+      body: body === undefined ? undefined : form ? body : JSON.stringify(body),
+    });
+    if (!response.headers.get("content-type")?.includes("event-stream")) return response.text();
+    const reader = response.body!.getReader();
+    let text = "";
+    while (!text.includes("event: ready") && !text.includes("event: closed")) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      text += new TextDecoder().decode(chunk.value);
+    }
+    controller.abort();
+    await reader.cancel().catch(() => {});
+    return text;
+  }
+
+  test("is kept in data/credentials.json (mode 600) only, and no route ever returns it", async () => {
+    const w = await world();
+    // Setting it answers with whether it's set and its last four characters, not the key.
+    const set = await w.call("admin", "PUT", "/settings/members/key", { key: KEY });
+    expect(set.status).toBe(200);
+    expect(set.json.members).toMatchObject({ keySet: true, keyHint: "QXZW" });
+    expect(JSON.stringify(set.json)).not.toContain(KEY);
+    const file = path.join(dataDir, "credentials.json");
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))["opencode-key"]).toEqual({ type: "api_key", key: KEY });
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    // Every route, as the admin and as a member: never the key; members never even get its last four characters.
+    for (const key of Object.keys(CASES).filter((item) => !item.includes("/settings/members/key")).sort()) {
+      for (const who of ["admin", "alice"] as const) {
+        const text = await raw(w, who, key);
+        expect(text.includes(KEY), `${who}: ${key} returned the key`).toBe(false);
+        if (who === "alice") expect(/QXZW|keyHint/.test(text), `${key} showed a member the key's hint`).toBe(false);
+      }
+    }
+    // Nor does it reach the event log or settings.json.
+    expect(JSON.stringify(w.events.since(0))).not.toContain(KEY);
+    expect(fs.readFileSync(path.join(dataDir, "settings.json"), "utf8")).not.toContain(KEY);
+    // Members can't set or clear it.
+    expect((await w.call("alice", "PUT", "/settings/members/key", { key: "sk-member-tries-this-1" })).status).toBe(403);
+    expect((await w.call("alice", "DELETE", "/settings/members/key")).status).toBe(403);
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))["opencode-key"].key).toBe(KEY);
+    // Clearing it: unset again.
+    const cleared = await w.call("admin", "DELETE", "/settings/members/key");
+    expect(cleared.json.members).toMatchObject({ keySet: false, keyHint: null });
+    expect(JSON.parse(fs.readFileSync(file, "utf8"))).not.toHaveProperty("opencode-key");
+  });
+});
+
 describe("WebSocket upgrades", () => {
   test("every upgrade path is checked here", () => {
     // A new kind of upgrade fails type-checking here until it's added (and tested below).
@@ -434,7 +508,8 @@ describe("what each person sees", () => {
     expect(alice.approvals.map((approval: { id: string }) => approval.id)).toEqual([w.things.alice.approval.id]);
     expect(alice.routines.map((routine: { id: string }) => routine.id)).toEqual([w.things.alice.routine.id]);
     expect([alice.accounts, alice.access, alice.nodes]).toEqual([[], [], []]);
-    expect(alice.models.map((model: { ref: string }) => model.ref)).toEqual(["dev::mock-model"]);
+    // Members' Bots only ever get the members' models, never the admin's.
+    expect(alice.models.map((model: { ref: string }) => model.ref)).toEqual(["opencode-go-members::muse-spark-1.3-contributor"]);
     const admin = (await w.call("admin", "GET", "/state")).json;
     expect(admin.me).toMatchObject({ id: "owner", role: "admin" });
     // The admin doesn't see members' things either.
@@ -482,7 +557,7 @@ describe("what each person sees", () => {
   test("members read a reduced Settings; the admin reads all of it", async () => {
     const w = await world();
     const member = (await w.call("alice", "GET", "/settings")).json;
-    expect(member).toMatchObject({ role: "member", defaultModel: "dev::mock-model" });
+    expect(member).toMatchObject({ role: "member", defaultModel: "opencode-go-members::muse-spark-1.3-contributor", cap: null, spent: 0 });
     expect(member).not.toHaveProperty("providers");
     expect(member).not.toHaveProperty("signIns");
     expect(JSON.stringify(member)).not.toContain("keyHint");

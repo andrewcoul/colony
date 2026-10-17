@@ -13,8 +13,8 @@ import type { Store } from "./store.js";
 
 export const ADMIN_ID = "owner";
 
-/** A person with an account here. */
-export type Person = Me & { color: string; createdAt: number };
+/** A person with an account here. `disabled`: the admin turned them off. */
+export type Person = Me & { color: string; disabled: boolean; createdAt: number };
 
 export const isAdmin = (person: Pick<Me, "role">) => person.role === "admin";
 /** What devices see of a person. */
@@ -63,6 +63,7 @@ export class People {
     if (known?.id === ADMIN_ID || known?.role === "admin") {
       return { refused: `${login} is this Colony's admin login. Add it to COLONY_ADMIN_EMAILS to sign in with it.` };
     }
+    if (known?.disabled) return { refused: "Your account on this Colony is turned off. Ask the person who runs it." };
     if (known) return known;
     const used = new Set(this.store.listPeople().map((person) => person.color));
     return this.store.addPerson({
@@ -89,6 +90,11 @@ const writeText = (file: string, text: string) => { fs.mkdirSync(path.dirname(fi
 /** A person's USER.md. */
 export const readAbout = (personId: string) => readText(aboutFile(personId));
 export const writeAbout = (personId: string, text: string) => writeText(aboutFile(personId), text);
+/** Removes a member's notes (data/people/<id>/). The admin's USER.md is never removed. */
+export function removeAbout(personId: string) {
+  if (personId === ADMIN_ID) return;
+  fs.rmSync(path.dirname(aboutFile(personId)), { recursive: true, force: true });
+}
 
 /**
  * Folds what was kept for the household (HOUSEHOLD.md, from the family build) into the admin's

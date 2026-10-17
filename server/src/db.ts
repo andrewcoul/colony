@@ -325,6 +325,8 @@ const MIGRATIONS = [
     SELECT bots.id FROM bots JOIN chats ON chats.id = chat_members.chat_id WHERE bots.owner_id = chats.owner_id
   );
   `,
+  // v21: the admin can turn a member off (they can't sign in, and their Bots don't run).
+  `ALTER TABLE people ADD COLUMN disabled_at INTEGER;`,
 ];
 
 export type Db = DatabaseSync;

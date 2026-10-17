@@ -37,6 +37,8 @@ const toPerson = (row: Row): Person => ({
   name: row.name as string,
   login: (row.login as string | null) ?? null,
   color: row.color as string,
+  // The admin is never turned off.
+  disabled: row.id !== ADMIN && Boolean(row.disabled_at),
   createdAt: row.created_at as number,
 });
 
@@ -173,6 +175,33 @@ export class Store {
     this.db.prepare("INSERT INTO people (id, login, name, color, role, created_at) VALUES (?, ?, ?, ?, 'member', ?)")
       .run(id, input.login.toLowerCase(), input.name, input.color, Date.now());
     return this.getPerson(id)!;
+  }
+
+  /** Turns a member off (they can't sign in and their Bots don't run) or back on. Never the admin. */
+  setPersonDisabled(id: string, disabled: boolean) {
+    if (id === ADMIN) throw new Error("The admin can't be turned off.");
+    this.db.prepare("UPDATE people SET disabled_at = ? WHERE id = ?").run(disabled ? Date.now() : null, id);
+    return this.getPerson(id);
+  }
+
+  /**
+   * Removes a member and everything of theirs: Bots (with their chats, routines and approvals),
+   * topics, folders, devices, spending and events. Nothing of anyone else's. Returns the ids of
+   * the Bots removed, so their folders and computers can go too. Never the admin.
+   */
+  removePerson(id: string): string[] {
+    if (id === ADMIN) throw new Error("The admin can't be removed.");
+    if (!this.getPerson(id)) return [];
+    const bots = this.listBots(id).map((bot) => bot.id);
+    for (const botId of bots) this.deleteBot(botId);
+    for (const chat of this.listChats(id)) this.deleteChat(chat.id);
+    for (const folder of this.listFolders(id)) this.deleteFolder(folder.id);
+    this.db.prepare("DELETE FROM approvals WHERE approver_id = ?").run(id);
+    this.db.prepare("DELETE FROM push_subscriptions WHERE person_id = ?").run(id);
+    this.db.prepare("DELETE FROM usage WHERE owner_id = ?").run(id);
+    this.db.prepare("DELETE FROM events WHERE person_id = ?").run(id);
+    this.db.prepare("DELETE FROM people WHERE id = ?").run(id);
+    return bots;
   }
 
   // ---------- Bots ----------

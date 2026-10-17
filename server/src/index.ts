@@ -77,7 +77,8 @@ if (!ownerLogin()) {
 foldHousehold();
 // Bots from before multiple providers stored a plain model id, and Bots from before sign-ins an
 // API key provider's id; point them at the provider their model is in now.
-for (const bot of store.listBots()) {
+// (Members' Bots are on the members' provider, which never moved.)
+for (const bot of store.listBots(ADMIN_ID)) {
   const target = resolveModel(bot.model, { fallback: false });
   if (target && target.ref !== bot.model) store.updateBot(bot.id, { model: target.ref });
 }
@@ -151,7 +152,8 @@ const updater = new Updater({
   busy: () => store.listBots().filter((bot) => runner.isBotRunning(bot.id)).map((bot) => (bot.ownerId === ADMIN_ID ? bot.name : "a member's Bot")),
 });
 updater.start();
-app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access: resolve, models, modelSignIns, integrations, signIns, calls, nodes }));
+app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access: resolve, models, modelSignIns,
+  memberKey: { set: (key) => models.setMemberKey(key), clear: () => models.clearMemberKey() }, integrations, signIns, calls, nodes }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
