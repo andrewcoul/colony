@@ -2,10 +2,16 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "./db.js";
 import type { EventLog } from "./events.js";
 import { nextRun } from "./shared/schedule.js";
-import type { Approval, ApprovalRequest, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, PcCapability, PcNode, Presence, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
+import type { Approval, ApprovalRequest, ApprovalStatus, Artifact, ArtifactVersion, Attachment, Bot, Card, Chat, ChatFile, ComputerState, Delivery, Folder, Message, MessageStatus, PcCapability, PcNode, Presence, Role, Routine, Schedule, Step, TopicIcon } from "./shared/types.js";
 import { removeChatFolder } from "./chatFiles.js";
+import type { Person } from "./people.js";
 
 type Row = Record<string, unknown>;
+
+/** The admin's id ("owner": everything from before accounts is theirs). */
+const ADMIN = "owner";
+/** The audience of an event about something that's gone: nobody (null would be everyone). */
+const NOBODY = "";
 
 const toBot = (row: Row): Bot => ({
   id: row.id as string,
@@ -20,6 +26,17 @@ const toBot = (row: Row): Bot => ({
   presence: row.presence as Presence,
   activity: (row.activity as string | null) ?? null,
   chatId: row.chat_id as string,
+  ownerId: (row.owner_id as string | undefined) ?? ADMIN,
+  createdAt: row.created_at as number,
+});
+
+const toPerson = (row: Row): Person => ({
+  id: row.id as string,
+  // Only the owner is ever the admin, whatever an old row says.
+  role: (row.id === ADMIN ? "admin" : "member") satisfies Role,
+  name: row.name as string,
+  login: (row.login as string | null) ?? null,
+  color: row.color as string,
   createdAt: row.created_at as number,
 });
 
@@ -82,6 +99,7 @@ const toApproval = (row: Row): Approval => ({
   summary: row.summary as string,
   detail: row.detail as string,
   reason: row.reason as string,
+  approverId: (row.approver_id as string | undefined) ?? ADMIN,
   status: row.status as ApprovalStatus,
   createdAt: row.created_at as number,
   resolvedAt: (row.resolved_at as number | null) ?? null,
@@ -117,13 +135,53 @@ export function plainText(markdown: string) {
     .trim();
 }
 
-/** All persistent state. Every mutation emits the matching event. */
+/**
+ * All persistent state. Every mutation emits the matching event, addressed to the person whose
+ * thing it is (see EventLog): a Bot's and a chat's owner, an approval's approver.
+ */
 export class Store {
   constructor(private db: Db, private events: EventLog) {}
 
+  /** Whose chat this is (nobody's once it's gone). */
+  private chatOwner(chatId: string): string {
+    return (this.db.prepare("SELECT owner_id FROM chats WHERE id = ?").get(chatId) as Row | undefined)?.owner_id as string | undefined ?? NOBODY;
+  }
+
+  private botOwner(botId: string): string {
+    return (this.db.prepare("SELECT owner_id FROM bots WHERE id = ?").get(botId) as Row | undefined)?.owner_id as string | undefined ?? NOBODY;
+  }
+
+  // ---------- People ----------
+  /** The admin first, then members in the order they joined. */
+  listPeople(): Person[] {
+    return (this.db.prepare("SELECT * FROM people ORDER BY id <> 'owner', created_at").all() as Row[]).map(toPerson);
+  }
+
+  getPerson(id: string): Person | null {
+    const row = this.db.prepare("SELECT * FROM people WHERE id = ?").get(id) as Row | undefined;
+    return row ? toPerson(row) : null;
+  }
+
+  personByLogin(login: string): Person | null {
+    const row = this.db.prepare("SELECT * FROM people WHERE lower(login) = lower(?)").get(login) as Row | undefined;
+    return row ? toPerson(row) : null;
+  }
+
+  /** A new member. Nobody is ever added as the admin: there is one, from the start. */
+  addPerson(input: { login: string; name: string; color: string; role: "member" }): Person {
+    const id = newId();
+    this.db.prepare("INSERT INTO people (id, login, name, color, role, created_at) VALUES (?, ?, ?, ?, 'member', ?)")
+      .run(id, input.login.toLowerCase(), input.name, input.color, Date.now());
+    return this.getPerson(id)!;
+  }
+
   // ---------- Bots ----------
-  listBots(): Bot[] {
-    return (this.db.prepare("SELECT * FROM bots ORDER BY created_at").all() as Row[]).map(toBot);
+  /** Every Bot, or one person's. */
+  listBots(ownerId?: string): Bot[] {
+    const rows = ownerId
+      ? this.db.prepare("SELECT * FROM bots WHERE owner_id = ? ORDER BY created_at").all(ownerId)
+      : this.db.prepare("SELECT * FROM bots ORDER BY created_at").all();
+    return (rows as Row[]).map(toBot);
   }
 
   getBot(id: string): Bot | null {
@@ -131,16 +189,16 @@ export class Store {
     return row ? toBot(row) : null;
   }
 
-  createBot(input: { name: string; title: string; description: string; model: string; computer: boolean; desktop?: boolean; faceSeed?: string }): Bot {
+  createBot(input: { name: string; title: string; description: string; model: string; computer: boolean; desktop?: boolean; faceSeed?: string; ownerId: string }): Bot {
     const id = newId();
-    const chat = this.createChat({ kind: "bot", title: input.name, memberIds: [id], coordinatorId: id });
-    this.db.prepare(`INSERT INTO bots (id, name, title, description, face_seed, model, computer, desktop, chat_id, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    const chat = this.createChat({ kind: "bot", title: input.name, memberIds: [id], coordinatorId: id, ownerId: input.ownerId });
+    this.db.prepare(`INSERT INTO bots (id, name, title, description, face_seed, model, computer, desktop, chat_id, owner_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       id, input.name, input.title, input.description, input.faceSeed || input.name, input.model, input.computer ? 1 : 0,
-      input.computer && input.desktop ? 1 : 0, chat.id, Date.now(),
+      input.computer && input.desktop ? 1 : 0, chat.id, input.ownerId, Date.now(),
     );
     const bot = this.getBot(id)!;
-    this.events.emit({ type: "bot.upserted", bot });
+    this.events.emit({ type: "bot.upserted", bot }, bot.ownerId);
     return bot;
   }
 
@@ -154,7 +212,7 @@ export class Store {
       .run(next.name, next.title, next.description, next.faceSeed, next.model, next.computer ? 1 : 0, next.desktop ? 1 : 0, id);
     if (patch.name && patch.name !== bot.name) this.renameChat(bot.chatId, patch.name);
     const updated = this.getBot(id)!;
-    this.events.emit({ type: "bot.upserted", bot: updated });
+    this.events.emit({ type: "bot.upserted", bot: updated }, updated.ownerId);
     return updated;
   }
 
@@ -172,36 +230,23 @@ export class Store {
       if (chat && chat.memberIds.length <= 1) this.db.prepare("UPDATE chats SET archived_at = COALESCE(archived_at, ?) WHERE id = ?").run(Date.now(), chat.id);
       if (chat?.coordinatorId === id) this.db.prepare("UPDATE chats SET coordinator_id = (SELECT bot_id FROM chat_members WHERE chat_id = ? LIMIT 1) WHERE id = ?").run(chat.id, chat.id);
       const updated = this.getChat(row.chat_id as string);
-      if (updated) this.events.emit({ type: "chat.upserted", chat: updated });
+      if (updated) this.events.emit({ type: "chat.upserted", chat: updated }, updated.ownerId);
     }
-    this.events.emit({ type: "bot.deleted", botId: id });
-  }
-
-  /**
-   * Colony is single-user: removes what other people had in the family build (their Bots, topics
-   * and folders). Their accounts, PCs and sharing were removed by migration v18. Returns the ids of
-   * the Bots removed, so their folders and computers can go too. Does nothing once they're gone.
-   */
-  forgetOthers(): string[] {
-    const others = (this.db.prepare("SELECT id FROM bots WHERE owner_id <> 'owner'").all() as Row[]).map((row) => row.id as string);
-    for (const id of others) this.deleteBot(id);
-    for (const row of this.db.prepare("SELECT id FROM chats WHERE owner_id <> 'owner'").all() as Row[]) this.deleteChat(row.id as string);
-    for (const row of this.db.prepare("SELECT id FROM folders WHERE owner_id <> 'owner'").all() as Row[]) this.deleteFolder(row.id as string);
-    return others;
+    this.events.emit({ type: "bot.deleted", botId: id }, bot.ownerId);
   }
 
   setPresence(id: string, presence: Presence, activity: string | null = null) {
     const bot = this.getBot(id);
     if (!bot || (bot.presence === presence && bot.activity === activity)) return;
     this.db.prepare("UPDATE bots SET presence = ?, activity = ? WHERE id = ?").run(presence, activity, id);
-    this.events.emit({ type: "bot.presence", botId: id, presence, activity });
+    this.events.emit({ type: "bot.presence", botId: id, presence, activity }, bot.ownerId);
   }
 
   setComputerState(id: string, state: ComputerState) {
     const bot = this.getBot(id);
     if (!bot || bot.computerState === state) return;
     this.db.prepare("UPDATE bots SET computer_state = ? WHERE id = ?").run(state, id);
-    this.events.emit({ type: "bot.upserted", bot: { ...bot, computerState: state } });
+    this.events.emit({ type: "bot.upserted", bot: { ...bot, computerState: state } }, bot.ownerId);
   }
 
   // ---------- Chats ----------
@@ -224,11 +269,16 @@ export class Store {
       lastAuthor: (row.last_author as string | null) ?? null,
       updatedAt: row.updated_at as number,
       unread: row.unread as number,
+      ownerId: (row.owner_id as string | undefined) ?? ADMIN,
     };
   }
 
-  listChats(): Chat[] {
-    return (this.db.prepare("SELECT * FROM chats ORDER BY updated_at DESC").all() as Row[]).map((row) => this.toChat(row));
+  /** Every chat, or one person's. */
+  listChats(ownerId?: string): Chat[] {
+    const rows = ownerId
+      ? this.db.prepare("SELECT * FROM chats WHERE owner_id = ? ORDER BY updated_at DESC").all(ownerId)
+      : this.db.prepare("SELECT * FROM chats ORDER BY updated_at DESC").all();
+    return (rows as Row[]).map((row) => this.toChat(row));
   }
 
   getChat(id: string): Chat | null {
@@ -236,14 +286,25 @@ export class Store {
     return row ? this.toChat(row) : null;
   }
 
-  createChat(input: { kind: Chat["kind"]; title: string; memberIds: string[]; coordinatorId: string | null; icon?: TopicIcon; folderId?: string | null; brief?: string }): Chat {
+  /**
+   * A new chat, owned by `ownerId`. Its Bots must all be theirs: there are no shared topics.
+   * (A Bot's own chat is made before the Bot, so its one member isn't in the table yet.)
+   */
+  createChat(input: { kind: Chat["kind"]; title: string; memberIds: string[]; coordinatorId: string | null; icon?: TopicIcon; folderId?: string | null; brief?: string; ownerId: string }): Chat {
+    if (input.kind !== "bot") this.assertTheirs(input.ownerId, input.memberIds, input.folderId);
     const id = newId();
-    this.db.prepare("INSERT INTO chats (id, kind, title, coordinator_id, icon, folder_id, brief, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(id, input.kind, input.title, input.coordinatorId, input.icon ?? null, input.folderId ?? null, input.brief ?? "", Date.now());
+    this.db.prepare("INSERT INTO chats (id, kind, title, coordinator_id, icon, folder_id, brief, owner_id, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, input.kind, input.title, input.coordinatorId, input.icon ?? null, input.folderId ?? null, input.brief ?? "", input.ownerId, Date.now());
     for (const botId of input.memberIds) this.db.prepare("INSERT INTO chat_members (chat_id, bot_id) VALUES (?, ?)").run(id, botId);
     const chat = this.getChat(id)!;
-    this.events.emit({ type: "chat.upserted", chat });
+    this.events.emit({ type: "chat.upserted", chat }, chat.ownerId);
     return chat;
+  }
+
+  /** The last line of defence against sharing: a chat's Bots and folder are its owner's. */
+  private assertTheirs(ownerId: string, botIds: string[], folderId?: string | null) {
+    if (botIds.some((botId) => this.botOwner(botId) !== ownerId)) throw new Error("A chat can only have its owner's own Bots in it.");
+    if (folderId && this.getFolder(folderId)?.ownerId !== ownerId) throw new Error("That folder doesn't exist.");
   }
 
   /** The private thread between two Bots, if they've talked before. */
@@ -258,12 +319,13 @@ export class Store {
   private renameChat(id: string, title: string) {
     this.db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(title, id);
     const chat = this.getChat(id);
-    if (chat) this.events.emit({ type: "chat.upserted", chat });
+    if (chat) this.events.emit({ type: "chat.upserted", chat }, chat.ownerId);
   }
 
   updateTopic(id: string, patch: { title?: string; icon?: TopicIcon; brief?: string; folderId?: string | null; archived?: boolean; memberIds?: string[]; coordinatorId?: string | null }) {
     const chat = this.getChat(id);
     if (!chat || chat.kind !== "topic") return null;
+    this.assertTheirs(chat.ownerId, patch.memberIds ?? [], patch.folderId);
     if (patch.title !== undefined) this.db.prepare("UPDATE chats SET title = ? WHERE id = ?").run(patch.title, id);
     if (patch.icon !== undefined) this.db.prepare("UPDATE chats SET icon = ? WHERE id = ?").run(patch.icon, id);
     if (patch.brief !== undefined) this.db.prepare("UPDATE chats SET brief = ? WHERE id = ?").run(patch.brief, id);
@@ -275,7 +337,7 @@ export class Store {
       for (const botId of patch.memberIds) this.db.prepare("INSERT INTO chat_members (chat_id, bot_id) VALUES (?, ?)").run(id, botId);
     }
     const updated = this.getChat(id)!;
-    this.events.emit({ type: "chat.upserted", chat: updated });
+    this.events.emit({ type: "chat.upserted", chat: updated }, updated.ownerId);
     return updated;
   }
 
@@ -300,7 +362,7 @@ export class Store {
       .run(next.id, chatId, next.title, next.status, next.body, next.version, next.note, next.updatedBy, now);
     this.db.prepare(`INSERT INTO artifact_versions (artifact_id, version, title, status, body, note, updated_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(next.id, next.version, next.title, next.status, next.body, next.note, next.updatedBy, now);
-    this.events.emit({ type: "artifact.upserted", artifact: next });
+    this.events.emit({ type: "artifact.upserted", artifact: next }, this.chatOwner(chatId));
     return next;
   }
 
@@ -317,7 +379,7 @@ export class Store {
     const file: ChatFile = { ...input, id: newId(), createdAt: Date.now() };
     this.db.prepare("INSERT INTO chat_files (id, chat_id, name, mime, size, added_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(file.id, file.chatId, file.name, file.mime, file.size, file.addedBy, file.createdAt);
-    this.events.emit({ type: "file.upserted", file });
+    this.events.emit({ type: "file.upserted", file }, this.chatOwner(file.chatId));
     return file;
   }
 
@@ -334,21 +396,21 @@ export class Store {
     const file = this.getFile(id);
     if (!file) return null;
     this.db.prepare("DELETE FROM chat_files WHERE id = ?").run(id);
-    this.events.emit({ type: "file.deleted", chatId: file.chatId, fileId: id });
+    this.events.emit({ type: "file.deleted", chatId: file.chatId, fileId: id }, this.chatOwner(file.chatId));
     return file;
   }
 
   // ---------- Spending ----------
+  /** One model call's usage, counted against the owner of the Bot that made it. */
   recordUsage(entry: Omit<UsageRow, "id" | "at">, at = Date.now()) {
-    // owner_id is left from the family build (dropped in a later migration).
     this.db.prepare(`INSERT INTO usage (id, at, bot_id, owner_id, provider_id, model, input_tokens, output_tokens, cached_tokens, cost_micros)
-      VALUES (?, ?, ?, 'owner', ?, ?, ?, ?, ?, ?)`)
-      .run(newId(), at, entry.botId, entry.providerId, entry.model, entry.inputTokens, entry.outputTokens, entry.cachedTokens, entry.costMicros);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(newId(), at, entry.botId, this.botOwner(entry.botId), entry.providerId, entry.model, entry.inputTokens, entry.outputTokens, entry.cachedTokens, entry.costMicros);
   }
 
-  /** Usage since a time, oldest first. */
-  listUsage(since: number): UsageRow[] {
-    return (this.db.prepare("SELECT * FROM usage WHERE at >= ? ORDER BY at").all(since) as Row[]).map((row) => ({
+  /** One person's usage since a time, oldest first. */
+  listUsage(since: number, ownerId: string): UsageRow[] {
+    return (this.db.prepare("SELECT * FROM usage WHERE at >= ? AND owner_id = ? ORDER BY at").all(since, ownerId) as Row[]).map((row) => ({
       id: row.id as string, at: row.at as number, botId: row.bot_id as string, providerId: row.provider_id as string,
       model: row.model as string, inputTokens: row.input_tokens as number,
       outputTokens: row.output_tokens as number, cachedTokens: row.cached_tokens as number, costMicros: (row.cost_micros as number | null) ?? null,
@@ -356,9 +418,9 @@ export class Store {
   }
 
   // ---------- PCs (nodes) ----------
-  /** Known PCs, most recently seen first. `online` is filled in by the node hub. */
+  /** The admin's PCs (lending a PC is the admin's), most recently seen first. `online` is filled in by the node hub. */
   listNodes(): Omit<PcNode, "online">[] {
-    return (this.db.prepare("SELECT * FROM nodes ORDER BY last_seen DESC").all() as Row[]).map((row) => ({
+    return (this.db.prepare("SELECT * FROM nodes WHERE person_id = 'owner' ORDER BY last_seen DESC").all() as Row[]).map((row) => ({
       id: row.id as string, name: row.name as string, platform: row.platform as string,
       capabilities: JSON.parse(row.capabilities as string) as PcCapability[], lastSeen: row.last_seen as number,
     }));
@@ -375,9 +437,13 @@ export class Store {
   }
 
   // ---------- Folders ----------
-  listFolders(): Folder[] {
-    return (this.db.prepare("SELECT * FROM folders ORDER BY position, created_at").all() as Row[]).map((row) => ({
-      id: row.id as string, title: row.title as string, position: row.position as number, createdAt: row.created_at as number,
+  /** Every folder, or one person's. */
+  listFolders(ownerId?: string): Folder[] {
+    const rows = ownerId
+      ? this.db.prepare("SELECT * FROM folders WHERE owner_id = ? ORDER BY position, created_at").all(ownerId)
+      : this.db.prepare("SELECT * FROM folders ORDER BY position, created_at").all();
+    return (rows as Row[]).map((row) => ({
+      id: row.id as string, title: row.title as string, position: row.position as number, ownerId: (row.owner_id as string | undefined) ?? ADMIN, createdAt: row.created_at as number,
     }));
   }
 
@@ -385,12 +451,12 @@ export class Store {
     return this.listFolders().find((folder) => folder.id === id) ?? null;
   }
 
-  createFolder(title: string): Folder {
+  createFolder(title: string, ownerId: string): Folder {
     const id = newId();
-    const position = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM folders").get() as { next: number }).next;
-    this.db.prepare("INSERT INTO folders (id, title, position, created_at) VALUES (?, ?, ?, ?)").run(id, title, position, Date.now());
+    const position = (this.db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS next FROM folders WHERE owner_id = ?").get(ownerId) as { next: number }).next;
+    this.db.prepare("INSERT INTO folders (id, title, position, owner_id, created_at) VALUES (?, ?, ?, ?, ?)").run(id, title, position, ownerId, Date.now());
     const folder = this.getFolder(id)!;
-    this.events.emit({ type: "folder.upserted", folder });
+    this.events.emit({ type: "folder.upserted", folder }, folder.ownerId);
     return folder;
   }
 
@@ -399,20 +465,23 @@ export class Store {
     if (patch.title !== undefined) this.db.prepare("UPDATE folders SET title = ? WHERE id = ?").run(patch.title, id);
     if (patch.position !== undefined) this.db.prepare("UPDATE folders SET position = ? WHERE id = ?").run(patch.position, id);
     const folder = this.getFolder(id)!;
-    this.events.emit({ type: "folder.upserted", folder });
+    this.events.emit({ type: "folder.upserted", folder }, folder.ownerId);
     return folder;
   }
 
   /** Topics in a deleted folder stay; they just aren't filed any more. */
   deleteFolder(id: string) {
+    const folder = this.getFolder(id);
+    if (!folder) return;
     const filed = this.db.prepare("SELECT id FROM chats WHERE folder_id = ?").all(id) as Row[];
     this.db.prepare("UPDATE chats SET folder_id = NULL WHERE folder_id = ?").run(id);
     this.db.prepare("DELETE FROM folders WHERE id = ?").run(id);
-    for (const row of filed) { const chat = this.getChat(row.id as string); if (chat) this.events.emit({ type: "chat.upserted", chat }); }
-    this.events.emit({ type: "folder.deleted", folderId: id });
+    for (const row of filed) { const chat = this.getChat(row.id as string); if (chat) this.events.emit({ type: "chat.upserted", chat }, chat.ownerId); }
+    this.events.emit({ type: "folder.deleted", folderId: id }, folder.ownerId);
   }
 
   deleteChat(id: string) {
+    const ownerId = this.chatOwner(id);
     // Routines that posted to a deleted topic fall back to their Bot's own chat.
     for (const row of this.db.prepare("SELECT id, bot_id FROM routines WHERE chat_id = ?").all(id) as Row[]) {
       const bot = this.getBot(row.bot_id as string);
@@ -427,13 +496,13 @@ export class Store {
     this.db.prepare("DELETE FROM conversations WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chat_members WHERE chat_id = ?").run(id);
     this.db.prepare("DELETE FROM chats WHERE id = ?").run(id);
-    this.events.emit({ type: "chat.deleted", chatId: id });
+    this.events.emit({ type: "chat.deleted", chatId: id }, ownerId);
   }
 
   markRead(id: string) {
     this.db.prepare("UPDATE chats SET unread = 0 WHERE id = ?").run(id);
     const chat = this.getChat(id);
-    if (chat) this.events.emit({ type: "chat.upserted", chat });
+    if (chat) this.events.emit({ type: "chat.upserted", chat }, chat.ownerId);
   }
 
   private touchChat(message: Message) {
@@ -444,7 +513,7 @@ export class Store {
     this.db.prepare(`UPDATE chats SET last_preview = ?, last_author = ?, updated_at = ?, unread = unread + ? WHERE id = ?`)
       .run(preview, message.author, Date.now(), fromBot && !thread && message.status !== "streaming" ? 1 : 0, message.chatId);
     const chat = this.getChat(message.chatId);
-    if (chat) this.events.emit({ type: "chat.upserted", chat });
+    if (chat) this.events.emit({ type: "chat.upserted", chat }, chat.ownerId);
   }
 
   // ---------- Messages ----------
@@ -467,7 +536,7 @@ export class Store {
     this.db.prepare(`INSERT INTO messages (id, chat_id, author, text, cards, status, delivery, attachments, via, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, input.chatId, input.author, input.text ?? "", JSON.stringify(input.cards ?? []), input.status ?? "done", input.delivery ?? null, JSON.stringify(input.attachments ?? []), input.via ?? null, createdAt);
     const message = this.getMessage(id)!;
-    this.events.emit({ type: "message.upserted", message });
+    this.events.emit({ type: "message.upserted", message }, this.chatOwner(message.chatId));
     if (message.status !== "streaming") this.touchChat(message);
     return message;
   }
@@ -478,7 +547,7 @@ export class Store {
     const next = { ...message, ...patch };
     this.db.prepare(`UPDATE messages SET text = ?, reasoning = ?, steps = ?, cards = ?, status = ?, error = ?, delivery = ?, steered_at = ? WHERE id = ?`)
       .run(next.text, next.reasoning, JSON.stringify(next.steps), JSON.stringify(next.cards), next.status, next.error, next.delivery, next.steeredAt, id);
-    if (options.emit !== false) this.events.emit({ type: "message.upserted", message: next });
+    if (options.emit !== false) this.events.emit({ type: "message.upserted", message: next }, this.chatOwner(next.chatId));
     if (message.status === "streaming" && next.status !== "streaming") this.touchChat(next);
     return next;
   }
@@ -488,7 +557,7 @@ export class Store {
     const message = this.getMessage(id);
     if (!message) return;
     this.db.prepare("DELETE FROM messages WHERE id = ?").run(id);
-    this.events.emit({ type: "message.deleted", chatId: message.chatId, messageId: id });
+    this.events.emit({ type: "message.deleted", chatId: message.chatId, messageId: id }, this.chatOwner(message.chatId));
   }
 
   appendCard(messageId: string, card: Card) {
@@ -517,6 +586,11 @@ export class Store {
     return (rows as Row[]).map(toRoutine);
   }
 
+  /** The routines of one person's Bots. */
+  routinesOf(ownerId: string): Routine[] {
+    return (this.db.prepare("SELECT r.* FROM routines r JOIN bots b ON b.id = r.bot_id WHERE b.owner_id = ? ORDER BY r.created_at").all(ownerId) as Row[]).map(toRoutine);
+  }
+
   getRoutine(id: string): Routine | null {
     const row = this.db.prepare("SELECT * FROM routines WHERE id = ?").get(id) as Row | undefined;
     return row ? toRoutine(row) : null;
@@ -533,7 +607,7 @@ export class Store {
       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`)
       .run(id, input.botId, input.chatId, input.title, input.prompt, JSON.stringify(input.schedule), nextRun(input.schedule, now), now);
     const routine = this.getRoutine(id)!;
-    this.events.emit({ type: "routine.upserted", routine });
+    this.events.emit({ type: "routine.upserted", routine }, this.botOwner(routine.botId));
     return routine;
   }
 
@@ -546,23 +620,30 @@ export class Store {
     this.db.prepare(`UPDATE routines SET chat_id = ?, title = ?, prompt = ?, schedule = ?, enabled = ?, next_run_at = ?, last_run_at = ?, last_status = ? WHERE id = ?`)
       .run(next.chatId, next.title, next.prompt, JSON.stringify(next.schedule), next.enabled ? 1 : 0, next.nextRunAt, next.lastRunAt, next.lastStatus, id);
     const updated = this.getRoutine(id)!;
-    this.events.emit({ type: "routine.upserted", routine: updated });
+    this.events.emit({ type: "routine.upserted", routine: updated }, this.botOwner(updated.botId));
     return updated;
   }
 
   deleteRoutine(id: string) {
+    const routine = this.getRoutine(id);
+    if (!routine) return;
     this.db.prepare("DELETE FROM routines WHERE id = ?").run(id);
-    this.events.emit({ type: "routine.deleted", routineId: id });
+    // The Bot may already be gone (deleteBot removes its routines after it).
+    const ownerId = this.botOwner(routine.botId);
+    this.events.emit({ type: "routine.deleted", routineId: id }, ownerId === NOBODY ? this.chatOwner(routine.chatId) : ownerId);
   }
 
   // ---------- Approvals ----------
+  /** Asks the owner of the Bot that wants to act: only they can answer. */
   createApproval(input: ApprovalRequest): Approval {
     const id = newId();
-    this.db.prepare(`INSERT INTO approvals (id, bot_id, chat_id, message_id, tool, summary, detail, reason, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
-      .run(id, input.botId, input.chatId, input.messageId, input.tool, input.summary, input.detail, input.reason, Date.now());
+    const approverId = this.botOwner(input.botId);
+    if (approverId === NOBODY) throw new Error("That Bot no longer exists.");
+    this.db.prepare(`INSERT INTO approvals (id, bot_id, chat_id, message_id, tool, summary, detail, reason, approver_id, status, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`)
+      .run(id, input.botId, input.chatId, input.messageId, input.tool, input.summary, input.detail, input.reason, approverId, Date.now());
     const approval = this.getApproval(id)!;
-    this.events.emit({ type: "approval.upserted", approval });
+    this.events.emit({ type: "approval.upserted", approval }, approval.approverId);
     return approval;
   }
 
@@ -578,12 +659,17 @@ export class Store {
     return (rows as Row[]).map(toApproval);
   }
 
+  /** The approvals waiting for (or recently answered by) one person, newest first. */
+  approvalsFor(approverId: string): Approval[] {
+    return (this.db.prepare("SELECT * FROM approvals WHERE approver_id = ? ORDER BY created_at DESC LIMIT 200").all(approverId) as Row[]).map(toApproval);
+  }
+
   resolveApproval(id: string, status: Exclude<ApprovalStatus, "pending">): Approval | null {
     const approval = this.getApproval(id);
     if (!approval || approval.status !== "pending") return approval;
     this.db.prepare("UPDATE approvals SET status = ?, resolved_at = ? WHERE id = ?").run(status, Date.now(), id);
     const resolved = this.getApproval(id)!;
-    this.events.emit({ type: "approval.upserted", approval: resolved });
+    this.events.emit({ type: "approval.upserted", approval: resolved }, resolved.approverId);
     return resolved;
   }
 

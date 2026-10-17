@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { config } from "./config.js";
+import { aboutFile } from "./people.js";
 import type { Bot } from "./shared/types.js";
 
 /*
  * Bots live on disk so you can read, back up, and hand-edit them (borrowed from Hermes):
- *   data/USER.md                       what every Bot knows about you
+ *   data/USER.md                       what the admin's Bots know about the admin
+ *   data/people/<person>/USER.md       what a member's Bots know about that member
  *   data/bots/<id>/SOUL.md             persona and standing instructions
  *   data/bots/<id>/MEMORY.md           notes the Bot curates itself (character-capped)
  *   data/bots/<id>/skills/<slug>/SKILL.md   reusable procedures (agentskills.io format)
@@ -20,7 +22,6 @@ export function workspaceDir(botId: string) {
   return path.join(botDir(botId), "workspace");
 }
 
-const userFile = () => path.join(config.dataDir, "USER.md");
 const soulFile = (botId: string) => path.join(botDir(botId), "SOUL.md");
 const memoryFile = (botId: string) => path.join(botDir(botId), "MEMORY.md");
 const skillsDir = (botId: string) => path.join(botDir(botId), "skills");
@@ -53,51 +54,53 @@ export const writeSoul = (botId: string, content: string) => write(soulFile(botI
 // ---------- Memory: bullet entries with a hard character budget ----------
 
 export type MemoryTarget = "memory" | "user";
+/** A Bot's memory is its own; what it knows about "the user" is its owner's USER.md, shared by their Bots. */
+export type MemoryOwner = Pick<Bot, "id" | "ownerId">;
 
-const memoryPath = (botId: string, target: MemoryTarget) => (target === "user" ? userFile() : memoryFile(botId));
+const memoryPath = (bot: MemoryOwner, target: MemoryTarget) => (target === "user" ? aboutFile(bot.ownerId) : memoryFile(bot.id));
 const memoryBudget = (target: MemoryTarget) => (target === "user" ? config.limits.userChars : config.limits.memoryChars);
 
-export function readEntries(botId: string, target: MemoryTarget): string[] {
-  return read(memoryPath(botId, target)).split("\n").map((line) => line.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean);
+export function readEntries(bot: MemoryOwner, target: MemoryTarget): string[] {
+  return read(memoryPath(bot, target)).split("\n").map((line) => line.replace(/^\s*[-*]\s+/, "").trim()).filter(Boolean);
 }
 
-function writeEntries(botId: string, target: MemoryTarget, entries: string[]) {
+function writeEntries(bot: MemoryOwner, target: MemoryTarget, entries: string[]) {
   const content = entries.map((entry) => `- ${entry}`).join("\n");
   if (content.length > memoryBudget(target)) {
     throw new Error(`That would exceed the ${memoryBudget(target)}-character ${target} budget (${content.length}). Consolidate or remove entries first.`);
   }
-  write(memoryPath(botId, target), content + (content ? "\n" : ""));
+  write(memoryPath(bot, target), content + (content ? "\n" : ""));
 }
 
-export function memoryUsage(botId: string, target: MemoryTarget) {
-  const used = readEntries(botId, target).map((entry) => `- ${entry}`).join("\n").length;
+export function memoryUsage(bot: MemoryOwner, target: MemoryTarget) {
+  const used = readEntries(bot, target).map((entry) => `- ${entry}`).join("\n").length;
   return { used, budget: memoryBudget(target) };
 }
 
-export function addEntry(botId: string, target: MemoryTarget, entry: string) {
+export function addEntry(bot: MemoryOwner, target: MemoryTarget, entry: string) {
   const clean = entry.replace(/\s+/g, " ").trim();
   if (!clean) throw new Error("Entry is empty.");
-  const entries = readEntries(botId, target);
+  const entries = readEntries(bot, target);
   if (entries.includes(clean)) return entries;
-  writeEntries(botId, target, [...entries, clean]);
-  return readEntries(botId, target);
+  writeEntries(bot, target, [...entries, clean]);
+  return readEntries(bot, target);
 }
 
 /** Replaces the single entry containing `match` (case-insensitive substring). */
-export function replaceEntry(botId: string, target: MemoryTarget, match: string, entry: string) {
-  const entries = readEntries(botId, target);
+export function replaceEntry(bot: MemoryOwner, target: MemoryTarget, match: string, entry: string) {
+  const entries = readEntries(bot, target);
   const hits = entries.filter((item) => item.toLowerCase().includes(match.toLowerCase()));
   if (hits.length !== 1) throw new Error(hits.length ? `"${match}" matches ${hits.length} entries; be more specific.` : `No entry contains "${match}".`);
-  writeEntries(botId, target, entries.map((item) => (item === hits[0] ? entry.replace(/\s+/g, " ").trim() : item)));
-  return readEntries(botId, target);
+  writeEntries(bot, target, entries.map((item) => (item === hits[0] ? entry.replace(/\s+/g, " ").trim() : item)));
+  return readEntries(bot, target);
 }
 
-export function removeEntry(botId: string, target: MemoryTarget, match: string) {
-  const entries = readEntries(botId, target);
+export function removeEntry(bot: MemoryOwner, target: MemoryTarget, match: string) {
+  const entries = readEntries(bot, target);
   const hits = entries.filter((item) => item.toLowerCase().includes(match.toLowerCase()));
   if (hits.length !== 1) throw new Error(hits.length ? `"${match}" matches ${hits.length} entries; be more specific.` : `No entry contains "${match}".`);
-  writeEntries(botId, target, entries.filter((item) => item !== hits[0]));
-  return readEntries(botId, target);
+  writeEntries(bot, target, entries.filter((item) => item !== hits[0]));
+  return readEntries(bot, target);
 }
 
 // ---------- Skills: SKILL.md with YAML-ish frontmatter (name, description) ----------
@@ -141,10 +144,10 @@ export function deleteSkill(botId: string, slug: string) {
 }
 
 /** Removes an entry by its exact text (for the app; Bots use removeEntry's substring match). */
-export function removeExactEntry(botId: string, target: MemoryTarget, entry: string) {
-  const entries = readEntries(botId, target);
+export function removeExactEntry(bot: MemoryOwner, target: MemoryTarget, entry: string) {
+  const entries = readEntries(bot, target);
   if (!entries.includes(entry)) return false;
-  writeEntries(botId, target, entries.filter((item) => item !== entry));
+  writeEntries(bot, target, entries.filter((item) => item !== entry));
   return true;
 }
 

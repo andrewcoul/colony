@@ -66,7 +66,16 @@ const DEFAULT_VOICE: VoiceSettings = {
 export const OPENAI_AUDIO = "https://api.openai.com/v1";
 /** Voice as devices see it: the key stays here, only its last four characters go out. */
 export type VoiceView = VoiceSettings & { keySet: boolean; keyHint: string | null };
-export type SettingsView = { providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
+/** Settings as the admin sees them: everything, to change. */
+export type SettingsView = { role: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
+/**
+ * Settings as a member sees them: the models they may give their Bots, and whether voice is on.
+ * Nothing about sign-ins, keys or where voice goes.
+ */
+export type MemberSettingsView = {
+  role: "member"; models: ModelOption[]; defaultModel: string; configured: boolean;
+  voice: { on: boolean; allowCalls: boolean; quietFrom: string; quietTo: string };
+};
 
 /**
  * Bots point at "<provider id>::<model id>". Model ids often contain "/" or ":"
@@ -241,6 +250,38 @@ export function modelOptions(): ModelOption[] {
   })));
 }
 
+// ---------- What members may use ----------
+type Someone = { id: string; role: "admin" | "member" };
+
+/**
+ * Whether a member may give their Bots one of the admin's models. A placeholder: every model the
+ * admin picked is allowed until the admin can choose, per member, which ones (the next phase).
+ */
+export function memberMayUse(_personId: string, _model: ModelOption): boolean {
+  return true;
+}
+
+/** The models this person's Bots may use: all of them for the admin, the allowed ones for a member. */
+export const modelOptionsFor = (person: Someone) =>
+  person.role === "admin" ? modelOptions() : modelOptions().filter((option) => memberMayUse(person.id, option));
+
+/** The default for this person's new Bots: the Colony's default if they may use it, else their first model. */
+export function defaultModelFor(person: Someone) {
+  const options = modelOptionsFor(person);
+  const fallback = defaultModel();
+  return options.some((option) => option.ref === fallback) ? fallback : options[0]?.ref ?? "";
+}
+
+/** resolveModel, within the models this person may use (falling back to their default unless `fallback` is false). */
+export function resolveModelFor(person: Someone, requested: string | undefined, { fallback = true }: { fallback?: boolean } = {}): ModelTarget | null {
+  const allowed = new Set(modelOptionsFor(person).map((option) => option.ref));
+  const target = resolveModel(requested, { fallback: false });
+  if (target && allowed.has(target.ref)) return target;
+  if (!fallback) return null;
+  const mine = resolveModel(defaultModelFor(person), { fallback: false });
+  return mine && allowed.has(mine.ref) ? mine : null;
+}
+
 /** Every provider. */
 export const listProviders = (): readonly Provider[] => providers;
 export const providerById = (id: string) => providerOf(id) ?? null;
@@ -302,6 +343,7 @@ export function voiceEndpoint(): { baseURL: string; apiKey: string } | null {
 /** Settings as devices see them (the voice key never leaves; only its last four characters). */
 export function settingsView(): SettingsView {
   return {
+    role: "admin",
     providers: providers.map((provider) => {
       const { prices: _, baseURL: __, ...rest } = provider;
       const prices = Object.fromEntries(provider.models.flatMap((model) => { const price = priceOf(provider, model); return price ? [[model, price]] : []; }));
@@ -311,6 +353,16 @@ export function settingsView(): SettingsView {
     defaultModel: defaultModel(),
     configured: modelConfigured(),
     voice: { ...voice, keySet: Boolean(voiceKey), keyHint: voiceKey.length >= 12 ? voiceKey.slice(-4) : null },
+  };
+}
+
+/** A member's reduced settings. */
+export function memberSettingsView(person: Someone): MemberSettingsView {
+  const models = modelOptionsFor(person);
+  const preferred = defaultModelFor(person);
+  return {
+    role: "member", models, defaultModel: preferred, configured: Boolean(resolveModelFor(person, preferred, { fallback: false })),
+    voice: { on: Boolean(voice.baseURL), allowCalls: voice.allowCalls, quietFrom: voice.quietFrom, quietTo: voice.quietTo },
   };
 }
 

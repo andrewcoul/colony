@@ -44,6 +44,8 @@ type PiRun = {
   id: string;
   chatId: string;
   botId: string;
+  /** The Bot's owner: the only person who sees this turn as it streams. */
+  ownerId: string;
   conversationId: ConversationId;
   /** The reply being written now. */
   messageId: string;
@@ -300,7 +302,7 @@ export class PiRunner implements Runner {
     if (this.active.has(key)) throw new Error(`${bot.name} is already working in this chat.`);
     const message = this.store.createMessage({ chatId, author: botId, status: "streaming", cards: options.cards });
     const run = this.newRun({ id: message.id, chatId, botId, messageId: message.id, options, startedAt: Date.now() });
-    const asker = options.depth ? this.store.listBots().find((item) => item.id !== botId && chat.memberIds.includes(item.id)) : undefined;
+    const asker = options.depth ? this.store.listBots(bot.ownerId).find((item) => item.id !== botId && chat.memberIds.includes(item.id)) : undefined;
     this.store.setPresence(botId, "thinking", asker ? `Helping ${asker.name}` : "Thinking");
     void this.execute(run, false).finally(() => this.finished(run));
     return message.id;
@@ -310,7 +312,7 @@ export class PiRunner implements Runner {
     let finish!: () => void;
     const done = new Promise<void>((resolve) => { finish = resolve; });
     const run: PiRun = {
-      id: input.id, chatId: input.chatId, botId: input.botId, conversationId: 0 as ConversationId, messageId: input.messageId, messageIds: [input.messageId],
+      id: input.id, chatId: input.chatId, botId: input.botId, ownerId: this.store.getBot(input.botId)?.ownerId ?? "", conversationId: 0 as ConversationId, messageId: input.messageId, messageIds: [input.messageId],
       text: input.text ?? "", reasoning: input.reasoning ?? "", steps: input.steps ?? [], stepsBefore: input.stepsBefore ?? 0, afterTool: false,
       startedAt: input.startedAt, controller: new AbortController(), options: input.options, target: null as never, registry: {}, ctx: null as never,
       queued: [], steers: new Map(), outputs: new Map(), shown: new Map(), done, finish, lastSave: 0,
@@ -356,7 +358,7 @@ export class PiRunner implements Runner {
       .filter((message) => fresh || (message.createdAt >= createdAt && message.author !== bot.id));
     const seen = this.store.seenBy(String(conversationId), recent.map((message) => message.id));
     const pending = recent.filter((message) => !seen.has(message.id));
-    const names = new Map(this.store.listBots().map((item) => [item.id, item.name]));
+    const names = new Map(this.store.listBots(bot.ownerId).map((item) => [item.id, item.name]));
     const sees = this.models.models.getModel(this.models.ref(run.target).provider, run.target.model)?.input.includes("image") ?? false;
     const photos = new Set(pending.filter((item) => isHuman(item.author) && item.attachments.length).slice(-4).map((item) => item.id));
     const history = historyFor(bot, pending, names, sees ? (message) => (photos.has(message.id) ? photosOf(message, this.store) : []) : undefined);
@@ -482,7 +484,8 @@ export class PiRunner implements Runner {
 
   /** The model, tools and system prompt for this turn. */
   private async configure(conversation: Conversation, run: PiRun, bot: NonNullable<ReturnType<Store["getBot"]>>, chat: NonNullable<ReturnType<Store["getChat"]>>) {
-    const bots = this.store.listBots();
+    // A Bot's team is its owner's other Bots; nobody else's.
+    const bots = this.store.listBots(bot.ownerId);
     const others = bots.filter((item) => chat.memberIds.includes(item.id) && item.id !== bot.id);
     const ref = this.models.ref(run.target);
     const model = this.models.models.getModel(ref.provider, ref.modelId);
@@ -640,7 +643,7 @@ export class PiRunner implements Runner {
     run.shown.set(key, full);
     if (kind === "thinking") {
       run.reasoning += added;
-      this.events.broadcast({ type: "message.delta", messageId: run.messageId, chatId: run.chatId, text: "", reasoning: added });
+      this.events.broadcast({ type: "message.delta", messageId: run.messageId, chatId: run.chatId, text: "", reasoning: added }, run.ownerId);
       this.save(run);
       return;
     }
@@ -649,7 +652,7 @@ export class PiRunner implements Runner {
     if (added.trim()) run.afterTool = false;
     run.text += delta;
     this.store.setPresence(run.botId, "working", "Writing a reply");
-    this.events.broadcast({ type: "message.delta", messageId: run.messageId, chatId: run.chatId, text: delta });
+    this.events.broadcast({ type: "message.delta", messageId: run.messageId, chatId: run.chatId, text: delta }, run.ownerId);
     this.save(run);
   }
 
@@ -713,9 +716,10 @@ export class PiRunner implements Runner {
     const conversation = await this.conversation(Number(at.conversationId) as ConversationId);
     if (!conversation) throw new Error("That conversation is gone.");
     const fork = await conversation.fork(Number(at.entryId) as never, { ownership: { kind: "ownerless" } }, this.context);
+    // The branch is the source chat's owner's, as is the Bot.
     const chat = this.store.createChat({
       kind: "topic", title: topic.title, icon: "chat", folderId: topic.folderId, memberIds: [bot.id], coordinatorId: bot.id,
-      brief: `Branched from "${source.title}".`,
+      brief: `Branched from "${source.title}".`, ownerId: source.ownerId,
     });
     this.store.linkConversation(chat.id, bot.id, String(fork.id));
     const when = new Date(message.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" });
@@ -733,8 +737,10 @@ export class PiRunner implements Runner {
     const from = this.store.getBot(fromId);
     const to = this.store.getBot(toId);
     if (!from || !to) throw new Error("That Bot no longer exists.");
+    // Bots only ever talk to their own owner's other Bots.
+    if (from.ownerId !== to.ownerId) throw new Error("That Bot isn't on your team.");
     const thread = this.store.findThread(fromId, toId)
-      ?? this.store.createChat({ kind: "thread", title: `${from.name} & ${to.name}`, memberIds: [fromId, toId], coordinatorId: null });
+      ?? this.store.createChat({ kind: "thread", title: `${from.name} & ${to.name}`, memberIds: [fromId, toId], coordinatorId: null, ownerId: from.ownerId });
     const asked = await memo?.<{ replyId: string }>("consult");
     let replyId = asked?.replyId;
     if (!replyId) {

@@ -106,6 +106,13 @@ function toSchedule(input: z.infer<typeof scheduleInput>, ctx: ToolContext): Sch
   return { type: "once", at };
 }
 
+/** The person whose Bot is acting. Everything a tool touches is theirs. */
+function ownerOf(ctx: ToolContext) {
+  const ownerId = ctx.store.getBot(ctx.botId)?.ownerId;
+  if (!ownerId) throw new Error("This Bot no longer exists.");
+  return ownerId;
+}
+
 const hostOf = (url: string) => { try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return url; } };
 const quote = (text: string, max = 60) => `“${text.length > max ? text.slice(0, max - 1) + "…" : text}”`;
 
@@ -145,7 +152,7 @@ export const coreTools = {
   }),
 
   memory: define({
-    description: "Curate your persistent memory. target 'memory' is your own notes (MEMORY.md); 'user' is shared knowledge about the user (USER.md) that every Bot sees. Save durable facts — preferences, decisions, standing context — as short entries, not task progress. Entries are matched by a substring for replace/remove.",
+    description: "Curate your persistent memory. target 'memory' is your own notes (MEMORY.md); 'user' is shared knowledge about the user (USER.md) that all of the user's Bots see. Save durable facts — preferences, decisions, standing context — as short entries, not task progress. Entries are matched by a substring for replace/remove.",
     inputSchema: z.object({
       action: z.enum(["add", "replace", "remove"]),
       target: z.enum(["memory", "user"]),
@@ -155,10 +162,12 @@ export const coreTools = {
     describe: ({ action, target }) => `${action === "add" ? "Saved to" : action === "replace" ? "Updated" : "Removed from"} ${target === "user" ? "what I know about you" : "memory"}`,
     summarize: (usage: { used: number; budget: number }) => `${usage.used}/${usage.budget} chars`,
     execute: async ({ action, target, entry, match }, ctx) => {
-      if (action === "add") files.addEntry(ctx.botId, target, entry ?? "");
-      else if (action === "replace") files.replaceEntry(ctx.botId, target, match ?? "", entry ?? "");
-      else files.removeEntry(ctx.botId, target, match ?? "");
-      return files.memoryUsage(ctx.botId, target);
+      // "The user" is this Bot's owner: their USER.md, shared with their other Bots only.
+      const bot = { id: ctx.botId, ownerId: ownerOf(ctx) };
+      if (action === "add") files.addEntry(bot, target, entry ?? "");
+      else if (action === "replace") files.replaceEntry(bot, target, match ?? "", entry ?? "");
+      else files.removeEntry(bot, target, match ?? "");
+      return files.memoryUsage(bot, target);
     },
   }),
 
@@ -191,8 +200,8 @@ export const coreTools = {
     execute: async ({ to, message }, ctx) => {
       if (ctx.depth >= 1) throw new Error("You're answering another Bot right now; reply with what you have instead of messaging a third.");
       const name = to.replace(/^@/, "").toLowerCase();
-      // Your teammates: the user's other Bots.
-      const others = ctx.store.listBots().filter((bot) => bot.id !== ctx.botId);
+      // Your teammates: the user's other Bots (never anyone else's).
+      const others = ctx.store.listBots(ownerOf(ctx)).filter((bot) => bot.id !== ctx.botId);
       const target = others.find((bot) => bot.name.toLowerCase() === name);
       if (!target) throw new Error(`No teammate named "${to}". Your teammates: ${others.map((bot) => bot.name).join(", ") || "none yet"}.`);
       const { chatId, reply } = await ctx.consult(target.id, message);
@@ -213,9 +222,9 @@ export const coreTools = {
     }),
     describe: ({ title }) => `Suggested the topic ${quote(title, 40)}`,
     execute: async ({ title, icon, brief, folder, bots }, ctx) => {
-      const team = ctx.store.listBots();
+      const team = ctx.store.listBots(ownerOf(ctx));
       const others = (bots ?? []).map((name) => team.find((bot) => bot.name.toLowerCase() === name.toLowerCase())).filter((bot) => bot && bot.id !== ctx.botId);
-      const folderId = folder ? ctx.store.listFolders().find((item) => item.title.toLowerCase() === folder.toLowerCase())?.id ?? null : null;
+      const folderId = folder ? ctx.store.listFolders(ownerOf(ctx)).find((item) => item.title.toLowerCase() === folder.toLowerCase())?.id ?? null : null;
       const proposal = { title, icon, brief, folderId, memberIds: [ctx.botId, ...others.map((bot) => bot!.id)] };
       ctx.store.appendCard(ctx.messageId, { type: "topic", proposalId: crypto.randomUUID(), proposal, chatId: null, dismissed: false });
       return { suggested: title, note: "The user will see a card with Create and Not now. Don't assume it exists until they create it." };
@@ -228,12 +237,13 @@ export const coreTools = {
     describe: () => "Checked the topics",
     summarize: (output: { topics: unknown[] }) => `${output.topics.length} topic${output.topics.length === 1 ? "" : "s"}`,
     execute: async (_input, ctx) => {
-      const folders = ctx.store.listFolders();
+      const ownerId = ownerOf(ctx);
+      const folders = ctx.store.listFolders(ownerId);
       const name = (id: string | null) => folders.find((folder) => folder.id === id)?.title ?? null;
-      const bots = new Map(ctx.store.listBots().map((bot) => [bot.id, bot.name]));
+      const bots = new Map(ctx.store.listBots(ownerId).map((bot) => [bot.id, bot.name]));
       return {
         folders: folders.map((folder) => folder.title),
-        topics: ctx.store.listChats().filter((chat) => chat.kind === "topic").map((chat) => ({
+        topics: ctx.store.listChats(ownerId).filter((chat) => chat.kind === "topic").map((chat) => ({
           title: chat.title, folder: name(chat.folderId), bots: chat.memberIds.map((id) => bots.get(id)).filter(Boolean), archived: Boolean(chat.archivedAt), about: chat.brief.slice(0, 200),
         })),
       };

@@ -31,8 +31,13 @@ export const config = {
   updateApi: process.env.COLONY_UPDATE_API ?? "https://api.github.com",
   dev,
   firecrawlUrl: process.env.COLONY_FIRECRAWL_URL ?? "http://127.0.0.1:3002",
-  /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. */
+  /** Optional: tailnet logins (e.g. you@gmail.com) allowed in through `tailscale serve`. They're all the admin. */
   allowedUsers: list(process.env.COLONY_ALLOWED_USERS),
+  /**
+   * Emails that sign in as the admin (the person who runs Colony) rather than as a member.
+   * Nothing is assumed: with none set, a signed-in email is never the admin.
+   */
+  adminEmails: list(process.env.COLONY_ADMIN_EMAILS),
   /**
    * Optional: Cloudflare Access in front of a Cloudflare Tunnel to this server. Requests through
    * the tunnel are refused unless the team domain and AUD are set and the sign-in's email is allowed.
@@ -49,6 +54,8 @@ export const config = {
     maxDesktopSteps: 80,
     /** Switch off a Bot's computer after this many idle minutes (0 keeps computers on). */
     computerIdleMinutes: Number(process.env.COLONY_COMPUTER_IDLE_MINUTES ?? 5),
+    /** How many Bot computers a member may have running at once (the admin has no limit). */
+    memberMaxComputers: Math.max(0, Number(process.env.COLONY_MEMBER_MAX_COMPUTERS ?? 2) || 0),
     memoryChars: 4000,
     userChars: 2000,
     maxOutputTokens: 8192,

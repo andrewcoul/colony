@@ -14,8 +14,8 @@ function bullets(entries: string[]) {
 
 /** The system prompt: identity, persona, memory, skills, then the working rules. */
 export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Routine[] = [], team: Bot[] = [], desktop: DesktopMode | null = null, accounts = "", folderName?: (id: string) => string | undefined) {
-  const memory = files.memoryUsage(bot.id, "memory");
-  const user = files.memoryUsage(bot.id, "user");
+  const memory = files.memoryUsage(bot, "memory");
+  const user = files.memoryUsage(bot, "user");
   const skills = files.listSkills(bot.id);
   const asker = others[0];
   const thread = chat.kind === "thread" && asker
@@ -36,8 +36,8 @@ export function systemPrompt(bot: Bot, chat: Chat, others: Bot[], routines: Rout
   return [
     `You are ${bot.name}${bot.title ? `, ${bot.title}` : ""}: a persistent AI teammate in Colony, a self-hosted app. You keep your memory and skills between conversations, and the user returns to you over days and weeks.`,
     section("Persona (SOUL.md)", files.readSoul(bot.id)),
-    section(`What you know about the user (USER.md, ${user.used}/${user.budget} chars)`, bullets(files.readEntries(bot.id, "user"))),
-    section(`Your memory (MEMORY.md, ${memory.used}/${memory.budget} chars)`, bullets(files.readEntries(bot.id, "memory"))),
+    section(`What you know about the user (USER.md, ${user.used}/${user.budget} chars)`, bullets(files.readEntries(bot, "user"))),
+    section(`Your memory (MEMORY.md, ${memory.used}/${memory.budget} chars)`, bullets(files.readEntries(bot, "memory"))),
     section("Your skills (read one with skill_read before following it)", skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n")),
     section("This topic", topic),
     section("Private thread", thread),

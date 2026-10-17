@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { z } from "zod";
 import type { ColonyTool, ToolContext, ToolRegistry } from "./agent/tools.js";
 import type { EventLog } from "./events.js";
+import { ADMIN_ID } from "./people.js";
 import type { PcCapability, PcNode } from "./shared/types.js";
 import type { Store } from "./store.js";
 
@@ -41,8 +42,9 @@ export class NodeHub {
     return this.list().find((node) => node.id === id) ?? null;
   }
 
+  /** PCs are the admin's: only they hear about them. */
   changed() {
-    this.events.emit({ type: "nodes.updated", nodes: this.list() });
+    this.events.emit({ type: "nodes.updated", nodes: this.list() }, ADMIN_ID);
   }
 
   /** Tools a PC offers right now (what its switches allow). */
@@ -233,11 +235,12 @@ function choosePc(offering: PcNode[], pc: string | undefined) {
 /**
  * The PC tools a Bot has: any of your PCs that's online, within what you switched on there.
  * Each call names its PC (or uses the most recently seen), and anything that acts on a PC asks you.
+ * PCs are lent by the admin, to the admin's own Bots only.
  */
 export function pcToolsFor(hub: NodeHub, store: Store, botId: string): ToolRegistry {
   const bot = store.getBot(botId);
   const online = hub.list().filter((node) => node.online);
-  if (!bot || !online.length) return {};
+  if (!bot || bot.ownerId !== ADMIN_ID || !online.length) return {};
   // Tools are built fresh for each turn, so this is "they said yes to the browser on this PC this turn".
   const browserAllowed = new Set<string>();
   const registry: ToolRegistry = {};

@@ -37,8 +37,8 @@ async function setup() {
   server.on("upgrade", (request, socket, head) => hub.upgrade(request, socket, head));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/api/nodes/connect`;
-  const luke = store.createBot({ name: "Luke", title: "", description: "", model: "dev::mock-model", computer: false });
-  const ivy = store.createBot({ name: "Ivy", title: "", description: "", model: "dev::mock-model", computer: false });
+  const luke = store.createBot({ name: "Luke", title: "", description: "", model: "dev::mock-model", computer: false, ownerId: "owner" });
+  const ivy = store.createBot({ name: "Ivy", title: "", description: "", model: "dev::mock-model", computer: false, ownerId: "owner" });
   return { store, gate, hub, runner, luke, ivy, url, close: () => server.close() };
 }
 

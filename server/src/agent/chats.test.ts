@@ -60,7 +60,7 @@ async function setup() {
   const routines = new RoutineScheduler(store, runner);
   const pushed: { title: string; body: string; url: string }[] = [];
   const push = new PushService(db, store, events, async (_subscription, payload) => { pushed.push(JSON.parse(String(payload))); return {} as never; });
-  push.subscribe({ endpoint: "https://push.example/device", keys: { p256dh: "k", auth: "a" } });
+  push.subscribe({ endpoint: "https://push.example/device", keys: { p256dh: "k", auth: "a" } }, "owner");
   const api = createApi({ store, events, gate, runner, routines, push });
   apiFor.set(store, api);
   const call = async (method: string, url: string, body?: unknown) => {
@@ -209,7 +209,7 @@ describe("topics and events", () => {
 
   test("after a restart, replies with no checkpoint are stopped and their approvals expire", async () => {
     const { store } = await setup();
-    const bot = store.createBot({ name: "Ghost", title: "", description: "", model: "mock-model", computer: false });
+    const bot = store.createBot({ name: "Ghost", title: "", description: "", model: "mock-model", computer: false, ownerId: "owner" });
     const message = store.createMessage({ chatId: bot.chatId, author: bot.id, status: "streaming" });
     const approval = store.createApproval({ botId: bot.id, chatId: bot.chatId, messageId: message.id, tool: "x", summary: "s", detail: "d", reason: "" });
     expect(store.recoverAfterRestart(15 * 60_000)).toEqual([]);
@@ -253,11 +253,11 @@ describe("routines and notifications", () => {
     const { json: bot } = await call("POST", "/bots", { name: "Peng" });
     await finished(store, bot.chatId, 1);
     expect(pushed.map((item) => item.title)).toEqual(["Peng"]);
-    push.setFocus("phone", bot.chatId, true);
+    push.setFocus("owner", "phone", bot.chatId, true);
     await call("POST", `/chats/${bot.chatId}/messages`, { text: "Hello" });
     await finished(store, bot.chatId, 2);
     expect(pushed).toHaveLength(1);
-    push.setFocus("phone", null, true);
+    push.setFocus("owner", "phone", null, true);
     await call("POST", `/chats/${bot.chatId}/messages`, { text: "Email them." });
     const approval = await until(() => store.listApprovals("pending")[0]);
     expect(pushed.at(-1)).toMatchObject({ title: "Peng needs you", body: approval.summary });
@@ -268,7 +268,7 @@ describe("routines and notifications", () => {
   test("missed runs are skipped after a long gap, and one-off routines switch off after running", async () => {
     script = scripted.play([textTurn("Reminder: call Sarah.")]);
     const { store, routines } = await setup();
-    const bot = store.createBot({ name: "Tyler", title: "", description: "", model: "mock-model", computer: false });
+    const bot = store.createBot({ name: "Tyler", title: "", description: "", model: "mock-model", computer: false, ownerId: "owner" });
     const daily = store.createRoutine({ botId: bot.id, chatId: bot.chatId, title: "Daily", prompt: "x", schedule: { type: "daily", time: "08:00", days: [] } });
     routines.tick(daily.nextRunAt! + 7 * 60 * 60_000);
     expect(store.getRoutine(daily.id)!.lastRunAt).toBeNull();
@@ -282,9 +282,9 @@ describe("routines and notifications", () => {
 
   test("routines move to the Bot's own chat when their topic is deleted", async () => {
     const { store } = await setup();
-    const a = store.createBot({ name: "A", title: "", description: "", model: "mock-model", computer: false });
-    const b = store.createBot({ name: "B", title: "", description: "", model: "mock-model", computer: false });
-    const group = store.createChat({ kind: "topic", title: "G", memberIds: [a.id, b.id], coordinatorId: a.id });
+    const a = store.createBot({ name: "A", title: "", description: "", model: "mock-model", computer: false, ownerId: "owner" });
+    const b = store.createBot({ name: "B", title: "", description: "", model: "mock-model", computer: false, ownerId: "owner" });
+    const group = store.createChat({ kind: "topic", title: "G", memberIds: [a.id, b.id], coordinatorId: a.id, ownerId: "owner" });
     const routine = store.createRoutine({ botId: a.id, chatId: group.id, title: "R", prompt: "x", schedule: { type: "interval", minutes: 60 } });
     store.deleteChat(group.id);
     expect(store.getRoutine(routine.id)!.chatId).toBe(a.chatId);
@@ -361,7 +361,7 @@ describe("Bots messaging each other", () => {
     expect(reply.steps[0]).toMatchObject({ status: "error" });
     expect(reply.steps[0].detail).toContain("Your teammates: John");
 
-    const thread = store.createChat({ kind: "thread", title: "Kenny & John", memberIds: [kenny.id, john.id], coordinatorId: null });
+    const thread = store.createChat({ kind: "thread", title: "Kenny & John", memberIds: [kenny.id, john.id], coordinatorId: null, ownerId: "owner" });
     store.deleteBot(john.id);
     expect(store.getChat(thread.id)).toBeNull();
   });

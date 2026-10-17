@@ -169,14 +169,20 @@ that only devices on your tailnet can reach:
 Notifications skip the chat you're looking at. If push stops working after you
 wipe `data/`, turn notifications off and on again on each device.
 
-**Security model:** there's no login, so anyone who can reach Colony can use your
-Bots and their computers.
+**Security model:** every request is a person, or it's refused. The admin (you)
+runs Colony; members each have their own Bots, chats, files, routines and
+computers, and nobody sees anyone else's, not even the admin.
 - Never use `tailscale funnel` for Colony. Colony refuses Funnel (public internet)
   traffic.
-- To limit which tailnet accounts get in, list their logins in `.env`, e.g.
+- On your tailnet, Colony is yours alone: list your logins in `.env`, e.g.
   `COLONY_ALLOWED_USERS=you@gmail.com`. Tailscale adds each request's login, and
-  clients can't forge it.
-- Requests made directly on the PC are always allowed.
+  clients can't forge it. Other tailnet logins are refused.
+- Through Cloudflare Access, each allowed email (`COLONY_CF_ACCESS_ALLOWED_EMAILS`)
+  gets its own member account on first sign-in. Your own email goes in
+  `COLONY_ADMIN_EMAILS`, so it signs in as you.
+- Settings, sign-ins, connected accounts, lending a PC and updates are the admin's.
+  A member may have 2 Bot computers running at once (`COLONY_MEMBER_MAX_COMPUTERS`).
+- Requests made directly on the PC are always the admin's.
 
 ## Bot computers
 

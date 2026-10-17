@@ -94,15 +94,15 @@ const inQuietHours = ({ quietFrom, quietTo }: { quietFrom: string; quietTo: stri
   return from <= to ? minutes >= from && minutes < to : minutes >= from || minutes < to;
 };
 
-type Ring = { id: string; botId: string; chatId: string; reason: string; timer: ReturnType<typeof setTimeout> };
+type Ring = { id: string; botId: string; chatId: string; ownerId: string; reason: string; timer: ReturnType<typeof setTimeout> };
 
-/** Rings, answers, and the calls in progress. */
+/** Rings, answers, and the calls in progress. A Bot rings its owner, and only its owner can answer. */
 export class Calls {
   private rings = new Map<string, Ring>();
   private lastRing = new Map<string, number>();
   private sockets = new WebSocketServer({ noServer: true });
-  /** Sends a push notification (set by index.ts). */
-  notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }) => void = () => {};
+  /** Sends a push notification to a person (set by index.ts). */
+  notify: (input: { title: string; body: string; chatId: string; tag: string; path: string }, personId: string) => void = () => {};
 
   constructor(private store: Store, private events: EventLog, private runner: Runner) {}
 
@@ -116,15 +116,21 @@ export class Calls {
     if (!voiceEndpoint()) return { ringing: false, why: "Voice isn't set up, so calls can't happen." };
     if (inQuietHours(settings, new Date(now))) return { ringing: false, why: `It's the user's quiet hours (${settings.quietFrom}–${settings.quietTo}).` };
     if (now - (this.lastRing.get(botId) ?? 0) < 30 * 60_000) return { ringing: false, why: "You called less than 30 minutes ago." };
+    const bot = this.store.getBot(botId);
+    if (!bot) return { ringing: false, why: "That Bot no longer exists." };
     this.lastRing.set(botId, now);
     const id = crypto.randomUUID();
-    const bot = this.store.getBot(botId);
     const timer = setTimeout(() => this.miss(id), 45_000);
     timer.unref?.();
-    this.rings.set(id, { id, botId, chatId, reason, timer });
-    this.events.broadcast({ type: "call.ringing", callId: id, botId, chatId, reason });
-    this.notify({ title: `${bot?.name ?? "A Bot"} is calling`, body: reason, chatId, tag: `call-${id}`, path: `${chatId}?call=${id}` });
+    this.rings.set(id, { id, botId, chatId, ownerId: bot.ownerId, reason, timer });
+    this.events.broadcast({ type: "call.ringing", callId: id, botId, chatId, reason }, bot.ownerId);
+    this.notify({ title: `${bot.name} is calling`, body: reason, chatId, tag: `call-${id}`, path: `${chatId}?call=${id}` }, bot.ownerId);
     return { ringing: true };
+  }
+
+  /** Whose phone a call is ringing (null once it stopped). */
+  ownerOf(callId: string) {
+    return this.rings.get(callId)?.ownerId ?? null;
   }
 
   /** Not answered (or declined): the reason goes in the chat as the Bot's message. */
@@ -133,16 +139,19 @@ export class Calls {
     if (!ring) return;
     clearTimeout(ring.timer);
     this.rings.delete(callId);
-    this.events.broadcast({ type: "call.ended", callId });
+    this.events.broadcast({ type: "call.ended", callId }, ring.ownerId);
     this.store.createMessage({ chatId: ring.chatId, author: ring.botId, text: `I tried to call you: ${ring.reason}` });
   }
 
-  /** Handles the call socket: /api/chats/<id>/call (?answer=<ringing call id> to pick up). */
-  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
+  /**
+   * Handles the call socket: /api/chats/<id>/call (?answer=<ringing call id> to pick up), for the
+   * person whose chat it is. Anyone else's socket is closed.
+   */
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, personId: string) {
     const url = new URL(request.url ?? "", "http://colony");
     const chatId = /^\/api\/chats\/([\w-]+)\/call$/.exec(url.pathname)?.[1];
     const chat = chatId ? this.store.getChat(chatId) : null;
-    if (!chat || chat.kind === "thread") { socket.destroy(); return; }
+    if (!chat || chat.kind === "thread" || chat.ownerId !== personId) { socket.destroy(); return; }
     // The Bot that rang you, or the chat's lead.
     const ring = url.searchParams.get("answer") ? this.rings.get(url.searchParams.get("answer")!) : undefined;
     const botId = ring && chat.memberIds.includes(ring.botId) ? ring.botId : chat.memberIds.includes(chat.coordinatorId ?? "") ? chat.coordinatorId! : chat.memberIds[0];
@@ -150,7 +159,7 @@ export class Calls {
     if (ring?.botId === botId) {
       clearTimeout(ring.timer);
       this.rings.delete(ring.id);
-      this.events.broadcast({ type: "call.ended", callId: ring.id });
+      this.events.broadcast({ type: "call.ended", callId: ring.id }, ring.ownerId);
     }
     this.sockets.handleUpgrade(request, socket, head, (ws) => this.call(ws, chat.id, botId, ring?.botId === botId ? ring.reason : undefined));
   }

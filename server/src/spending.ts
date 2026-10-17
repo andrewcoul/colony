@@ -23,12 +23,12 @@ export const monthName = (now = Date.now()) => new Date(now).toLocaleString("en-
 const dollars = (micros: number) => micros / 1_000_000;
 const dayKey = (at: number) => { const date = new Date(at); return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`; };
 
-/** Your spending: this month by Bot, and the last 30 days. */
-export function spendingFor(store: Store, now = Date.now()): Spending {
+/** One person's spending (what their Bots used): this month by Bot, and the last 30 days. */
+export function spendingFor(store: Store, ownerId: string, now = Date.now()): Spending {
   const start = monthStart(now);
   const today = new Date(now);
   const from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29).getTime();
-  const rows = store.listUsage(Math.min(start, from));
+  const rows = store.listUsage(Math.min(start, from), ownerId);
   const month = rows.filter((row) => row.at >= start);
   const bots = new Map<string, { botId: string; name: string; cost: number; tokens: number }>();
   for (const row of month) {
