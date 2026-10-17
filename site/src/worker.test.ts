@@ -72,6 +72,18 @@ describe("/api goes to the origin", () => {
     expect(request.headers.get("user-agent")).toBe("test");
   });
 
+  test("names the visitor (Cloudflare's CF-Connecting-IP) as X-Colony-Client-Ip, never a copy the client sent", async () => {
+    const { fetch, sent } = worker();
+    await fetch("/api/auth/sign-in/email", { method: "POST", headers: { "CF-Connecting-IP": "203.0.113.9", "X-Colony-Client-Ip": "10.0.0.1", Origin: SITE }, body: "{}" });
+    expect(sent[0].headers.get("x-colony-client-ip")).toBe("203.0.113.9");
+    // No address from Cloudflare: nothing named, and the client's own copy is dropped.
+    await fetch("/api/state", { headers: { "x-colony-client-ip": "10.0.0.1" } });
+    expect(sent[1].headers.get("x-colony-client-ip")).toBeNull();
+    // WebSockets carry it too.
+    await fetch("/api/chats/c1/call", { headers: { Upgrade: "websocket", "CF-Connecting-IP": "2001:db8::7" } });
+    expect(sent[2].headers.get("x-colony-client-ip")).toBe("2001:db8::7");
+  });
+
   test("passes bodies and methods through, and hands back the origin's answer with its cookies", async () => {
     const { fetch, sent } = worker(() => {
       const headers = new Headers({ "Content-Type": "application/json" });

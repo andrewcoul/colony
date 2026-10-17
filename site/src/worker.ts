@@ -48,20 +48,27 @@ function offline(request: Request, path: string) {
   return new Response(OFFLINE_PAGE, { status: 503, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
-/** The request as the origin should get it: the client's own CF-Access-* and X-Forwarded-* dropped, the Worker's added. */
+/**
+ * The request as the origin should get it: the client's own CF-Access-*, X-Forwarded-* and
+ * X-Colony-Client-Ip dropped, the Worker's added. The origin sees the Worker's address as
+ * Cf-Connecting-Ip, so the visitor's (Cloudflare's CF-Connecting-IP on the incoming request) goes
+ * along as X-Colony-Client-Ip, for Colony's sign-in rate limits.
+ */
 export function originRequest(request: Request, env: Env): Request {
   const url = new URL(request.url);
   const target = new URL(url.pathname + url.search, env.ORIGIN_URL);
   const headers = new Headers();
   request.headers.forEach((value, name) => {
     const lower = name.toLowerCase();
-    if (lower.startsWith("cf-access-") || lower.startsWith("x-forwarded-") || lower === "host") return;
+    if (lower.startsWith("cf-access-") || lower.startsWith("x-forwarded-") || lower === "x-colony-client-ip" || lower === "host") return;
     headers.append(name, value);
   });
   if (env.ACCESS_CLIENT_ID) headers.set("CF-Access-Client-Id", env.ACCESS_CLIENT_ID);
   if (env.ACCESS_CLIENT_SECRET) headers.set("CF-Access-Client-Secret", env.ACCESS_CLIENT_SECRET);
   headers.set("X-Forwarded-Host", url.host);
   headers.set("X-Forwarded-Proto", url.protocol.replace(/:$/, ""));
+  const visitor = request.headers.get("CF-Connecting-IP")?.trim();
+  if (visitor) headers.set("X-Colony-Client-Ip", visitor);
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
   return new Request(target.toString(), { method: request.method, headers, body, redirect: "manual", ...({ duplex: "half" } as object) });
 }

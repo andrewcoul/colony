@@ -1,3 +1,5 @@
+import type { Duplex } from "node:stream";
+import { upgradeIdentity, type HeaderLookup, type Resolver } from "./access.js";
 import { isAdmin, type Person } from "./people.js";
 import type { Store } from "./store.js";
 
@@ -21,6 +23,43 @@ export const UPGRADES = [
   { kind: "call", path: "/api/chats/:id/call", policy: "chat" },
   { kind: "screen", path: "/api/bots/:id/screen/*", policy: "bot" },
 ] as const satisfies readonly { kind: Upgrade["kind"]; path: string; policy: string }[];
+
+/** Whether `url` is one of the upgrades Colony takes at all (whoever asks). */
+export const isUpgradePath = (url: string) =>
+  /^\/api\/nodes\/connect(\?|$)/.test(url) || /^\/api\/chats\/[\w-]+\/call(\?|$)/.test(url) || /^\/api\/bots\/[\w-]+\/screen\/[^?#]*(\?[^#]*)?$/.test(url);
+
+export type UpgradeRefusal = { status: 401 | 403 | 404; error: string };
+
+/**
+ * Decides an upgrade: what it's for, and whose; or why not. 404 for paths Colony doesn't take,
+ * 401 through the website without a sign-in, 403 when refused, turned off, or not theirs.
+ */
+export async function decideUpgrade(resolve: Resolver, header: HeaderLookup, origins: readonly string[], store: Store, url: string): Promise<{ person: Person; upgrade: Upgrade } | UpgradeRefusal> {
+  if (!isUpgradePath(url)) return { status: 404, error: "Not found." };
+  const identity = await upgradeIdentity(resolve, header, origins);
+  if ("status" in identity) return identity;
+  // Only the admin lends PCs, and only a chat's or a Bot's owner calls it or watches it.
+  const upgrade = authorizeUpgrade(store, identity.person, url);
+  return upgrade ? { person: identity.person, upgrade } : { status: 403, error: "That isn't yours." };
+}
+
+const REASONS = { 401: "Unauthorized", 403: "Forbidden", 404: "Not Found" } as const;
+
+/**
+ * Answers a refused upgrade with a real HTTP response before closing, so a proxy in front (the
+ * colony-site Worker) passes on 401 or 403 instead of a broken connection ("Colony is offline").
+ */
+export function refuseUpgrade(socket: Duplex, { status, error }: UpgradeRefusal) {
+  if (socket.destroyed) return;
+  const body = JSON.stringify({ error });
+  socket.end([
+    `HTTP/1.1 ${status} ${REASONS[status]}`,
+    "Content-Type: application/json",
+    `Content-Length: ${Buffer.byteLength(body)}`,
+    "Connection: close",
+    "", body,
+  ].join("\r\n"));
+}
 
 /** What this person's upgrade to `url` is for, or null when it isn't theirs to open. */
 export function authorizeUpgrade(store: Store, person: Person, url: string): Upgrade | null {

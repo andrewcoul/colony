@@ -31,7 +31,7 @@ import { TOPIC_ICONS } from "./shared/types.js";
 import type { Integrations } from "./integrations/index.js";
 import { revoke, type SignIns } from "./integrations/oauth.js";
 import { connectOnePassword, type VaultConnector } from "./integrations/onepassword.js";
-import { localOnly, publicOrigin, requirePerson, type AccessEnv, type Resolver } from "./access.js";
+import { clientAddress, localOnly, publicOrigin, requirePerson, type AccessEnv, type Resolver } from "./access.js";
 import { looksLikeEmail, normalEmail, type Invites } from "./invites.js";
 import { inviteMail, type Mailer } from "./mailer.js";
 import type { WebAccounts } from "./webauth.js";
@@ -789,7 +789,9 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
   // ---------- Web sign-in: its status (public), the admin's own sign-in, and invites ----------
   const noWeb = { error: "Web sign-in isn't available here." };
   /** Signing in, signing up (with an invite), signing out, resets and codes: the sign-in service answers. */
-  route("ALL", "/auth/*", "public", (c) => web?.auth ? web.auth.handler(c.req.raw, c.get("via")) : c.json({ error: "Web sign-in is off on this Colony." }, 404));
+  route("ALL", "/auth/*", "public", (c) => web?.auth
+    ? web.auth.handler(c.req.raw, c.get("via"), clientAddress((name) => c.req.header(name), c.get("via"), c.get("token")))
+    : c.json({ error: "Web sign-in is off on this Colony." }, 404));
   /** What the website needs before anyone signs in: whether web sign-in is on, and whether email works. */
   route("GET", "/auth-status", "public", (c) => {
     const person = c.get("person");

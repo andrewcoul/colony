@@ -28,7 +28,7 @@ import { ComputerService } from "./computer/docker.js";
 import { IdleStopper } from "./computer/idle.js";
 import { Updater } from "./updates.js";
 import { VERSION } from "./version.js";
-import { requirePerson, resolver, standardSources, upgradePerson } from "./access.js";
+import { requirePerson, resolver, standardSources } from "./access.js";
 import { createApi, isPublicApi } from "./api.js";
 import { Invites } from "./invites.js";
 import { mailerFromEnv } from "./mailer.js";
@@ -44,7 +44,7 @@ import { Store } from "./store.js";
 import { Calls, callTools } from "./voice.js";
 import { NodeHub, pcToolsFor } from "./nodes.js";
 import { ADMIN_ID, foldHousehold, People } from "./people.js";
-import { authorizeUpgrade, type Upgrade } from "./upgrades.js";
+import { decideUpgrade, refuseUpgrade, type Upgrade } from "./upgrades.js";
 
 // One Colony per data folder: a second one would run every routine twice.
 const lockFile = path.join(config.dataDir, "colony.pid");
@@ -210,15 +210,14 @@ server.on("upgrade", (request, socket, head) => {
   // Checking a Cloudflare Access sign-in can take a moment; the socket holds its data until then.
   const failed = () => socket.destroy();
   socket.on("error", failed);
-  // Through the website, upgrades need a web sign-in and must come from Colony's own pages.
-  void upgradePerson(resolve, header, config.publicOrigins).then((person) => {
+  // Through the website, upgrades need a web sign-in and must come from Colony's own pages. A refusal
+  // is answered (401, 403 or 404) before closing, so the website doesn't take it for Colony being offline.
+  void decideUpgrade(resolve, header, config.publicOrigins, store, request.url ?? "").then((decided) => {
     socket.off("error", failed);
-    if (!person || socket.destroyed) { socket.destroy(); return; }
-    // Only the admin lends PCs, and only a chat's or a Bot's owner calls it or watches it.
-    const upgrade = authorizeUpgrade(store, person, request.url ?? "");
-    if (!upgrade) { socket.destroy(); return; }
-    routeUpgrade(upgrade, person.id, request, socket, head);
-  }, () => socket.destroy());
+    if (socket.destroyed) return;
+    if ("status" in decided) { refuseUpgrade(socket, decided); return; }
+    routeUpgrade(decided.upgrade, decided.person.id, request, socket, head);
+  }, () => refuseUpgrade(socket, { status: 403, error: "Colony couldn't check this connection." }));
 });
 function routeUpgrade(upgrade: Upgrade, personId: string, request: IncomingMessage, socket: Duplex, head: Buffer) {
   // The desktop app lending your PC to your Bots.

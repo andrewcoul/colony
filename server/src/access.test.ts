@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { Hono } from "hono";
 import { expect, test } from "vitest";
-import { localOnly, publicOrigin, requirePerson, resolver, standardSources, upgradePerson, type AccessEnv, type CloudflareAccess, type IdentitySource, type Owner, type WebSession } from "./access.js";
+import { clientAddress, localOnly, publicOrigin, requirePerson, resolver, standardSources, upgradeIdentity, type AccessEnv, type CloudflareAccess, type IdentitySource, type Owner, type WebSession } from "./access.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
 import { People, type Person } from "./people.js";
@@ -148,14 +148,38 @@ test("through Cloudflare, changes must come from Colony's own pages (Origin); re
 test("WebSocket upgrades through Cloudflare need the origin token, a web sign-in and Colony's own Origin", async () => {
   const cf = cloudflare();
   const { people } = directory();
-  const resolve = resolver(standardSources(owner(), cf), people, sessions({ m1: member() }));
-  expect(await upgradePerson(resolve, lookup(tunnel(undefined, { Cookie: "session=m1", Origin: SITE })), ORIGINS)).toBeNull();
-  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Origin: SITE })), ORIGINS)).toBeNull();
-  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1" })), ORIGINS)).toBeNull();
-  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1", Origin: "https://evil.example" })), ORIGINS)).toBeNull();
-  expect(await upgradePerson(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1", Origin: SITE })), ORIGINS)).toMatchObject({ id: "m1" });
+  const resolve = resolver(standardSources(owner(), cf), people, sessions({ m1: member(), gone: "disabled" }));
+  // No origin token: refused (403). A token but no sign-in: 401. Turned off, or not Colony's Origin: 403.
+  expect(await upgradeIdentity(resolve, lookup(tunnel(undefined, { Cookie: "session=m1", Origin: SITE })), ORIGINS)).toMatchObject({ status: 403 });
+  expect(await upgradeIdentity(resolve, lookup(tunnel(serviceJwt(), { Origin: SITE })), ORIGINS)).toMatchObject({ status: 401, error: "Sign in to Colony." });
+  expect(await upgradeIdentity(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=gone", Origin: SITE })), ORIGINS)).toMatchObject({ status: 403 });
+  expect(await upgradeIdentity(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1" })), ORIGINS)).toMatchObject({ status: 403 });
+  expect(await upgradeIdentity(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1", Origin: "https://evil.example" })), ORIGINS)).toMatchObject({ status: 403 });
+  expect(await upgradeIdentity(resolve, lookup(tunnel(serviceJwt(), { Cookie: "session=m1", Origin: SITE })), ORIGINS)).toMatchObject({ person: { id: "m1" } });
   // This PC: the admin, as before.
-  expect(await upgradePerson(resolve, lookup({}), ORIGINS)).toMatchObject({ id: "owner" });
+  expect(await upgradeIdentity(resolve, lookup({}), ORIGINS)).toMatchObject({ person: { id: "owner" } });
+});
+
+test("rate limits count the visitor the Worker names only on the Worker's own requests", async () => {
+  const cf = cloudflare();
+  const resolve = resolver(standardSources(owner(), cf), directory().people, sessions({}));
+  const worker = "198.18.0.1";
+  const headers = (token: string) => tunnel(token, { "Cf-Connecting-Ip": worker, "X-Colony-Client-Ip": "203.0.113.50" });
+  // The Worker's service token: the visitor's address it passed.
+  const service = await resolve(lookup(headers(serviceJwt())));
+  expect(service.token).toBe("service");
+  expect(clientAddress(lookup(headers(serviceJwt())), service.via, service.token)).toBe("203.0.113.50");
+  // A person's token (straight to the origin app, not through the Worker): anyone could send that header.
+  const person = await resolve(lookup(headers(jwt({}))));
+  expect(person.token).toBe("person");
+  expect(clientAddress(lookup(headers(jwt({}))), person.via, person.token)).toBe(worker);
+  // The Worker named nobody: Cloudflare's address.
+  expect(clientAddress(lookup(tunnel(serviceJwt(), { "Cf-Connecting-Ip": worker })), "cloudflare", "service")).toBe(worker);
+  // The tailnet and this PC: one local address, whatever the headers say.
+  expect(clientAddress(lookup({ "X-Colony-Client-Ip": "203.0.113.50", "Cf-Connecting-Ip": worker }), "local", undefined)).toBe("127.0.0.1");
+  expect(clientAddress(lookup({}), "tailnet", undefined)).toBe("127.0.0.1");
+  // A token with both an email and the service id is a person's.
+  expect((await resolve(lookup(tunnel(jwt({ common_name: SERVICE }))))).token).toBe("person");
 });
 
 test("forwarded hosts count only on requests verified through the origin app, and only Colony's own", () => {

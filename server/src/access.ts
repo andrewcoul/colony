@@ -27,7 +27,10 @@ export type HeaderLookup = (name: string) => string | undefined;
  * What a source makes of a request it recognizes: refused, the admin, a verified email, or a request
  * it let through that must now show a web sign-in (`session`).
  */
-export type Claim = { kind: "refused"; reason: string } | { kind: "admin" } | { kind: "email"; email: string } | { kind: "session" };
+export type Claim = { kind: "refused"; reason: string } | { kind: "admin" } | { kind: "email"; email: string } | { kind: "session"; token: AccessToken };
+
+/** Whose origin Access token a tunnel request carried: the colony-site Worker's service token, or a person's. */
+export type AccessToken = "service" | "person";
 
 /** One way of knowing who's asking. `claim` resolves to null for requests that aren't its kind. */
 export type IdentitySource = { name: string; claim: (header: HeaderLookup) => Promise<Claim | null> };
@@ -36,7 +39,7 @@ export type IdentitySource = { name: string; claim: (header: HeaderLookup) => Pr
  * A request's identity: a person (and which source said so), or why it's refused. `status` 401: it
  * needs a web sign-in (it's otherwise allowed); `via` says where a refused request came in.
  */
-export type Identity = { person: Person; via: string } | (Refusal & { status?: 401 | 403; via?: string });
+export type Identity = ({ person: Person; via: string } | (Refusal & { status?: 401 | 403; via?: string })) & { token?: AccessToken };
 
 export type Resolver = (header: HeaderLookup) => Promise<Identity>;
 
@@ -55,10 +58,11 @@ export function resolver(sources: IdentitySource[], people: Pick<People, "admin"
       if (claim.kind === "refused") return { refused: claim.reason, via: source.name };
       if (claim.kind === "admin") return { person: people.admin(), via: source.name };
       if (claim.kind === "session") {
+        const token = claim.token;
         const person = webSession ? await webSession(header) : null;
-        if (person === "disabled") return { refused: "Your account on this Colony is turned off. Ask the person who runs it.", status: 403, via: source.name };
-        if (!person) return { refused: webSession ? "Sign in to Colony." : "Web sign-in isn't set up on this Colony yet.", status: 401, via: source.name };
-        return { person, via: source.name };
+        if (person === "disabled") return { refused: "Your account on this Colony is turned off. Ask the person who runs it.", status: 403, via: source.name, token };
+        if (!person) return { refused: webSession ? "Sign in to Colony." : "Web sign-in isn't set up on this Colony yet.", status: 401, via: source.name, token };
+        return { person, via: source.name, token };
       }
       const person = people.byEmail(claim.email);
       return "refused" in person ? { ...person, via: source.name } : { person, via: source.name };
@@ -92,14 +96,26 @@ export function publicOrigin(header: HeaderLookup, via: string | undefined, orig
 }
 
 /**
- * Who a WebSocket upgrade is from, or null to close it: refused requests, upgrades through
- * Cloudflare without a web sign-in, and upgrades from Cloudflare that don't come from Colony's own pages.
+ * Who a WebSocket upgrade is from, or why it's refused: 401 through Cloudflare without a web sign-in,
+ * 403 for anything else refused, and for upgrades from Cloudflare that don't come from Colony's own pages.
  */
-export async function upgradePerson(resolve: Resolver, header: HeaderLookup, origins: readonly string[]) {
+export async function upgradeIdentity(resolve: Resolver, header: HeaderLookup, origins: readonly string[]): Promise<{ person: Person } | { status: 401 | 403; error: string }> {
   const identity = await resolve(header);
-  if ("refused" in identity) return null;
-  if (identity.via === "cloudflare" && !sameOrigin(header("Origin"), origins)) return null;
-  return identity.person;
+  if ("refused" in identity) return { status: identity.status === 401 ? 401 : 403, error: identity.refused };
+  if (identity.via === "cloudflare" && !sameOrigin(header("Origin"), origins)) return { status: 403, error: "Colony only takes connections from its own pages." };
+  return { person: identity.person };
+}
+
+/**
+ * The client address sign-in rate limits count by. Through the tunnel, Cloudflare's Cf-Connecting-Ip
+ * is the colony-site Worker's own address, so the Worker passes the visitor's as X-Colony-Client-Ip:
+ * that counts only on requests verified as carrying the Worker's service token. Otherwise
+ * Cf-Connecting-Ip; on the tailnet or this PC, 127.0.0.1.
+ */
+export function clientAddress(header: HeaderLookup, via: string | undefined, token: AccessToken | undefined) {
+  if (via !== "cloudflare") return "127.0.0.1";
+  const forwarded = token === "service" ? header("X-Colony-Client-Ip")?.trim() : undefined;
+  return forwarded || header("Cf-Connecting-Ip")?.trim() || "";
 }
 
 /** The admin's tailnet login, as settings.json keeps it. */
@@ -129,7 +145,7 @@ export function cloudflareSource(cloudflare?: CloudflareAccess): IdentitySource 
       const token = header("Cf-Access-Jwt-Assertion") ?? /(?:^|;\s*)CF_Authorization=([^;]+)/.exec(header("Cookie") ?? "")?.[1];
       if (!token) return { kind: "refused", reason: "This request didn't come through Colony's website." };
       const checked = await verify(token);
-      return checked ? { kind: "refused", reason: checked } : { kind: "session" };
+      return "refused" in checked ? { kind: "refused", reason: checked.refused } : { kind: "session", token: checked.token };
     },
   };
 }
@@ -176,7 +192,7 @@ export function localOnly(people: Pick<People, "admin" | "byEmail">): Resolver {
  * What Hono routes behind `requirePerson` can read: who's asking (unset on a public route with no
  * one signed in), and where the request came in ("cloudflare", "tailnet", "local"…).
  */
-export type AccessEnv = { Variables: { person: Person; via: string } };
+export type AccessEnv = { Variables: { person: Person; via: string; token: AccessToken } };
 
 /**
  * Resolves who's asking (once per request) and refuses anyone it can't name. Through Cloudflare:
@@ -193,6 +209,7 @@ export function requirePerson(resolve: Resolver, options: { isPublic?: (path: st
         return c.json({ error: "Colony only takes changes from its own pages." }, 403);
       }
       if (identity.via) c.set("via", identity.via);
+      if (identity.token) c.set("token", identity.token);
       if ("refused" in identity) {
         if (options.isPublic?.(c.req.path)) return next();
         return c.json({ error: identity.refused, signIn: true }, 401);
@@ -206,7 +223,7 @@ export function requirePerson(resolve: Resolver, options: { isPublic?: (path: st
 /**
  * Checks a token from the origin's Access app (an RS256 JWT signed by the team's keys, for its AUD):
  * one for a person the app let in (it has an email), or for the Worker's service token (its
- * `common_name` is the service client id). Resolves to null when it's good, else why it's refused.
+ * `common_name` is the service client id). Resolves to whose token it is, or why it's refused.
  */
 function accessVerifier(cloudflare: CloudflareAccess) {
   const issuer = `https://${cloudflare.teamDomain.replace(/^https?:\/\//, "").replace(/\/+$/, "")}`;
@@ -231,8 +248,8 @@ function accessVerifier(cloudflare: CloudflareAccess) {
     return keys.get(kid);
   };
   const json = (part: string) => JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as Record<string, unknown>;
-  return async (token: string): Promise<string | null> => {
-    const refused = "This request's Cloudflare Access token isn't valid.";
+  return async (token: string): Promise<{ token: AccessToken } | Refusal> => {
+    const refused = { refused: "This request's Cloudflare Access token isn't valid." };
     try {
       const [head, body, signature, ...rest] = token.split(".");
       if (!head || !body || !signature || rest.length) return refused;
@@ -246,8 +263,8 @@ function accessVerifier(cloudflare: CloudflareAccess) {
       if (!(Array.isArray(aud) ? aud : [aud]).includes(cloudflare.aud) || iss !== issuer) return refused;
       if (typeof exp !== "number" || exp + skew < now) return refused;
       if (nbf !== undefined && (typeof nbf !== "number" || nbf - skew > now)) return refused;
-      if (typeof email === "string" && email.trim()) return null;
-      if (service && commonName === service) return null;
+      if (service && commonName === service && !(typeof email === "string" && email.trim())) return { token: "service" };
+      if (typeof email === "string" && email.trim()) return { token: "person" };
       return refused;
     } catch (error) {
       console.log(`[colony] Couldn't check a Cloudflare Access sign-in: ${error}`);

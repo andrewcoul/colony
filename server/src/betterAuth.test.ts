@@ -238,6 +238,41 @@ describe("Better Auth", () => {
     expect(statuses.indexOf(429)).toBeLessThanOrEqual(5);
   });
 
+  test("behind the Worker, each visitor has their own sign-in limit; nobody else can choose theirs", async () => {
+    const { site } = await setup();
+    // All of these come from the Worker's one address, as Cloudflare sees it.
+    const worker = "198.18.0.9";
+    const tries = async (extra: Record<string, string>, count = 7) => {
+      const statuses: number[] = [];
+      for (let attempt = 0; attempt < count; attempt++) statuses.push((await site("POST", "/api/auth/sign-in/email", { email: "nobody@example.com", password: "wrong password!" }, { jar: false, extra: { "Cf-Connecting-Ip": worker, ...extra } })).status);
+      return statuses;
+    };
+    // One visitor uses up their tries…
+    expect(await tries({ "X-Colony-Client-Ip": "203.0.113.200" })).toContain(429);
+    // …and another, through the same Worker, still has theirs.
+    expect((await tries({ "X-Colony-Client-Ip": "203.0.113.201" }, 1))[0]).toBe(401);
+    // A client can't pick its own bucket by sending Colony's internal header.
+    expect((await tries({ "X-Colony-Client-Ip": "203.0.113.200", "X-Colony-Rate-Address": "203.0.113.250" }, 1))[0]).toBe(429);
+  });
+
+  test("a person's own Access token can't name a visitor: their tries count against Cloudflare's address", async () => {
+    const { site } = await setup();
+    const personJwt = () => {
+      const part = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+      const now = Math.floor(Date.now() / 1000);
+      const data = `${part({ alg: "RS256", kid: "k1" })}.${part({ aud: [aud], iss: `https://${team}`, email: "someone@example.com", iat: now, exp: now + 600 })}`;
+      return `${data}.${crypto.sign("RSA-SHA256", Buffer.from(data), signer.privateKey).toString("base64url")}`;
+    };
+    const statuses: number[] = [];
+    for (let attempt = 0; attempt < 7; attempt++) {
+      // A new made-up visitor address each time: ignored, so they all share one limit.
+      statuses.push((await site("POST", "/api/auth/sign-in/email", { email: "nobody@example.com", password: "wrong password!" },
+        { jar: false, extra: { "Cf-Access-Jwt-Assertion": personJwt(), "Cf-Connecting-Ip": "198.18.0.10", "X-Colony-Client-Ip": `203.0.113.${100 + attempt}` } })).status);
+    }
+    expect(statuses[0]).toBe(401);
+    expect(statuses).toContain(429);
+  });
+
   test("changes to sign-in need Colony's own Origin, and the origin token comes first", async () => {
     const { site } = await setup();
     expect((await site("POST", "/api/auth/sign-in/email", { email: "a@example.com", password: "x" }, { extra: { Origin: "https://evil.example" } })).status).toBe(403);

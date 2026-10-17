@@ -19,7 +19,11 @@ browser ──> colony-site Worker ──> Cloudflare Tunnel ──> Colony on y
 - Web sign-in is [Better Auth](https://www.better-auth.com), inside Colony at `/api/auth/*`. Its
   accounts, sessions and password hashes are in `data/auth.db` (mode 600), apart from `colony.db`.
   The session cookie is `__Secure-better-auth.session_token`: Secure, HttpOnly, SameSite=Lax, and
-  host-only. Sign-in and sign-up are limited to 5 tries a minute per client.
+  host-only. Sign-in and sign-up are limited to 5 tries a minute per visitor. Behind the Worker,
+  the origin sees the Worker's address, so the Worker passes the visitor's as `X-Colony-Client-Ip`;
+  Colony counts it only on requests with the Worker's service token.
+- Refused WebSockets get a real answer (401 without a sign-in, 403 otherwise, as JSON) before they
+  close, so the Worker passes that on instead of showing "Colony is offline".
 - Changes (POST, PUT, PATCH, DELETE) and WebSockets through the tunnel must have an `Origin` in
   `COLONY_PUBLIC_ORIGINS`.
 - On the tailnet and on the PC itself, nothing changes: no sign-in, and you are the admin.

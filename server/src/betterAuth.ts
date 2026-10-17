@@ -27,10 +27,25 @@ const TRIES = { window: 60, max: 5 };
 
 export type WebAuth = {
   sessions: WebSessions;
-  /** Answers an /api/auth/* request. `via`: where it came in (links in emails use its web origin). */
-  handler(request: Request, via: string | undefined): Promise<Response>;
+  /**
+   * Answers an /api/auth/* request. `via`: where it came in (links in emails use its web origin).
+   * `address`: the client's address, which rate limits count by (see clientAddress in access.ts).
+   */
+  handler(request: Request, via: string | undefined, address: string): Promise<Response>;
   close(): void;
 };
+
+/** Colony sets this on every request it hands Better Auth (any copy a client sent is replaced). */
+const RATE_ADDRESS = "x-colony-rate-address";
+
+/** The request with the address Colony decided on, and nothing a client claimed. */
+function withAddress(request: Request, address: string) {
+  const headers = new Headers(request.headers);
+  headers.delete(RATE_ADDRESS);
+  if (address) headers.set(RATE_ADDRESS, address);
+  const body = request.method === "GET" || request.method === "HEAD" ? undefined : request.body;
+  return new Request(request.url, { method: request.method, headers, body, redirect: request.redirect, signal: request.signal, ...({ duplex: "half" } as object) });
+}
 
 /** The request being answered, for what Better Auth calls back with (email links need its origin). */
 const current = new AsyncLocalStorage<{ request: Request; via: string | undefined }>();
@@ -145,8 +160,8 @@ export async function startWebAuth({ file, secret, origins, mailer, accounts }: 
       useSecureCookies: true,
       // No Domain: the cookie stays on the host it was set for.
       defaultCookieAttributes: { secure: true, httpOnly: true, sameSite: "lax" },
-      // Through the tunnel, Cloudflare says who the client is.
-      ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
+      // Only the address Colony set: the visitor's, as the colony-site Worker or Cloudflare told it.
+      ipAddress: { ipAddressHeaders: [RATE_ADDRESS] },
     },
     plugins: mailer.enabled ? [emailOTP({
       disableSignUp: true,
@@ -206,7 +221,10 @@ export async function startWebAuth({ file, secret, origins, mailer, accounts }: 
 
   return {
     sessions,
-    handler: (request, via) => current.run({ request, via }, () => auth.handler(request)),
+    handler: (request, via, address) => {
+      const counted = withAddress(request, address);
+      return current.run({ request: counted, via }, () => auth.handler(counted));
+    },
     close: () => db.close(),
   };
 }
