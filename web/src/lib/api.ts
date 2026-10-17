@@ -1,4 +1,4 @@
-import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Message, ModelOption, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
+import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, ChatFile, Folder, Me, Message, ModelOption, PersonSummary, Price, Routine, Schedule, Spending, TopicIcon } from "@shared/types";
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
@@ -58,11 +58,17 @@ export type VoiceSettings = {
 };
 /** Voice as devices see it: the key's last four characters at most. */
 export type VoiceView = VoiceSettings & { keySet: boolean; keyHint: string | null };
-export type Settings = { role?: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView };
-/** What a member sees of Settings: the models they may use, and whether voice is on (server/src/settings.ts). */
+/** Members' models: whether the members' OpenCode API key is set (its last four characters only), and what members may use. */
+export type MembersView = {
+  keySet: boolean; keyHint: string | null; models: string[]; defaultModel: string; defaultCap: number | null;
+  catalog: CatalogModel[]; prices: Record<string, Price>;
+};
+export type Settings = { role?: "admin"; providers: ProviderView[]; signIns: SignInView[]; defaultModel: string; configured: boolean; voice: VoiceView; members?: MembersView };
+/** What a member sees of Settings: the models they may use, their spending and cap, and whether voice is on (server/src/settings.ts). */
 export type MemberSettings = {
   role: "member"; models: ModelOption[]; defaultModel: string; configured: boolean;
   voice: { on: boolean; allowCalls: boolean; quietFrom: string; quietTo: string };
+  spent: number; cap: number | null;
 };
 
 /** The server's version and updates (server/src/updates.ts). */
@@ -153,6 +159,17 @@ export const api = {
   settings: () => request<Settings>("GET", "/settings"),
   /** A member's reduced Settings. */
   memberSettings: () => request<MemberSettings>("GET", "/settings"),
+  /** Who you are, and what your Bots know about you (your USER.md). */
+  me: () => request<{ me: Me; about: string }>("GET", "/me"),
+  setAbout: (text: string) => request<{ about: string }>("PUT", "/me/about", { text }),
+  /** The admin's: the members' OpenCode API key (only its last four characters ever come back). */
+  setMemberKey: (key: string) => request<Settings>("PUT", "/settings/members/key", { key }),
+  clearMemberKey: () => request<Settings>("DELETE", "/settings/members/key"),
+  setMemberPolicy: (patch: { models?: string[]; defaultModel?: string; defaultCap?: number | null }) => request<Settings>("PUT", "/settings/members", patch),
+  people: () => request<PersonSummary[]>("GET", "/people"),
+  /** `cap`: dollars a month, null for none, "default" for the members' default. */
+  updatePerson: (id: string, patch: { cap?: number | null | "default"; disabled?: boolean }) => request<PersonSummary>("PUT", `/people/${encodeURIComponent(id)}`, patch),
+  removePerson: (id: string) => request<void>("DELETE", `/people/${encodeURIComponent(id)}`),
   spending: () => request<Spending>("GET", "/spending"),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   startModelSignIn: (id: SignInId) => request<ModelSignInStart>("POST", `/settings/signins/${id}/start`),
