@@ -8,7 +8,7 @@ import { ModelSignIn } from "./ModelSignIn";
 import { VoiceSettingsEditor } from "./VoiceSettings";
 import { ThisPcSettings } from "./ThisPcSettings";
 import { money, SpendingPage } from "./Spending";
-import { AboutYou, MembersModelsPage, PeoplePage } from "./PeopleSettings";
+import { AboutYou, MembersModelsPage, PeoplePage, SignOutButton } from "./PeopleSettings";
 import { desktopApp } from "../lib/desktop";
 import { useIsAdmin, useLive } from "../lib/live";
 import { openUpdates } from "../lib/settings";
@@ -51,6 +51,7 @@ function MemberSettingsDialog({ open, onOpenChange }: DialogProps) {
       {spendingOpen ? <SpendingPage onBack={() => setSpendingOpen(false)} /> : (
         <div className="flex flex-col gap-2">
           <p className="m-0 mb-2 text-label text-muted">Signed in as <span className="text-ink">{me?.login ?? me?.name}</span>.</p>
+          <SignOutButton />
           <AboutYou />
           <div className="mt-2 mb-2 flex flex-col gap-1">
             <span className="text-label text-muted">Models your Bots may use</span>
@@ -150,7 +151,7 @@ function AdminSettingsDialog({ open, onOpenChange }: DialogProps) {
             <SettingsRow icon={<Coins size={16} />} title="Spending" onClick={() => setSpendingOpen(true)}
               detail="What your Bots cost this month, by Bot" />
             <SettingsRow icon={<Users size={16} />} title="People" onClick={() => setPeopleOpen(true)}
-              detail="Members, what they spend, their caps and computers" />
+              detail="Invites, web sign-in, and members: what they spend, their caps and computers" />
             <SettingsRow icon={<KeyRound size={16} />} title="Members' models" onClick={() => setMembersOpen(true)} disabled={!settings?.members}
               detail={settings?.members ? `${settings.members.keySet ? `Key set${settings.members.keyHint ? ` (…${settings.members.keyHint})` : ""}` : "No OpenCode API key yet"} · ${settings.members.models.length} model${settings.members.models.length === 1 ? "" : "s"} · ${settings.members.defaultCap === null ? "no cap set" : `cap $${settings.members.defaultCap}`}` : "OpenCode Go for members' Bots"} />
             <SettingsRow icon={<AudioLines size={16} />} title="Voice" onClick={() => setVoicing(true)} disabled={!settings}
@@ -163,6 +164,7 @@ function AdminSettingsDialog({ open, onOpenChange }: DialogProps) {
             )}
           </div>
           <AccountsList onConnect={setConnecting} />
+          <div className="mt-3"><SignOutButton /></div>
           {error && <p role="alert" className="m-0 mt-3 text-label text-danger">{error}</p>}
           <button type="button" onClick={() => { onOpenChange(false); openUpdates(); }}
             className="mt-5 flex items-center justify-between gap-3 border-t border-rule pt-4 text-left text-meta text-muted hover:text-ink">

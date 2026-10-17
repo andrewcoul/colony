@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
-import { Check, ChevronLeft, KeyRound, Plus, X } from "lucide-react";
+import { Check, ChevronLeft, Copy, KeyRound, LogOut, Mail, Plus, X } from "lucide-react";
+import { auth } from "../lib/auth";
+import { signOut } from "./SignIn";
 import type { PersonSummary } from "@shared/types";
-import { api, type MembersView, type Settings } from "../lib/api";
+import { api, type Invite, type InviteSent, type MembersView, type Settings, type WebSignIn } from "../lib/api";
 import { cn } from "../lib/utils";
 import { money } from "./Spending";
 import { Button } from "./ui/button";
@@ -31,9 +33,11 @@ export function PeoplePage({ onBack }: { onBack: () => void }) {
     <div className="flex flex-col">
       <Back onBack={onBack} />
       <p className="m-0 mb-3 text-meta leading-relaxed text-muted">
-        Everyone with an allowed email gets their own account the first time they sign in. Nobody sees anyone else's Bots, chats or files, you included.
+        Colony is invite-only: each person you invite gets their own account. Nobody sees anyone else's Bots, chats or files, you included.
       </p>
       {error && <p role="alert" className="m-0 mb-2 text-label text-danger">{error}</p>}
+      <InvitesSection onChanged={reload} />
+      <WebSignInSection />
       {people?.filter((person) => person.role === "admin").map((person) => (
         <div key={person.id} className="mb-2 flex items-center gap-3 rounded-xl border border-rule px-3.5 py-3">
           <span className="flex min-w-0 flex-1 flex-col gap-0.5">
@@ -74,8 +78,10 @@ function MemberRow({ person, onChanged, onError }: { person: PersonSummary; onCh
           {person.disabled ? "Turn on" : "Turn off"}
         </Button>
         <Button variant="outline" size="pill" disabled={busy} onClick={() => {
-          if (!confirm(`Remove ${person.login ?? person.name}? Their Bots, chats, files and spending are deleted. Yours stay. While their email is allowed, they can sign in again to a new, empty account; turn them off to keep them out.`)) return;
-          void act(() => api.removePerson(person.id), "Couldn't remove them.");
+          const who = person.login ?? person.name;
+          if (!confirm(`Remove ${who}'s account? They're signed out and can't sign in again. Their Bots, chats and files are kept.`)) return;
+          const deleteData = confirm(`Also delete ${who}'s Bots, chats, files and spending for good? Yours stay either way.\n\nOK deletes them; Cancel keeps them.`);
+          void act(() => api.removePerson(person.id, deleteData), "Couldn't remove them.");
         }}>Remove</Button>
       </div>
     </div>
@@ -156,6 +162,106 @@ export function MembersModelsPage({ members, onBack, onSaved }: { members: Membe
       </Button>
     </div>
   );
+}
+
+const STATUS: Record<Invite["status"], string> = { pending: "waiting", used: "joined", revoked: "withdrawn", expired: "expired" };
+const day = (at: number) => new Date(at).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+/** Invites: send one, and see, resend or withdraw them. Without email set up, each comes with a link to copy. */
+function InvitesSection({ onChanged }: { onChanged: () => void }) {
+  const [invites, setInvites] = useState<Invite[]>([]);
+  const [email, setEmail] = useState("");
+  const [link, setLink] = useState<{ email: string; link: string; note?: string } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const reload = useCallback(() => { void api.invites().then(setInvites).catch(() => {}); }, []);
+  useEffect(reload, [reload]);
+  const sent = (result: InviteSent) => {
+    setLink(result.emailed ? null : { email: result.invite.email, link: result.link ?? "", note: result.error });
+    reload(); onChanged();
+  };
+  const act = async (task: () => Promise<InviteSent | void>, fallback: string) => {
+    setBusy(true); setError("");
+    try { const result = await task(); if (result) sent(result); else reload(); } catch (failure) { setError(message(failure, fallback)); } finally { setBusy(false); }
+  };
+  return (
+    <div className="mb-4 flex flex-col gap-2 rounded-xl border border-rule p-3.5">
+      <span className="text-label text-muted">Invite someone</span>
+      <form className="flex gap-2" onSubmit={(event) => { event.preventDefault(); void act(async () => { const result = await api.invite(email.trim()); setEmail(""); return result; }, "Couldn't invite them."); }}>
+        <Input value={email} onChange={(e) => setEmail(e.target.value)} type="email" required placeholder="their@email.com" aria-label="Email to invite" className="h-9 flex-1 text-[13px]" />
+        <Button variant="outline" size="pill" disabled={busy || !email.trim()}><Mail size={14} />Invite</Button>
+      </form>
+      {link && (
+        <div className="flex flex-col gap-1.5 rounded-lg bg-raised/60 p-2.5">
+          <span className="text-meta text-muted">{link.note ?? "Email isn't set up, so send this link yourself."} It works once, for {link.email}.</span>
+          <div className="flex gap-2">
+            <Input value={link.link} readOnly aria-label="Invite link" className="h-8 flex-1 font-mono text-[12px]" onFocus={(e) => e.target.select()} />
+            <Button variant="outline" size="pill" onClick={() => void navigator.clipboard?.writeText(link.link)}><Copy size={13} />Copy</Button>
+          </div>
+        </div>
+      )}
+      {error && <p role="alert" className="m-0 text-label text-danger">{error}</p>}
+      {invites.length > 0 && (
+        <ul className="m-0 flex list-none flex-col p-0">
+          {invites.map((invite) => (
+            <li key={invite.id} className="flex items-center gap-2 border-t border-rule py-2 first:border-t-0">
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-sm">{invite.email}</span>
+                <span className="text-meta text-muted">{STATUS[invite.status]} · {invite.status === "used" && invite.usedAt ? `joined ${day(invite.usedAt)}` : `until ${day(invite.expiresAt)}`}</span>
+              </span>
+              {(invite.status === "pending" || invite.status === "expired") && (
+                <Button variant="outline" size="pill" disabled={busy} onClick={() => void act(() => api.resendInvite(invite.id), "Couldn't resend it.")}>Resend</Button>
+              )}
+              {invite.status === "pending" && (
+                <Button variant="outline" size="pill" disabled={busy} onClick={() => void act(() => api.revokeInvite(invite.id), "Couldn't withdraw it.")}>Withdraw</Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** "Set up web sign-in": a password for one of the admin's own emails (from the tailnet or this PC). */
+function WebSignInSection() {
+  const [info, setInfo] = useState<WebSignIn | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  useEffect(() => { void api.webSignIn().then((next) => { setInfo(next); setEmail(next.adminEmails[0] ?? ""); }).catch(() => {}); }, []);
+  if (!info) return null;
+  return (
+    <div className="mb-4 flex flex-col gap-2 rounded-xl border border-rule p-3.5">
+      <span className="text-label text-muted">Set up web sign-in for yourself</span>
+      {!info.enabled ? <span className="text-meta text-muted">Web sign-in is off on this Colony (BETTER_AUTH_SECRET isn't set).</span>
+        : !info.adminEmails.length ? <span className="text-meta text-muted">Add your email to COLONY_ADMIN_EMAILS first.</span> : (
+          <form className="flex flex-col gap-2" onSubmit={(event) => {
+            event.preventDefault(); setError(""); setNote("");
+            void api.setUpAdminSignIn(email, password).then(() => { setPassword(""); setNote(`Done: sign in on the web as ${email}.`); }, (failure) => setError(message(failure, "Couldn't set it up.")));
+          }}>
+            <select value={email} onChange={(e) => setEmail(e.target.value)} aria-label="Your admin email" className="h-9 rounded-lg border border-rule bg-ground px-3 text-[13px] text-ink outline-none">
+              {info.adminEmails.map((item) => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <div className="flex gap-2">
+              <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} minLength={10} required autoComplete="new-password" placeholder="A password, 10 characters or more" aria-label="Web sign-in password" className="h-9 flex-1 text-[13px]" />
+              <Button variant="outline" size="pill" disabled={password.length < 10}>Save</Button>
+            </div>
+          </form>
+        )}
+      {note && <span className="text-meta text-mint">{note}</span>}
+      {error && <span role="alert" className="text-meta text-danger">{error}</span>}
+    </div>
+  );
+}
+
+/** "Sign out", for people who came through the website (never on the tailnet or this PC). */
+export function SignOutButton() {
+  const [web, setWeb] = useState(false);
+  useEffect(() => { void auth.status().then((status) => setWeb(status.via === "cloudflare" && status.signedIn)); }, []);
+  if (!web) return null;
+  return <Button variant="outline" size="pill" className="self-start" onClick={() => void signOut()}><LogOut size={14} />Sign out</Button>;
 }
 
 /** What your Bots know about you (your USER.md), to read and change. */

@@ -177,9 +177,11 @@ computers, and nobody sees anyone else's, not even the admin.
 - On your tailnet, Colony is yours alone: list your logins in `.env`, e.g.
   `COLONY_ALLOWED_USERS=you@gmail.com`. Tailscale adds each request's login, and
   clients can't forge it. Other tailnet logins are refused.
-- Through Cloudflare Access, each allowed email (`COLONY_CF_ACCESS_ALLOWED_EMAILS`)
-  gets its own member account on first sign-in. Your own email goes in
-  `COLONY_ADMIN_EMAILS`, so it signs in as you.
+- On the web (the `colony-site` Worker in `site/`, then a Cloudflare Tunnel behind
+  its own Access app), Colony is invite-only: you invite an email from Settings ›
+  People, and only that email can make an account from the link. Your own email goes
+  in `COLONY_ADMIN_EMAILS`; set up its web password in Settings › People from the
+  tailnet or this PC. See [docs/deploy-accounts.md](docs/deploy-accounts.md).
 - Settings, sign-ins, connected accounts, lending a PC and updates are the admin's.
   A member may have 2 Bot computers running at once (`COLONY_MEMBER_MAX_COMPUTERS`).
 - Members' Bots never use your sign-ins. They run on OpenCode Go with an OpenCode

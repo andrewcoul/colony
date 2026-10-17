@@ -11,6 +11,7 @@ import { CreateBotDialog, TopicDialog } from "./components/Dialogs";
 import { LogoMark } from "./components/Logo";
 import { Roster } from "./components/Roster";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { OfflineScreen, ResetPage, SignInPage, SignUpPage } from "./components/SignIn";
 import { UpdatesDialog } from "./components/UpdatesDialog";
 import { Button } from "./components/ui/button";
 import { TooltipProvider } from "./components/ui/tooltip";
@@ -54,6 +55,8 @@ export default function App() {
     return () => clearTimeout(timer);
   }, [connected]);
   const loadError = useLive((s) => s.error);
+  const needsSignIn = useLive((s) => s.signIn);
+  const offline = useLive((s) => s.offline);
   const chats = useLive((s) => s.chats);
   const phone = usePhone();
   const [chatId, openChat] = useOpenChat();
@@ -91,6 +94,12 @@ export default function App() {
   }, [ready, chatId, chat, openChat]);
   // Tell the server what's on screen so it doesn't notify about it.
   useEffect(() => { setFocusedChat(chat?.id ?? null); }, [chat?.id]);
+
+  // Signing up from an invite, resetting a password, signing in (through the website), or offline.
+  if (location.pathname === "/signup") return <SignUpPage invite={new URLSearchParams(location.search).get("invite") ?? ""} />;
+  if (location.pathname === "/reset") return <ResetPage token={new URLSearchParams(location.search).get("token") ?? ""} />;
+  if (needsSignIn) return <SignInPage />;
+  if (!ready && offline) return <OfflineScreen />;
 
   if (!ready) {
     return (

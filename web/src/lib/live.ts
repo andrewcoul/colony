@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import type { Access, Account, Approval, Artifact, Bot, Chat, ChatFile, EphemeralEvent, Folder, Me, Message, ModelOption, PcNode, Routine, ServerEvent } from "@shared/types";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 
 export type LiveState = {
   ready: boolean;
@@ -32,11 +32,15 @@ export type LiveState = {
   /** Bots ringing you right now, by call id. */
   ringing: Record<string, RingingCall>;
   error: string | null;
+  /** Through the website, with nobody signed in: show sign-in. */
+  signIn: boolean;
+  /** The website can't reach the PC Colony runs on. */
+  offline: boolean;
 };
 export type RingingCall = Omit<Extract<EphemeralEvent, { type: "call.ringing" }>, "type">;
 
 let state: LiveState = {
-  ready: false, connected: false, me: null, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], persistent: false, ringing: {}, error: null,
+  ready: false, connected: false, me: null, bots: {}, chats: {}, folders: {}, artifacts: {}, files: {}, approvals: {}, routines: {}, messages: {}, models: [], defaultModel: "", configured: true, accounts: [], access: [], nodes: [], persistent: false, ringing: {}, error: null, signIn: false, offline: false,
 };
 const listeners = new Set<() => void>();
 let seq = 0;
@@ -123,7 +127,7 @@ async function loadState() {
   const snapshot = await api.state();
   seq = snapshot.seq;
   set({
-    ready: true, error: null, me: snapshot.me ?? null,
+    ready: true, error: null, signIn: false, offline: false, me: snapshot.me ?? null,
     bots: byId(snapshot.bots), chats: byId(snapshot.chats), folders: byId(snapshot.folders ?? []), approvals: byId(snapshot.approvals), routines: byId(snapshot.routines),
     models: snapshot.models, defaultModel: snapshot.defaultModel, configured: snapshot.configured,
     accounts: snapshot.accounts ?? [], access: snapshot.access ?? [], nodes: snapshot.nodes ?? [], persistent: Boolean(snapshot.persistent),
@@ -189,8 +193,10 @@ export async function startLive() {
     });
     setInterval(() => { if (Date.now() - lastBeat > STALE_MS) connect(); }, 5000);
   } catch (error) {
-    set({ error: error instanceof Error ? error.message : "Couldn't reach the Colony server." });
-    setTimeout(startLive, 3000);
+    // Through the website with nobody signed in: the sign-in page takes over (and reloads once signed in).
+    if (error instanceof ApiError && error.signIn) { set({ signIn: true, error: null }); return; }
+    set({ error: error instanceof Error ? error.message : "Couldn't reach the Colony server.", offline: error instanceof ApiError && error.offline });
+    setTimeout(startLive, error instanceof ApiError && error.offline ? 10_000 : 3000);
   }
 }
 

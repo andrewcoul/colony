@@ -2,6 +2,14 @@ import type { Access, Account, AppState, Artifact, ArtifactVersion, Bot, Chat, C
 
 export type TopicInput = { title: string; icon: TopicIcon; brief: string; folderId: string | null; memberIds: string[]; coordinatorId?: string };
 
+/**
+ * A request that failed. `signIn`: you need to sign in (through the website). `offline`: the
+ * website can't reach the PC Colony runs on.
+ */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly signIn = false, readonly offline = false) { super(message); this.name = "ApiError"; }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const response = await fetch(`/api${path}`, {
     method,
@@ -9,11 +17,17 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (!response.ok) {
-    const data = await response.json().catch(() => null) as { error?: string } | null;
-    throw new Error(data?.error || `Request failed (${response.status}).`);
+    const data = await response.json().catch(() => null) as { error?: string; signIn?: boolean; offline?: boolean } | null;
+    throw new ApiError(data?.error || `Request failed (${response.status}).`, response.status, response.status === 401 && Boolean(data?.signIn), Boolean(data?.offline));
   }
   return (response.status === 204 ? undefined : await response.json()) as T;
 }
+
+/** An invite as the admin sees it (server/src/invites.ts). */
+export type Invite = { id: string; email: string; status: "pending" | "used" | "revoked" | "expired"; createdAt: number; expiresAt: number; sentAt: number | null; usedAt: number | null };
+/** Inviting: emailed, or a link to copy (no email set up, or it didn't work). */
+export type InviteSent = { invite: Invite; emailed: boolean; link?: string; error?: string };
+export type WebSignIn = { enabled: boolean; email: boolean; adminEmails: string[]; origins: string[] };
 
 export type BrowserInput =
   | { type: "click"; x: number; y: number }
@@ -169,7 +183,14 @@ export const api = {
   people: () => request<PersonSummary[]>("GET", "/people"),
   /** `cap`: dollars a month, null for none, "default" for the members' default. */
   updatePerson: (id: string, patch: { cap?: number | null | "default"; disabled?: boolean }) => request<PersonSummary>("PUT", `/people/${encodeURIComponent(id)}`, patch),
-  removePerson: (id: string) => request<void>("DELETE", `/people/${encodeURIComponent(id)}`),
+  /** Removes a member's account (they're turned off); `deleteData` removes their Bots, chats and files too. */
+  removePerson: (id: string, deleteData = false) => request<PersonSummary | void>("DELETE", `/people/${encodeURIComponent(id)}${deleteData ? "?data=delete" : ""}`),
+  invites: () => request<Invite[]>("GET", "/invites"),
+  invite: (email: string) => request<InviteSent>("POST", "/invites", { email }),
+  resendInvite: (id: string) => request<InviteSent>("POST", `/invites/${encodeURIComponent(id)}/resend`),
+  revokeInvite: (id: string) => request<void>("DELETE", `/invites/${encodeURIComponent(id)}`),
+  webSignIn: () => request<WebSignIn>("GET", "/web-signin"),
+  setUpAdminSignIn: (email: string, password: string) => request<void>("POST", "/web-signin/admin", { email, password }),
   spending: () => request<Spending>("GET", "/spending"),
   updateProvider: (id: string, input: ProviderInput) => request<Settings>("PUT", `/settings/providers/${encodeURIComponent(id)}`, input),
   startModelSignIn: (id: SignInId) => request<ModelSignInStart>("POST", `/settings/signins/${id}/start`),
