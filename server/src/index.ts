@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import type { IncomingMessage } from "node:http";
 import net from "node:net";
 import path from "node:path";
+import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
@@ -133,7 +135,7 @@ accounts.onNeedsReauth = (account) => void push.notify({
 
 const app = new Hono();
 const owner = { allowed: config.allowedUsers, login: ownerLogin, claim: (login: string) => setOwnerLogin(login) };
-app.use(tailnetOnly(owner));
+app.use(tailnetOnly(owner, config.cloudflareAccess));
 const updater = new Updater({
   version: VERSION,
   home: config.home,
@@ -163,7 +165,7 @@ const server = serve({ fetch: app.fetch, hostname: config.host, port: config.por
 
 // The desktop viewer streams video over a WebSocket at /api/bots/<id>/screen/media. Hono doesn't
 // proxy upgrades, so pass them straight to the Bot's desktop, under the same access rules.
-const allowed = accessCheck(owner);
+const allowed = accessCheck(owner, config.cloudflareAccess);
 /** Open Screen viewers per Bot; an open viewer keeps the computer awake. */
 const screenViewers = new Map<string, number>();
 const idle = new IdleStopper({
@@ -182,7 +184,16 @@ computer.onUse = (botId) => idle.touch(botId);
 idle.start();
 server.on("upgrade", (request, socket, head) => {
   const header = (name: string) => { const value = request.headers[name.toLowerCase()]; return Array.isArray(value) ? value[0] : value; };
-  if (allowed(header)) { socket.destroy(); return; }
+  // Checking a Cloudflare Access sign-in can take a moment; the socket holds its data until then.
+  const failed = () => socket.destroy();
+  socket.on("error", failed);
+  void allowed(header).then((refusal) => {
+    socket.off("error", failed);
+    if (refusal || socket.destroyed) { socket.destroy(); return; }
+    routeUpgrade(request, socket, head);
+  }, () => socket.destroy());
+});
+function routeUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer) {
   // The desktop app lending your PC to your Bots.
   if (/^\/api\/nodes\/connect(\?|$)/.test(request.url ?? "")) {
     nodes.upgrade(request, socket, head);
@@ -220,4 +231,4 @@ server.on("upgrade", (request, socket, head) => {
     upstream.on("error", () => socket.destroy());
     socket.on("error", () => upstream.destroy());
   }, () => socket.destroy());
-});
+}
