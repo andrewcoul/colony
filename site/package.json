@@ -1,0 +1,12 @@
+{
+  "name": "colony-site",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "The Cloudflare Worker in front of Colony: its web app, and /api passed to the origin. Uses the repository root's tooling (run npm ci there).",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test": "cd .. && vitest run site/src"
+  }
+}
