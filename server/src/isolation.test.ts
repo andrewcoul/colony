@@ -261,6 +261,7 @@ const CASES: Record<string, Case> = {
   "PUT /people/:id": send((_t, w) => `/people/${w.ids.bob}`, () => ({ cap: 3 })),
   "DELETE /people/:id": send((_t, w) => `/people/${w.ids.bob}`),
   "GET /auth-status": get(() => "/auth-status"),
+  "ALL /auth/*": get(() => "/auth/get-session"),
   "GET /invites/check": get((_t, w) => `/invites/check?invite=${w.inviteToken}`),
   "GET /web-signin": get(() => "/web-signin"),
   "POST /web-signin/admin": send(() => "/web-signin/admin", () => ({ email: "admin@example.com", password: "a long password" })),
@@ -292,7 +293,7 @@ const EXPECTED: Record<Policy, string[]> = {
     "GET /web-signin", "POST /web-signin/admin", "GET /invites", "POST /invites", "POST /invites/:id/resend", "DELETE /invites/:id",
   ],
   "admin-bot": ["PUT /bots/:id/access/:accountId"],
-  public: ["GET /auth-status", "GET /invites/check"],
+  public: ["GET /auth-status", "GET /invites/check", "ALL /auth/*"],
   bot: [
     "PATCH /bots/:id", "DELETE /bots/:id", "GET /bots/:id/terminal", "GET /bots/:id/files", "GET /bots/:id/file", "POST /bots/:id/computer/stop",
     "GET /bots/:id/screen-link", "ALL /bots/:id/screen/*", "GET /bots/:id/browser", "POST /bots/:id/browser/open", "POST /bots/:id/browser/input",

@@ -35,6 +35,7 @@ import { localOnly, publicOrigin, requirePerson, type AccessEnv, type Resolver }
 import { looksLikeEmail, normalEmail, type Invites } from "./invites.js";
 import { inviteMail, type Mailer } from "./mailer.js";
 import type { WebAccounts } from "./webauth.js";
+import type { WebAuth } from "./betterAuth.js";
 import { config } from "./config.js";
 import { isAdmin, meOf, People, readAbout, removeAbout, writeAbout, type Person } from "./people.js";
 
@@ -60,7 +61,7 @@ export type Services = {
   /** PCs lent through the desktop app. */
   nodes?: NodeHub;
   /** Web sign-in: accounts, invites, the email they go out by, and Colony's own web origins. */
-  web?: { accounts: WebAccounts; invites: Invites; mailer: Mailer; origins: readonly string[] };
+  web?: { accounts: WebAccounts; invites: Invites; mailer: Mailer; origins: readonly string[]; auth?: Pick<WebAuth, "handler"> | null };
 };
 
 /** API paths anyone through the website may reach before signing in: signing in itself, and checking an invite. */
@@ -787,6 +788,8 @@ export function createApi({ store, events, gate, runner, computer, browser, desk
 
   // ---------- Web sign-in: its status (public), the admin's own sign-in, and invites ----------
   const noWeb = { error: "Web sign-in isn't available here." };
+  /** Signing in, signing up (with an invite), signing out, resets and codes: the sign-in service answers. */
+  route("ALL", "/auth/*", "public", (c) => web?.auth ? web.auth.handler(c.req.raw, c.get("via")) : c.json({ error: "Web sign-in is off on this Colony." }, 404));
   /** What the website needs before anyone signs in: whether web sign-in is on, and whether email works. */
   route("GET", "/auth-status", "public", (c) => {
     const person = c.get("person");

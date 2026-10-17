@@ -29,7 +29,17 @@ export class SignUpRefused extends Error {
 }
 
 export class WebAccounts {
-  constructor(private store: Store, private people: People, private invites: Invites, readonly sessions: WebSessions | null) {}
+  constructor(private store: Store, private people: People, private invites: Invites, private service: WebSessions | null = null) {}
+
+  /** The sign-in service, once it's started (it calls back into this for its hooks). */
+  attach(sessions: WebSessions) { this.service = sessions; }
+  get sessions() { return this.service; }
+
+  /** Whether this email's member has been turned off. */
+  isTurnedOff(email: string) {
+    if (this.people.isAdminEmail(email)) return false;
+    return Boolean(this.store.personByLogin(normalEmail(email))?.disabled);
+  }
 
   /** Whether web sign-in is on (BETTER_AUTH_SECRET is set and the sign-in service runs). */
   get enabled() { return this.sessions !== null; }
@@ -97,14 +107,14 @@ export class WebAccounts {
 }
 
 /**
- * The sign-in service the environment asks for. Web sign-in needs BETTER_AUTH_SECRET; without it,
- * every request through the website is asked to sign in, and nobody can.
+ * Why web sign-in can't start from these settings, or null when it can. It needs BETTER_AUTH_SECRET
+ * (32 characters or more) and Colony's web origins; without them, every request through the website
+ * is asked to sign in, and nobody can.
  */
-export function webSessionsFromEnv(env: Record<string, string | undefined> = process.env): WebSessions | null {
-  if (!env.BETTER_AUTH_SECRET?.trim()) {
-    console.log("[colony] Web sign-in is off: set BETTER_AUTH_SECRET to turn it on.");
-    return null;
-  }
-  console.log("[colony] Web sign-in is off: this build of Colony doesn't include its sign-in service (Better Auth) yet.");
+export function webSignInProblem(env: Record<string, string | undefined>, origins: readonly string[]): string | null {
+  const secret = env.BETTER_AUTH_SECRET?.trim() ?? "";
+  if (!secret) return "Web sign-in is off: set BETTER_AUTH_SECRET to turn it on.";
+  if (secret.length < 32) return "Web sign-in is off: BETTER_AUTH_SECRET is too short (use 32 characters or more, e.g. `openssl rand -base64 32`).";
+  if (!origins.length) return "Web sign-in is off: set COLONY_PUBLIC_ORIGINS to Colony's web addresses.";
   return null;
 }

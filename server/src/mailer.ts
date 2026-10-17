@@ -59,6 +59,13 @@ export function linkMail(to: string, { subject, intro, action, link, outro }: { 
   };
 }
 
+/** A sign-in code. */
+export const codeMail = (to: string, code: string): Mail => ({
+  to, subject: `Your Colony sign-in code: ${code}`,
+  text: `Your Colony sign-in code is ${code}. It works once, for 5 minutes.\n\nIf you didn't ask for it, ignore this email.\n`,
+  html: `<p>Your Colony sign-in code is</p><p style="font-size:24px;letter-spacing:4px"><strong>${escape(code)}</strong></p><p style="color:#666">It works once, for 5 minutes. If you didn't ask for it, ignore this email.</p>`,
+});
+
 /** The invite email. */
 export const inviteMail = (to: string, link: string, days: number) => linkMail(to, {
   subject: "You're invited to Colony",

@@ -16,6 +16,10 @@ browser ──> colony-site Worker ──> Cloudflare Tunnel ──> Colony on y
   Colony refuses any tunnel request without a valid token from it.
 - Then Colony needs a **web sign-in** (a session cookie). Without one, `/api` answers 401 and the
   web app shows the sign-in page. Only signing in, `/api/auth-status` and invite checks work before that.
+- Web sign-in is [Better Auth](https://www.better-auth.com), inside Colony at `/api/auth/*`. Its
+  accounts, sessions and password hashes are in `data/auth.db` (mode 600), apart from `colony.db`.
+  The session cookie is `__Secure-better-auth.session_token`: Secure, HttpOnly, SameSite=Lax, and
+  host-only. Sign-in and sign-up are limited to 5 tries a minute per client.
 - Changes (POST, PUT, PATCH, DELETE) and WebSockets through the tunnel must have an `Origin` in
   `COLONY_PUBLIC_ORIGINS`.
 - On the tailnet and on the PC itself, nothing changes: no sign-in, and you are the admin.
@@ -26,7 +30,7 @@ browser ──> colony-site Worker ──> Cloudflare Tunnel ──> Colony on y
 | --- | --- |
 | `COLONY_ADMIN_EMAILS` | Emails that sign in as you, the admin. They're never invited: set up their password in Settings › People. |
 | `COLONY_PUBLIC_ORIGINS` | The web addresses of Colony, comma-separated, e.g. `https://colony.werdna.xyz,https://colony-site.acoulson4646.workers.dev`. Sign-in only trusts these. Links in emails use the one you're on, else the first. |
-| `BETTER_AUTH_SECRET` | Turns web sign-in on. A long random string (`openssl rand -base64 32`). Without it, nobody can sign in on the web. |
+| `BETTER_AUTH_SECRET` | Turns web sign-in on. A random string of 32 characters or more (`openssl rand -base64 32`). Without it (or without `COLONY_PUBLIC_ORIGINS`), nobody can sign in on the web, and the log says why. |
 | `COLONY_INVITE_TTL_DAYS` | How long an invite link works. Default 7. |
 | `RESEND_API_KEY` | Email through Resend (invites, password resets, sign-in codes). Without it, invites give you a link to copy, and "forgot password" and "email me a code" don't show. |
 | `COLONY_MAIL_FROM` | Who the email is from. Default `Colony <colony@auth.werdna.xyz>` (a domain verified in Resend). |

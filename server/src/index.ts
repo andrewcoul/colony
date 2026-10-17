@@ -32,7 +32,8 @@ import { requirePerson, resolver, standardSources, upgradePerson } from "./acces
 import { createApi, isPublicApi } from "./api.js";
 import { Invites } from "./invites.js";
 import { mailerFromEnv } from "./mailer.js";
-import { WebAccounts, webSessionsFromEnv } from "./webauth.js";
+import { WebAccounts, webSignInProblem } from "./webauth.js";
+import { startWebAuth } from "./betterAuth.js";
 import { config } from "./config.js";
 import { openDb } from "./db.js";
 import { EventLog } from "./events.js";
@@ -144,7 +145,14 @@ const people = new People(store, { adminEmails: config.adminEmails });
 // Web sign-in (through the colony-site Worker): invite-only accounts, and email through Resend.
 const invites = new Invites(db, config.inviteTtlDays);
 const mailer = mailerFromEnv();
-const webAccounts = new WebAccounts(store, people, invites, webSessionsFromEnv());
+const webAccounts = new WebAccounts(store, people, invites);
+// Better Auth, with its own database (data/auth.db): only once BETTER_AUTH_SECRET and the web origins are set.
+const webSignInOff = webSignInProblem(process.env, config.publicOrigins);
+const webAuth = webSignInOff ? null : await startWebAuth({
+  file: path.join(config.dataDir, "auth.db"), secret: process.env.BETTER_AUTH_SECRET!.trim(), origins: config.publicOrigins, mailer, accounts: webAccounts,
+});
+if (webAuth) webAccounts.attach(webAuth.sessions);
+console.log(webSignInOff ? `[colony] ${webSignInOff}` : `[colony] Web sign-in is on for ${config.publicOrigins.join(", ")}${mailer.enabled ? ", with email" : " (no email: set RESEND_API_KEY for resets and codes)"}.`);
 const resolve = resolver(standardSources(owner, config.cloudflareAccess), people, (header) => webAccounts.personFor(header));
 const app = new Hono();
 // Pages load without a sign-in (that's where you sign in); /api needs one, except signing in itself.
@@ -160,7 +168,7 @@ const updater = new Updater({
 updater.start();
 app.route("/api", createApi({ store, events, gate, runner, computer, browser, desktop, routines, push, updater, access: resolve, models, modelSignIns,
   memberKey: { set: (key) => models.setMemberKey(key), clear: () => models.clearMemberKey() }, integrations, signIns, calls, nodes,
-  web: { accounts: webAccounts, invites, mailer, origins: config.publicOrigins } }));
+  web: { accounts: webAccounts, invites, mailer, origins: config.publicOrigins, auth: webAuth } }));
 
 // In production the server also serves the built web app (web/dist).
 const webDist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../web/dist");
